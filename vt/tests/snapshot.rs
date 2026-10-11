@@ -1,0 +1,169 @@
+//! `snapshot()` reproduces the visible state: a fresh engine fed it matches
+//! the original, and keeps matching as both are fed the same probes — a
+//! switch back from the alternate screen, a restored cursor, tab stops.
+
+mod common;
+
+use common::{Profile, Token, build, stream};
+use proptest::prelude::*;
+use rtty_vt::{Cell, Terminal};
+
+/// One visible cell, everything a renderer or a copy reads.
+#[derive(Debug, PartialEq)]
+struct Seen {
+    text: String,
+    fg: rtty_vt::Color,
+    bg: rtty_vt::Color,
+    attrs: rtty_vt::Attrs,
+    /// Width, then whether it is a pad.
+    layout: (u8, bool),
+    underline: rtty_vt::Color,
+    link: Option<rtty_vt::Hyperlink>,
+}
+
+fn seen(cell: &Cell, text: String) -> Seen {
+    Seen {
+        text,
+        fg: cell.fg(),
+        bg: cell.bg(),
+        attrs: cell.attrs(),
+        layout: (cell.width(), cell.is_pad()),
+        underline: rtty_vt::Color::Default,
+        link: None,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Visible {
+    rows: Vec<(Vec<Seen>, bool)>,
+    cursor: (u16, u16),
+    pending: bool,
+    style: Option<rtty_vt::CursorStyle>,
+    modes: rtty_vt::Modes,
+    kitty: u8,
+    region: (u16, u16),
+    title: String,
+    icon: String,
+    colors: Vec<Option<rtty_vt::Rgb>>,
+}
+
+/// Below three rows or columns a soft wrap of the bottom row, whose
+/// continuation has scrolled away, cannot be reproduced without scrolling.
+fn tiny(term: &Terminal) -> bool {
+    let (rows, cols) = term.size();
+    rows < 3 || cols < 3
+}
+
+fn visible(term: &Terminal) -> Visible {
+    let (rows, _) = term.size();
+    Visible {
+        rows: (0..rows)
+            .map(|r| {
+                let row = term.screen_row(r);
+                let bottom = r + 1 == rows && tiny(term);
+                let cells = (0..row.cells().len())
+                    .map(|col| {
+                        let mut text = String::new();
+                        row.push_grapheme(col, &mut text);
+                        let mut seen = Seen {
+                            underline: row.underline_color(col),
+                            link: row.hyperlink(col).map(|link| (**link).clone()),
+                            ..seen(&row.cells()[col], text)
+                        };
+                        seen.layout.1 &= !bottom;
+                        seen
+                    })
+                    .collect();
+                let pending_here = term.wrap_pending() && term.cursor_position().0 == r;
+                (cells, row.wrapped() && !bottom && !pending_here)
+            })
+            .collect(),
+        cursor: term.cursor_position(),
+        pending: term.wrap_pending(),
+        style: term.cursor_style(),
+        // A snapshot is a whole frame: a synchronized update in progress is
+        // not carried.
+        modes: rtty_vt::Modes { sync_update: false, ..term.modes().clone() },
+        kitty: term.kitty_keyboard(),
+        region: term.scroll_region(),
+        title: term.title().to_string(),
+        icon: term.icon_name().to_string(),
+        colors: (0..259).map(|slot| term.color_override(slot)).collect(),
+    }
+}
+
+/// Probes fed to both engines after the snapshot, each from scratch.
+const PROBES: &[&str] = &[
+    "",
+    "q",
+    "\x1b8q",
+    "\x1b[?1049lq",
+    "\x1b[?1047l\x1b8q",
+    "\r\tA\tB\tC\tD\tE",
+    "\x1b[2J\x1b[Hq\x1b[3;1Hq\x1b[99;1Hq",
+];
+
+fn check(rows: u16, cols: u16, tokens: &[Token]) -> Result<(), TestCaseError> {
+    for probe in PROBES {
+        let (_, mut original) = build(rows, cols, tokens, false);
+        // A pending wrap is made by reprinting the cursor's cell, which ends
+        // a soft wrap of its row.
+        let pending_on_wrap =
+            original.wrap_pending() && original.screen_row(original.cursor_position().0).wrapped();
+        if (tiny(&original) || pending_on_wrap) && !probe.is_empty() {
+            // A probe would bring what is not reproduced into view.
+            continue;
+        }
+        let (rows, cols) = original.size();
+        let snapshot = original.snapshot();
+        let mut copy = Terminal::new(rows, cols, 0);
+        copy.advance(&snapshot);
+        original.advance(probe.as_bytes());
+        copy.advance(probe.as_bytes());
+        let (want, got) = (visible(&original), visible(&copy));
+        if want != got {
+            let cell = want.rows.iter().zip(&got.rows).enumerate().find_map(|(r, (a, b))| {
+                if a.1 != b.1 {
+                    return Some(format!("row {r} wrapped: want {} got {}", a.1, b.1));
+                }
+                let c = a.0.iter().zip(&b.0).position(|(x, y)| x != y)?;
+                Some(format!("cell {r},{c}:\n want {:?}\n got  {:?}", a.0[c], b.0[c]))
+            });
+            let detail = cell.unwrap_or_else(|| {
+                let Visible { rows: _, colors: a, .. } = &want;
+                let Visible { rows: _, colors: b, .. } = &got;
+                let short = |v: &Visible| {
+                    format!(
+                        "{:?} {} {:?} {:?} {:?} {}",
+                        v.cursor, v.pending, v.style, v.modes, v.region, v.kitty
+                    )
+                };
+                format!("want {}\n got  {}\n colours equal: {}", short(&want), short(&got), a == b)
+            });
+            return Err(TestCaseError::fail(format!(
+                "probe {probe:?}: {detail}\nsnapshot {:?}",
+                String::from_utf8_lossy(&snapshot)
+            )));
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 500, failure_persistence: None, ..ProptestConfig::default() })]
+
+    #[test]
+    fn a_snapshot_reproduces_the_visible_state((rows, cols, tokens) in stream(Profile::Full)) {
+        check(rows, cols, &tokens)?;
+    }
+}
+
+#[test]
+#[ignore]
+fn many_snapshots_reproduce_the_visible_state() {
+    let config =
+        ProptestConfig { cases: 50_000, failure_persistence: None, ..ProptestConfig::default() };
+    proptest!(config, |((rows, cols, tokens) in stream(Profile::Full))| {
+        check(rows, cols, &tokens)?;
+    });
+}

@@ -1,0 +1,25 @@
+[package]
+name = "rtty-vt"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A terminal state engine: VT parser dispatch, grid, scrollback, modes and queries"
+
+[workspace]
+
+[dependencies]
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+vte = "0.15"
+
+[dev-dependencies]
+alacritty_terminal = "=0.26.0"
+proptest = "1.11"
+vt100 = "0.16"
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[profile.bench]
+debug = false
