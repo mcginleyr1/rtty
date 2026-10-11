@@ -22,17 +22,28 @@ use gpui::{
     div, fill, outline, point, prelude::*, px, size,
 };
 
+use crate::config::Theme;
 use crate::keys;
-use crate::palette;
+use crate::scheme::{self, Scheme};
 use crate::session::Session;
 
 actions!(rtty, [Quit, Copy, Paste, IncreaseFontSize, DecreaseFontSize]);
+
+pub struct Settings {
+    pub font: Font,
+    pub font_size: Pixels,
+    pub theme: Theme,
+    pub stats: bool,
+}
 
 pub struct TerminalView {
     session: Session,
     focus: FocusHandle,
     font: Font,
     font_size: Pixels,
+    theme: Theme,
+    /// The theme's scheme for the window's current appearance.
+    scheme: Arc<Scheme>,
     grid: Option<GridGeometry>,
     marked_text: Option<String>,
     scroll_remainder: Pixels,
@@ -88,7 +99,8 @@ struct Cells {
     cursor_line: usize,
     cursor_column: usize,
     cursor_shape: CursorShape,
-    cursor_color: Rgb,
+    /// The hollow (unfocused) cursor's outline, or the beam's or underline's color.
+    cursor_outline: Rgb,
 }
 
 #[derive(Default)]
@@ -104,15 +116,16 @@ impl TerminalView {
     pub fn new(
         session: Session,
         mut events: UnboundedReceiver<Event>,
-        font: Font,
-        font_size: Pixels,
-        stats: bool,
+        settings: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
         cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_appearance(window, |view, window, cx| view.follow_appearance(window, cx))
+            .detach();
+        let scheme = settings.theme.for_appearance(window.appearance()).clone();
         cx.spawn_in(window, async move |this, cx| {
             while let Some(event) = events.next().await {
                 let batch: Vec<Event> =
@@ -132,13 +145,28 @@ impl TerminalView {
         Self {
             session,
             focus,
-            font,
-            font_size,
+            font: settings.font,
+            font_size: settings.font_size,
+            theme: settings.theme,
+            scheme,
             grid: None,
             marked_text: None,
             scroll_remainder: px(0.),
-            stats: stats.then(FrameStats::default),
+            stats: settings.stats.then(FrameStats::default),
         }
+    }
+
+    /// The OS switched between light and dark: repaint with the other scheme (cells keep color
+    /// indices, so what is on screen recolors) and tell programs that asked (mode 2031). Colors a
+    /// program set itself with OSC 4/10/11/12 live in the terminal, not the scheme, and stay.
+    fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let scheme = self.theme.for_appearance(window.appearance());
+        if Arc::ptr_eq(scheme, &self.scheme) {
+            return;
+        }
+        self.scheme = scheme.clone();
+        self.session.scheme_changed(self.scheme.is_dark());
+        cx.notify();
     }
 
     fn handle_event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
@@ -146,7 +174,7 @@ impl TerminalView {
             Event::Wakeup => cx.notify(),
             Event::Title(title) => window.set_window_title(&title),
             Event::ResetTitle => window.set_window_title("rtty"),
-            Event::PtyWrite(text) => self.session.write(text.into_bytes()),
+            Event::PtyWrite(text) => self.session.reply(text),
             Event::ClipboardStore(_, text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -157,7 +185,7 @@ impl TerminalView {
             }
             Event::ColorRequest(index, format) => {
                 let color = self.session.term.lock().colors()[index];
-                let rgb = color.unwrap_or_else(|| palette::default(index));
+                let rgb = color.unwrap_or_else(|| self.scheme.color(index));
                 self.session.write(format(rgb).into_bytes());
             }
             Event::TextAreaSizeRequest(format) => {
@@ -380,7 +408,7 @@ impl TerminalView {
                 (at(span.line, span.column), line)
             })
             .collect();
-        let cursor_color = hsla(cells.cursor_color);
+        let cursor_color = hsla(cells.cursor_outline);
         let cursor_quad = match cells.cursor_shape {
             CursorShape::Beam => Some(fill(
                 Bounds::new(cursor_bounds.origin, size(px(2.), cell.height)),
@@ -399,7 +427,7 @@ impl TerminalView {
             CursorShape::Block | CursorShape::Hidden => None,
         };
         let marked_text = self.marked_text.clone().map(|text| {
-            let fg = palette::default(NamedColor::Foreground as usize);
+            let fg = self.scheme.color(NamedColor::Foreground as usize);
             let run = self.text_run(text.len(), fg, Flags::UNDERLINE);
             let line = text_system.shape_line(text.into(), self.font_size, &[run], None);
             let backdrop = fill(
@@ -422,13 +450,18 @@ impl TerminalView {
         let term = self.session.term.lock();
         let content = term.renderable_content();
         let colors = content.colors;
-        let default_bg = palette::resolve(Color::Named(NamedColor::Background), colors);
-        let cursor_color = palette::resolve(Color::Named(NamedColor::Cursor), colors);
+        let scheme = &self.scheme;
+        let default_bg = scheme.resolve(Color::Named(NamedColor::Background), colors);
+        let cursor_color = scheme.resolve(Color::Named(NamedColor::Cursor), colors);
         let cursor = content.cursor;
         let shape = match cursor.shape {
             CursorShape::Hidden => CursorShape::Hidden,
             _ if !focused => CursorShape::HollowBlock,
             shape => shape,
+        };
+        let cursor_outline = match shape {
+            CursorShape::HollowBlock => colors[NamedColor::Cursor].unwrap_or(scheme.cursor_border),
+            _ => cursor_color,
         };
         let offset = content.display_offset;
         let selection = content.selection;
@@ -449,20 +482,22 @@ impl TerminalView {
             let cell = indexed.cell;
             let line = (indexed.point.line.0 + offset as i32) as usize;
             let column = indexed.point.column.0;
-            let mut fg = palette::resolve(cell.fg, colors);
-            let mut bg = palette::resolve(cell.bg, colors);
+            let mut fg = scheme.resolve(cell.fg, colors);
+            let mut bg = scheme.resolve(cell.bg, colors);
             if cell.flags.contains(Flags::DIM) {
-                fg = palette::dim(fg);
+                fg = scheme::dim(fg);
             }
-            let selected = selection.is_some_and(|range| range.contains(indexed.point));
-            if cell.flags.contains(Flags::INVERSE) != selected {
+            if cell.flags.contains(Flags::INVERSE) {
                 mem::swap(&mut fg, &mut bg);
+            }
+            if selection.is_some_and(|range| range.contains(indexed.point)) {
+                (fg, bg) = scheme.selection.unwrap_or((bg, fg));
             }
             if cell.flags.contains(Flags::HIDDEN) {
                 fg = bg;
             }
             if under_block_cursor(indexed.point, cell.flags) {
-                (fg, bg) = (bg, cursor_color);
+                (fg, bg) = (scheme.cursor_fg, cursor_color);
             }
 
             match backgrounds.last_mut() {
@@ -523,7 +558,7 @@ impl TerminalView {
             } else {
                 CursorShape::Hidden
             },
-            cursor_color,
+            cursor_outline,
         }
     }
 

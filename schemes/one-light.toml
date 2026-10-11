@@ -1,0 +1,40 @@
+# The "onelight" theme of onedarkpro.nvim, from its WezTerm extra
+# (extras/wezterm/onedarkpro_onelight.toml), without the tab bar colors rtty does not draw.
+[colors]
+ansi = [
+  "#6a6a6a",
+  "#e05661",
+  "#1da912",
+  "#eea825",
+  "#118dc3",
+  "#9a77cf",
+  "#56b6c2",
+  "#fafafa",
+]
+background = "#fafafa"
+brights = [
+  "#bebebe",
+  "#e88189",
+  "#25d717",
+  "#f2bb54",
+  "#1caceb",
+  "#b69ddc",
+  "#7bc6d0",
+  "#ffffff",
+]
+cursor_bg = "#9a77cf"
+cursor_fg = "#fafafa"
+foreground = "#6a6a6a"
+selection_bg = "#9a77cf"
+selection_fg = "#6a6a6a"
+
+[colors.indexed]
+59 = "#bebebe"
+100 = "#e2be7d"
+214 = "#ee9025"
+
+[metadata]
+name = "One Light"
+author = "Oli Morris"
+origin_url = "https://github.com/olimorris/onedarkpro.nvim"
+license = "MIT"

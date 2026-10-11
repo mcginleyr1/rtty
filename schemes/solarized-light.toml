@@ -1,0 +1,35 @@
+# Solarized by Ethan Schoonover, light background, with the canonical 16-color terminal mapping
+# from the Solarized README (the same ANSI slots as Solarized Dark; only the base tones swap).
+[colors]
+ansi = [
+  "#073642",
+  "#dc322f",
+  "#859900",
+  "#b58900",
+  "#268bd2",
+  "#d33682",
+  "#2aa198",
+  "#eee8d5",
+]
+background = "#fdf6e3"
+brights = [
+  "#002b36",
+  "#cb4b16",
+  "#586e75",
+  "#657b83",
+  "#839496",
+  "#6c71c4",
+  "#93a1a1",
+  "#fdf6e3",
+]
+cursor_bg = "#586e75"
+cursor_fg = "#fdf6e3"
+foreground = "#657b83"
+selection_bg = "#eee8d5"
+selection_fg = "#586e75"
+
+[metadata]
+name = "Solarized Light"
+author = "Ethan Schoonover"
+origin_url = "https://ethanschoonover.com/solarized/"
+license = "MIT"

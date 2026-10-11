@@ -4421,6 +4421,9 @@ dependencies = [
  "alacritty_terminal",
  "futures",
  "gpui",
+ "polling",
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]

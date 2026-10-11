@@ -22,6 +22,7 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 
 | Flag | Meaning |
 | --- | --- |
+| `--config FILE` | read this config file instead of `~/.config/rtty/config.toml` (it must exist) |
 | `--font NAME` | font family (default Menlo); an unknown family is an error |
 | `--size PT` | font size in points (default 14) |
 | `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`; default on |
@@ -30,7 +31,59 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 
-`TERM` is `xterm-256color`, `COLORTERM` is `truecolor`.
+`--font`, `--size` and `--ligatures` override the config file. `TERM` is `xterm-256color`,
+`COLORTERM` is `truecolor`.
+
+## Configuration
+
+`~/.config/rtty/config.toml` (`$XDG_CONFIG_HOME/rtty/config.toml` when that is set). Every key is
+optional; an unknown key, an unknown scheme name or a malformed file is an error that names it,
+and rtty does not start.
+
+```toml
+font = "FiraCode Nerd Font"
+size = 12
+ligatures = true
+scheme_dark = "OneDark Pro"       # the default
+scheme_light = "Solarized Light"  # the default
+# scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
+```
+
+## Color schemes
+
+Schemes are WezTerm's TOML format, so WezTerm scheme files work unchanged: `[colors]` with
+`foreground`, `background`, `ansi` (8), `brights` (8), optionally `cursor_bg`, `cursor_fg`,
+`cursor_border`, `selection_bg`, `selection_fg` and `[colors.indexed]` (index → color), and
+`[metadata] name`. Keys rtty does not draw (`tab_bar`, `scrollbar_thumb`, …) are ignored. Colors
+are `#rgb`, `#rrggbb` or `#rrggbbaa` (alpha ignored).
+
+rtty looks for a scheme name in this order, first match wins:
+
+1. Built in: **OneDark Pro** and **One Light** (onedarkpro.nvim's own WezTerm files, MIT, Oli
+   Morris), **Solarized Dark** and **Solarized Light** (the canonical palette and 16-color mapping,
+   MIT, Ethan Schoonover). Each file in `schemes/` carries its source and license.
+2. `~/.config/rtty/colors/*.toml`.
+3. WezTerm's `~/.config/wezterm/colors/*.toml`, so an existing WezTerm setup needs no copying.
+
+A scheme is found by its `metadata.name`, else by its file stem (`onedarkpro` finds
+`onedarkpro.toml` whatever it calls itself). Every file in those directories is read at startup,
+so a malformed one stops rtty with its path and the offending key.
+
+**Following the OS.** rtty uses `scheme_dark` while the window's appearance is dark and
+`scheme_light` while it is light, and switches the moment macOS flips, with no restart. Cells keep
+their color indices, so everything already on screen recolors on the next frame. Colors a program
+set itself (OSC 4/10/11/12) are the program's, not the scheme's, and survive a flip; a program
+that cares re-sets them when it hears about the flip (below). OSC 10/11/12/4 queries answer with
+the current scheme.
+
+**Telling programs (DEC mode 2031).** rtty implements contour's color palette update
+notifications. `CSI ? 996 n` asks for the scheme and gets `CSI ? 997 ; 1 n` (dark) or
+`CSI ? 997 ; 2 n` (light). A program that set `CSI ? 2031 h` gets that report, unsolicited, each
+time the scheme changes, so Neovim and friends can switch `background` live. `CSI ? 2031 l` or RIS
+turns it off, and DECRQM (`CSI ? 2031 $ p`) reports the mode's state. Dark or light is the
+scheme's background, not the OS setting, so a pinned light scheme answers light on a dark Mac.
+alacritty_terminal does not know these sequences; rtty watches the pty's output for them with a
+second vte parser on the reader thread (`color_reports.rs`).
 
 ## Keys
 
@@ -56,7 +109,10 @@ A held key repeats instead of opening macOS's accent picker.
 
 - `session.rs` — spawns the child on a pty (`alacritty_terminal::tty`) and runs alacritty's
   `EventLoop`: a reader thread parses pty output into the `Term` under a `FairMutex` and sends
-  `Wakeup` events. A channel carries the terminal's events to the UI.
+  `Wakeup` events. A channel carries the terminal's events to the UI. The pty is wrapped so the
+  same reads also feed the color-report watcher.
+- `color_reports.rs` — DEC mode 2031 and the `CSI ? 996 n` query.
+- `scheme.rs` and `config.rs` — color schemes and the config file.
 - `view.rs` — the GPUI view. A foreground task drains the event channel in batches: `Wakeup`
   marks the view dirty, so however many arrive between two display refreshes, GPUI draws one frame
   (that is the coalescing). Each frame locks the term only to read the visible cells into spans,
@@ -65,8 +121,6 @@ A held key repeats instead of opening macOS's accent picker.
   window recomputes rows/cols from the cell metrics and resizes the term and the pty. The view is
   also GPUI's text input handler, for committed text and IME marked text.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes) and paste wrapping, unit tested.
-- `palette.rs` — the default 16/256 palette and named colors; programs can override any slot
-  (OSC 4/10/11/12).
 
 ## Measurements (Apple silicon Mac, release build)
 
@@ -120,7 +174,8 @@ font's `calt`, `liga` and `dlig` features.
 
 v0 works: one window running a shell or `-e` program with colors, attributes, wide chars,
 ligatures, cursor shapes, selection and copy/paste, scrollback, resize, window title from
-OSC 0/2.
+OSC 0/2, a config file, and WezTerm-format color schemes that follow the macOS appearance live
+(with DEC mode 2031 reports).
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; mouse clicks are not

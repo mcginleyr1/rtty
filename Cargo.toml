@@ -11,3 +11,7 @@ futures = "0.3"
 # runtime_shaders: compile the Metal shaders at startup, so building needs no
 # offline Metal toolchain (Xcode 26 ships it as a separate download).
 gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+# The poller types in alacritty_terminal's pty traits, which rtty's tapped pty implements.
+polling = "3.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
