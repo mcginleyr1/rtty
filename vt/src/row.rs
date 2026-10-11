@@ -13,6 +13,9 @@ pub struct Hyperlink {
     pub uri: String,
 }
 
+/// The most characters a grapheme cluster holds.
+pub(crate) const CLUSTER_MAX: usize = 32;
+
 /// What a cell carries beyond its sixteen bytes, held by its row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Extra {
@@ -186,13 +189,13 @@ impl Row {
     }
 
     /// Append `c` to the cluster of the cell at `col`, keeping its underline
-    /// colour and link. A cluster stops growing at 32 characters.
+    /// colour and link. A cluster stops growing at `CLUSTER_MAX` characters.
     pub(crate) fn extend_cluster(&mut self, col: usize, c: char) {
         let cell = self.cells[col];
         let mut extra = self.extra(&cell).cloned().unwrap_or_default();
         let mut base = [0; 4];
         let old = extra.cluster.as_deref().unwrap_or_else(|| cell.ch.encode_utf8(&mut base));
-        if old.chars().nth(31).is_some() {
+        if old.chars().nth(CLUSTER_MAX - 1).is_some() {
             return;
         }
         let mut cluster = String::with_capacity(old.len() + c.len_utf8());

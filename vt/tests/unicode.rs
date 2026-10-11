@@ -100,6 +100,11 @@ fn overwriting_half_a_wide_character_blanks_the_other_half() {
 fn a_cluster_stops_growing_at_32_characters() {
     let term = fed(10, &format!("a{}", "\u{301}".repeat(100)));
     assert_eq!(term.screen_row(0).cluster(0).unwrap().chars().count(), 32);
+    // An emoji modifier a full cluster cannot take is a cell of its own.
+    let term = fed(10, &format!("a{}\u{1F3FD}", "\u{301}".repeat(31)));
+    let row = term.screen_row(0);
+    assert_eq!((row.cells()[0].width(), row.cells()[1].width()), (1, 2));
+    assert_eq!(term.cursor_position(), (0, 3));
 }
 
 #[test]

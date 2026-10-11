@@ -8,7 +8,7 @@ use crate::dispatch::Performer;
 use crate::event::{Event, Mark, MarkKind, ModeChange};
 use crate::grid::Grid;
 use crate::modes::{CursorStyle, Modes};
-use crate::row::{Extra, Hyperlink, Row};
+use crate::row::{CLUSTER_MAX, Extra, Hyperlink, Row};
 
 /// An RGB colour from or for the palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -607,7 +607,8 @@ impl Terminal {
         let line = self.grid.line(row);
         let mut cluster = String::new();
         line.push_grapheme(col, &mut cluster);
-        if !joins(&cluster, c) {
+        // A full cluster takes nothing more: written on its own instead.
+        if !joins(&cluster, c) || cluster.chars().nth(CLUSTER_MAX - 1).is_some() {
             return false;
         }
         let narrow = line.cells[col].width() == 1;
