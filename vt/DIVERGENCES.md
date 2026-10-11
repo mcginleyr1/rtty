@@ -21,13 +21,13 @@ cover those features instead.
 | CUU, CUD, CNL, CPL inside a scroll region | stop at the margin (VT510) | clamp to the screen only | predicate |
 | IL, DL | the cursor goes to column 1 (VT510) | the column stays | grammar (`CR` follows) |
 | DECOM reset (`CSI ? 6 l`) | homes the cursor (VT510) | leaves it | grammar (`CUP` follows) |
-| DECAWM changed with a wrap pending | — | — (the two keep the flag apart while autowrap is off) | grammar (`CUP` follows) |
 | DECALN | also resets the margins and homes the cursor (VT510) | neither | grammar (`DECSTBM`, `CUP` follow) |
 | DECSC / DECRC, and 1049's save and restore | origin mode (DECOM) and the invoked character set (GL) are saved and restored (VT510) | neither is | predicate |
 | Modes 47, 1047, 1048 | the alternate screen without the cursor save, with a clear on the way out, and the save alone | ignored | left out of the oracle grammar |
 | SGR 21 | double underline (ECMA-48, xterm) | bold off | left out |
 | Erasing, inserting or deleting across half a wide character (ECH, EL, ED, ICH, DCH, insert mode) | the other half is blanked too (xterm) | a wide character is left without its spacer, or a spacer without its character | predicate |
 | A grapheme cluster | stops growing at 32 characters | unbounded | predicate |
+| A combining mark with the cursor on a pad (a wide character that did not fit the last column) | dropped: a pad holds no text | attaches it to its leading spacer | predicate |
 | ZWJ sequences, emoji modifiers, regional-indicator flags | one cluster in one cell pair (`unicode-segmentation`) | each emoji its own cell | left out (ZWJ, modifiers and indicators are not in the oracle's character pool) |
 | REP after a DEL, or after RIS | repeats the last character written (none after a reset) | repeats the DEL it ignored, or the character from before the reset | predicate |
 | REP after a character-set change | repeats the character as it was printed | maps it through the current set | predicate |
@@ -47,13 +47,25 @@ cover those features instead.
 | CHA / HPA in origin mode with the region not at the top | the cursor keeps its row | `goto` adds the region's top to the row again |
 | DECSTBM with the top at or below the last row and the bottom past it | ignored | a one-row region |
 
+## Recorded programs
+
+`fixtures_match_alacritty` compares at every byte offset a fixture's metadata
+names and at its end; `fixtures_round_trip` (`tests/snapshot.rs`) checks
+`snapshot()` and a `redraw` follower at the same offsets. A fixture that uses
+one of the deliberate differences above is compared up to its first use and
+the test prints which one stopped it; the rest must match to the end. Two
+allowances: offsets inside an open synchronized update are skipped, and blank
+rows leading the scrollback are ignored on both sides (alacritty's ED 2 bug
+pushes one).
+
 ## Not compared
 
 - Resize and reflow: the two reflow differently (alacritty keeps the cursor's
   distance from the bottom; rtty-vt keeps the screen's first line at the top
   while the cursor stays in view). `tests/scrollback.rs` property-tests that
   lines, the cursor and the numbering survive any resizes.
-- Synchronized updates (2026): alacritty buffers the input while one is open.
+- Synchronized updates (2026): alacritty buffers the input while one is open;
+  rtty-vt applies it and reports the mode, leaving the frame to the renderer.
 - Replies and events: alacritty sends them through its event listener; the
   query and event tests check rtty-vt's against the specs.
 - The scrollback while the alternate screen is up: alacritty's grid is then

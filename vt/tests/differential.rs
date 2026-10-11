@@ -6,8 +6,6 @@
 
 mod common;
 
-use std::path::Path;
-
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
@@ -370,42 +368,75 @@ fn many_random_streams_match_alacritty() {
 }
 
 /// Every recorded program in `fixtures/`: `<name>.out` raw output and
-/// `<name>.json` with its `rows` and `cols`.
+/// `<name>.json` with its `rows` and `cols`, compared at each byte `offset`
+/// the metadata names (its checkpoints and queries) and at the end.
 #[test]
 fn fixtures_match_alacritty() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
     let mut failures = Vec::new();
-    let mut names: Vec<_> = entries
-        .filter_map(|entry| entry.ok()?.path().file_stem()?.to_str().map(String::from))
-        .filter(|name| dir.join(format!("{name}.out")).exists())
-        .collect();
-    names.sort();
-    names.dedup();
-    for name in names {
-        let output = std::fs::read(dir.join(format!("{name}.out"))).expect("readable fixture");
-        let meta =
-            std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("fixture metadata");
-        let rows = json_number(&meta, "rows").expect("rows") as u16;
-        let cols = json_number(&meta, "cols").expect("cols") as u16;
+    for common::Fixture { name, output, rows, cols, stops } in common::fixtures() {
         let mut term = Terminal::new(rows, cols, 10_000);
-        for chunk in output.chunks(4096) {
-            term.advance(chunk);
-        }
-        let theirs = theirs(&alacritty(rows, cols, 10_000, &output, 4096));
-        if let Some(difference) = difference(&ours(&term), &theirs) {
-            failures.push(format!("{name}: {difference}"));
+        let mut oracle = Alacritty {
+            term: alacritty(rows, cols, 10_000, b"", 1),
+            parser: ansi::Processor::new(),
+        };
+        let expected = expected_divergence(&output);
+        let (mut fed, mut theirs_fed) = (0, 0);
+        for stop in stops {
+            for chunk in output[fed..stop].chunks(4096) {
+                term.advance(chunk);
+            }
+            fed = stop;
+            // alacritty is fed whole characters, as this engine holds a
+            // split one back: vte can drop the character after it.
+            let mut whole = stop;
+            while whole > theirs_fed && output.get(whole).is_some_and(|&b| b & 0xc0 == 0x80) {
+                whole -= 1;
+            }
+            oracle.feed(&output[theirs_fed..whole]);
+            theirs_fed = whole;
+            if term.modes().sync_update {
+                // alacritty holds the bytes of an open synchronized update.
+                continue;
+            }
+            let (mut ours, mut theirs) = (ours(&term), theirs(&oracle.term));
+            // alacritty's blank row from clearing an empty screen.
+            let blank = |history: &mut Vec<(String, bool)>| {
+                let leading = history.iter().take_while(|row| row.0.is_empty() && !row.1).count();
+                history.drain(..leading);
+            };
+            blank(&mut ours.history);
+            blank(&mut theirs.history);
+            if let Some(difference) = difference(&ours, &theirs) {
+                match expected {
+                    Some((from, why)) if stop >= from => {
+                        println!("{name}: from byte {stop}, as DIVERGENCES.md lists: {why}")
+                    }
+                    _ => failures.push(format!("{name} at byte {stop}: {difference}")),
+                }
+                break;
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// The number after `"key":` in a flat JSON object.
-fn json_number(json: &str, key: &str) -> Option<u64> {
-    let rest = &json[json.find(&format!("\"{key}\""))? + key.len() + 2..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
+/// Where a stream first uses something DIVERGENCES.md lists alacritty as
+/// handling differently, and what.
+fn expected_divergence(output: &[u8]) -> Option<(usize, &'static str)> {
+    let find = |needle: &[u8]| output.windows(needle.len()).position(|window| window == needle);
+    let triggers: [(&[u8], &str); 9] = [
+        (b"\x1b[?47h", "mode 47"),
+        (b"\x1b[?1047h", "mode 1047"),
+        (b"\x1b(A", "the UK character set"),
+        (b"\x1b)A", "the UK character set"),
+        (b"[21m", "SGR 21"),
+        (b";21m", "SGR 21"),
+        ("\u{200D}".as_bytes(), "ZWJ emoji sequences in one cell"),
+        ("\u{1F3FD}".as_bytes(), "emoji modifiers in one cell"),
+        ("\u{1F1FA}".as_bytes(), "flags in one cell"),
+    ];
+    triggers
+        .into_iter()
+        .filter_map(|(needle, why)| Some((find(needle)?, why)))
+        .min_by_key(|&(at, _)| at)
 }

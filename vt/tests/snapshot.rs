@@ -220,6 +220,52 @@ fn check_redraw(
     Ok(())
 }
 
+/// Every recorded program in `fixtures/`, at each checkpoint: a snapshot
+/// reproduces the visible state, and a follower fed `redraw` of the damage
+/// since the last checkpoint — a snapshot after a switch of screens — stays
+/// level.
+#[test]
+fn fixtures_round_trip() {
+    let mut failures = Vec::new();
+    for common::Fixture { name, output, rows, cols, stops } in common::fixtures() {
+        let mut term = Terminal::new(rows, cols, 1_000);
+        let mut follower = Terminal::new(rows, cols, 0);
+        let (mut screen, mut fed) = (false, 0);
+        for stop in stops {
+            term.advance(&output[fed..stop]);
+            fed = stop;
+            let damage = term.take_damage();
+            if term.modes().alt_screen == screen {
+                follower.advance(&term.redraw(&damage));
+            } else {
+                screen = term.modes().alt_screen;
+                follower = Terminal::new(rows, cols, 0);
+                follower.advance(&term.snapshot());
+            }
+            if unreachable_cursor(&term) {
+                continue;
+            }
+            let mut copy = Terminal::new(rows, cols, 0);
+            copy.advance(&term.snapshot());
+            let plain = |term: &Terminal| Visible {
+                title: String::new(),
+                icon: String::new(),
+                colors: Vec::new(),
+                ..visible(term)
+            };
+            let snapshot = difference(&visible(&term), &visible(&copy));
+            let redraw = difference(&plain(&term), &plain(&follower));
+            if let Some(detail) =
+                snapshot.map(|d| ("snapshot", d)).or(redraw.map(|d| ("redraw", d)))
+            {
+                failures.push(format!("{name} at byte {stop}, {}: {}", detail.0, detail.1));
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 500, failure_persistence: None, ..ProptestConfig::default() })]
 

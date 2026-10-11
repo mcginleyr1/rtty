@@ -187,10 +187,8 @@ impl Token {
             Token::Esc("#8") => "\x1b#8\x1b[r\x1b[H".into(),
             Token::Esc(e) => format!("\x1b{e}"),
             // Resetting origin mode homes the cursor (VT510); alacritty
-            // leaves it. Changing autowrap with a wrap pending differs too.
-            Token::Mode(true, m @ (6 | 7), on) => {
-                format!("\x1b[?{m}{}\x1b[H", if *on { 'h' } else { 'l' })
-            }
+            // leaves it.
+            Token::Mode(true, 6, on) => format!("\x1b[?6{}\x1b[H", if *on { 'h' } else { 'l' }),
             Token::Mode(dec, m, on) => {
                 format!("\x1b[{}{m}{}", if *dec { "?" } else { "" }, if *on { 'h' } else { 'l' })
             }
@@ -365,6 +363,60 @@ impl Model {
             _ => {}
         }
     }
+}
+
+/// A recorded program from `fixtures/`: `<name>.out` and `<name>.json`.
+pub struct Fixture {
+    pub name: String,
+    pub output: Vec<u8>,
+    pub rows: u16,
+    pub cols: u16,
+    /// The byte offsets the metadata names (checkpoints and queries), then
+    /// the end.
+    pub stops: Vec<usize>,
+}
+
+/// The fixtures in `fixtures/`, none while it is absent.
+pub fn fixtures() -> Vec<Fixture> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.path().file_stem()?.to_str().map(String::from))
+        .filter(|name| dir.join(format!("{name}.out")).exists())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| {
+            let output = std::fs::read(dir.join(format!("{name}.out"))).expect("a fixture");
+            let meta = std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("metadata");
+            let mut stops: Vec<usize> = json_numbers(&meta, "offset")
+                .into_iter()
+                .map(|offset| offset as usize)
+                .filter(|&offset| offset <= output.len())
+                .chain([output.len()])
+                .collect();
+            stops.sort();
+            stops.dedup();
+            let rows = json_numbers(&meta, "rows")[0] as u16;
+            let cols = json_numbers(&meta, "cols")[0] as u16;
+            Fixture { name, output, rows, cols, stops }
+        })
+        .collect()
+}
+
+/// Every number after `"key":` in a JSON document.
+fn json_numbers(json: &str, key: &str) -> Vec<u64> {
+    json.match_indices(&format!("\"{key}\""))
+        .filter_map(|(at, quoted)| {
+            let rest = json[at + quoted.len()..].trim_start().strip_prefix(':')?.trim_start();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .collect()
 }
 
 /// Another engine fed the stream as it is built, with a say in which tokens

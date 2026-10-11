@@ -25,8 +25,9 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
 
 Tests: per-feature tests from the specs; differential tests against
 alacritty_terminal over a randomized grammar and the recorded programs in
-`fixtures/` (`DIVERGENCES.md` lists the known differences); property tests
-that `snapshot()` and `redraw()` reproduce the visible state, that resizes keep
+`fixtures/` (`DIVERGENCES.md` lists the known differences); checks that
+`snapshot()` and `redraw()` reproduce the visible state, over random streams
+and at every fixture checkpoint; property tests that resizes keep
 lines and numbering, and that no input panics. The long campaigns run with
 `cargo test --release -- --ignored`; throughput against alacritty_terminal and
 vt100 with `cargo bench`.
