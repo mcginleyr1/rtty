@@ -28,6 +28,11 @@ alacritty_terminal over a randomized grammar and the recorded programs in
 `fixtures/` (`DIVERGENCES.md` lists the known differences); checks that
 `snapshot()` and `redraw()` reproduce the visible state, over random streams
 and at every fixture checkpoint; property tests that resizes keep
-lines and numbering, and that no input panics. The long campaigns run with
+lines and numbering, and that no input panics; and an answer to every query
+the recorded programs sent. The long campaigns run with
 `cargo test --release -- --ignored`; throughput against alacritty_terminal and
 vt100 with `cargo bench`.
+
+The fixture tests read `fixtures/`, or the directories `RTTY_VT_FIXTURES`
+lists (a path list, as `PATH` is):
+`cargo test --config 'env.RTTY_VT_FIXTURES="/one/fixtures:/other/fixtures"'`.

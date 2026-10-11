@@ -373,7 +373,7 @@ fn many_random_streams_match_alacritty() {
 #[test]
 fn fixtures_match_alacritty() {
     let mut failures = Vec::new();
-    for common::Fixture { name, output, rows, cols, stops } in common::fixtures() {
+    for common::Fixture { name, output, rows, cols, stops, .. } in common::fixtures() {
         let mut term = Terminal::new(rows, cols, 10_000);
         let mut oracle = Alacritty {
             term: alacritty(rows, cols, 10_000, b"", 1),

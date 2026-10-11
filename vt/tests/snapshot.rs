@@ -227,7 +227,7 @@ fn check_redraw(
 #[test]
 fn fixtures_round_trip() {
     let mut failures = Vec::new();
-    for common::Fixture { name, output, rows, cols, stops } in common::fixtures() {
+    for common::Fixture { name, output, rows, cols, stops, .. } in common::fixtures() {
         let mut term = Terminal::new(rows, cols, 1_000);
         let mut follower = Terminal::new(rows, cols, 0);
         let (mut screen, mut fed) = (false, 0);

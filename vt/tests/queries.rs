@@ -1,7 +1,12 @@
 //! Replies to the queries a program sends, from xterm's ctlseqs, the VT510
-//! manual, kitty's keyboard protocol and contour's colour-scheme reports.
+//! manual, kitty's keyboard protocol and contour's colour-scheme reports,
+//! and the probes recorded programs make.
 
-use rtty_vt::{ColorScheme, Event, FOREGROUND, Rgb, Terminal};
+mod common;
+
+use rtty_vt::{
+    BACKGROUND, CURSOR, ColorScheme, Event, FOREGROUND, ModeChange, Rgb, Terminal, XTERM_VERSION,
+};
 
 fn replies(term: &mut Terminal, bytes: &str) -> Vec<String> {
     term.advance(bytes.as_bytes());
@@ -23,8 +28,10 @@ fn device_attributes() {
     assert_eq!(ask("\x1b[c"), ["\x1b[?62;22c"]);
     assert_eq!(ask("\x1b[0c"), ["\x1b[?62;22c"]);
     assert_eq!(ask("\x1bZ"), ["\x1b[?62;22c"]);
-    let secondary = ask("\x1b[>c");
-    assert!(secondary[0].starts_with("\x1b[>1;") && secondary[0].ends_with(";0c"), "{secondary:?}");
+    // An xterm patch level emacs (242) and vim (277) turn their xterm
+    // features on for.
+    assert_eq!(ask("\x1b[>c"), ["\x1b[>1;277;0c"]);
+    assert_eq!(ask("\x1b[>0c"), [format!("\x1b[>1;{XTERM_VERSION};0c")]);
     assert_eq!(ask("\x1b[>q"), [format!("\x1bP>|rtty-vt {}\x1b\\", env!("CARGO_PKG_VERSION"))]);
 }
 
@@ -50,6 +57,75 @@ fn mode_reports() {
     assert_eq!(ask("\x1b[4h\x1b[4$p"), ["\x1b[4;1$y"]);
     assert_eq!(ask("\x1b[20$p"), ["\x1b[20;2$y"]);
     assert_eq!(ask("\x1b[12$p"), ["\x1b[12;0$y"]);
+    // nvim's startup probes: synchronized output is supported, left and
+    // right margins, mode 2027 and in-band resize reports are not.
+    assert_eq!(
+        ask("\x1b[?69$p\x1b[?2026$p\x1b[?2027$p\x1b[?2031$p\x1b[?2048$p"),
+        ["\x1b[?69;0$y", "\x1b[?2026;2$y", "\x1b[?2027;0$y", "\x1b[?2031;2$y", "\x1b[?2048;0$y"]
+    );
+    assert_eq!(ask("\x1b[?2026h\x1b[?2026$p"), ["\x1b[?2026;1$y"]);
+    assert_eq!(ask("\x1b[?1048$p"), ["\x1b[?1048;2$y"]);
+}
+
+#[test]
+fn modify_other_keys_is_tracked_announced_and_reported() {
+    let mut term = Terminal::new(24, 80, 0);
+    assert_eq!(replies(&mut term, "\x1b[?4m"), ["\x1b[>4;0m"]);
+    term.advance(b"\x1b[>4;2m");
+    assert_eq!(term.modes().modify_other_keys, 2);
+    assert_eq!(term.take_events(), [Event::Mode(ModeChange::ModifyOtherKeys(2))]);
+    assert_eq!(replies(&mut term, "\x1b[?4m"), ["\x1b[>4;2m"]);
+    term.advance(b"\x1b[>4;0m\x1b[>4;1m\x1b[>4n");
+    assert_eq!(
+        term.take_events(),
+        [0, 1, 0].map(|level| Event::Mode(ModeChange::ModifyOtherKeys(level)))
+    );
+    term.advance(b"\x1b[>4;2m\x1bc");
+    assert_eq!(term.modes().modify_other_keys, 0, "a reset turns it off");
+}
+
+/// vim's probe: a terminal must swallow a DCS and a CSI it does not know.
+#[test]
+fn unknown_sequences_neither_print_nor_move_the_cursor() {
+    let mut term = Terminal::new(24, 80, 0);
+    assert_eq!(replies(&mut term, "\x1bPzz\x1b\\\x1b[0%m\x1b[6n"), ["\x1b[1;1R"]);
+    assert_eq!(term.contents(), "");
+}
+
+/// Queries are answered as they arrive, a synchronized update open or not.
+#[test]
+fn queries_inside_a_synchronized_update_are_answered() {
+    assert_eq!(
+        ask("\x1b[?2026h\x1b[5n\x1b[c\x1bP+q4d73\x1b\\\x1b[?2026l"),
+        ["\x1b[0n", "\x1b[?62;22c", "\x1bP1+r4d73=1B5D35323B25703125733B257032257307\x1b\\"]
+    );
+}
+
+/// Every query a recorded program sent (`fixtures/*.json`) is answered by
+/// an engine whose host set its colours, colour scheme and cell size.
+#[test]
+fn every_query_the_recorded_programs_sent_is_answered() {
+    let mut unanswered = Vec::new();
+    for fixture in common::fixtures() {
+        let mut term = Terminal::new(fixture.rows, fixture.cols, 0);
+        for slot in [FOREGROUND, CURSOR] {
+            term.set_host_color(slot, Some(Rgb(0xdd, 0xdd, 0xdd)));
+        }
+        term.set_host_color(BACKGROUND, Some(Rgb(0x1c, 0x1c, 0x1c)));
+        term.set_color_scheme(Some(ColorScheme::Dark));
+        term.set_cell_pixels(8, 16);
+        let mut fed = 0;
+        for (offset, query) in &fixture.queries {
+            term.advance(&fixture.output[fed..*offset]);
+            fed = *offset;
+            let answers = replies(&mut term, "");
+            println!("{}\t{query}\t{answers:?}", fixture.name);
+            if answers.is_empty() {
+                unanswered.push(format!("{} at byte {offset}: {query}", fixture.name));
+            }
+        }
+    }
+    assert!(unanswered.is_empty(), "{unanswered:#?}");
 }
 
 #[test]
@@ -93,6 +169,9 @@ fn setting_requests() {
     assert_eq!(ask("\x1b[2;10r\x1bP$qr\x1b\\"), ["\x1bP1$r2;10r\x1b\\"]);
     assert_eq!(ask("\x1b[6 q\x1bP$q q\x1b\\"), ["\x1bP1$r6 q\x1b\\"]);
     assert_eq!(ask("\x1bP$qx\x1b\\"), ["\x1bP0$r\x1b\\"]);
+    // nvim draws curly, dotted, dashed and double underlines only when this
+    // probe's answer holds `4:3`.
+    assert_eq!(ask("\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\"), ["\x1bP1$r0;4:3m\x1b\\"]);
 }
 
 #[test]

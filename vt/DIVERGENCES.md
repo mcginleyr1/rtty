@@ -50,7 +50,8 @@ cover those features instead.
 ## Recorded programs
 
 `fixtures_match_alacritty` compares at every byte offset a fixture's metadata
-names and at its end; `fixtures_round_trip` (`tests/snapshot.rs`) checks
+names (its checkpoints and queries) and at its end, for the fixtures in
+`fixtures/` or the directories `RTTY_VT_FIXTURES` lists; `fixtures_round_trip` (`tests/snapshot.rs`) checks
 `snapshot()` and a `redraw` follower at the same offsets. A fixture that uses
 one of the deliberate differences above is compared up to its first use and
 the test prints which one stopped it; the rest must match to the end. Two

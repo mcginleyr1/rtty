@@ -142,11 +142,10 @@ impl Perform for Performer<'_> {
 /// DA1: a VT220 with ANSI colour.
 const PRIMARY_ATTRIBUTES: &str = "\x1b[?62;22c";
 
-fn version() -> u32 {
-    let mut parts = env!("CARGO_PKG_VERSION").split('.').map(|part| part.parse().unwrap_or(0));
-    let mut next = || parts.next().unwrap_or(0);
-    next() * 10_000 + next() * 100 + next()
-}
+/// The xterm patch level DA2 reports, `CSI > 1 ; 277 ; 0 c`. Programs gate
+/// xterm features on it: emacs queries colours and turns on modifyOtherKeys
+/// from 242, vim asks for SGR mouse reports from 277.
+pub const XTERM_VERSION: u16 = 277;
 
 fn csi(term: &mut Terminal, params: &Params, intermediates: &[u8], action: char) {
     let mut args = [0u16; 16];
@@ -194,7 +193,7 @@ fn csi(term: &mut Terminal, params: &Params, intermediates: &[u8], action: char)
             }
         }
         (b"", 'c') if arg(0, 0) == 0 => term.reply(PRIMARY_ATTRIBUTES),
-        (b">", 'c') if arg(0, 0) == 0 => term.reply(format!("\x1b[>1;{};0c", version())),
+        (b">", 'c') if arg(0, 0) == 0 => term.reply(format!("\x1b[>1;{XTERM_VERSION};0c")),
         (b"", 'd') => term.goto(arg(0, 1) - 1, term.cursor.col),
         (b"", 'g') => match arg(0, 0) {
             0 => term.clear_tab_stops(false),
@@ -212,7 +211,13 @@ fn csi(term: &mut Terminal, params: &Params, intermediates: &[u8], action: char)
             }
         }
         (b"", 'm') => select_graphic_rendition(term, params),
-        (b">", 'm') if arg(0, 0) == 4 => term.modes.modify_other_keys = arg(1, 0) as u8,
+        // XTMODKEYS sets modifyOtherKeys, `CSI > 4 n` turns it off,
+        // XTQMODKEYS asks for it.
+        (b">", 'm') if arg(0, 0) == 4 => term.set_modify_other_keys(arg(1, 0) as u8),
+        (b">", 'n') if arg(0, 0) == 4 => term.set_modify_other_keys(0),
+        (b"?", 'm') if arg(0, 0) == 4 => {
+            term.reply(format!("\x1b[>4;{}m", term.modes.modify_other_keys));
+        }
         (b"", 'n') => match arg(0, 0) {
             5 => term.reply("\x1b[0n"),
             6 => {
@@ -384,6 +389,8 @@ fn dec_mode_state(term: &Terminal, mode: u16) -> u8 {
         25 => report(modes.cursor_visible),
         47 | 1047 | 1049 => report(modes.alt_screen),
         66 => report(modes.keypad),
+        // Saving the cursor is an action, not a state.
+        1048 => report(false),
         1000 => report(modes.mouse == MouseMode::Click),
         1002 => report(modes.mouse == MouseMode::Drag),
         1003 => report(modes.mouse == MouseMode::Motion),

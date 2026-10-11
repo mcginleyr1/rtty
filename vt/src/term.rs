@@ -1079,6 +1079,9 @@ impl Terminal {
         if old.mouse_encoding != new.mouse_encoding {
             self.mode_changed(ModeChange::MouseEncoding(new.mouse_encoding));
         }
+        if old.modify_other_keys != new.modify_other_keys {
+            self.mode_changed(ModeChange::ModifyOtherKeys(new.modify_other_keys));
+        }
         let flags = [
             (old.focus_reports, new.focus_reports, ModeChange::FocusReports as fn(bool) -> _),
             (old.bracketed_paste, new.bracketed_paste, ModeChange::BracketedPaste),
@@ -1092,7 +1095,14 @@ impl Terminal {
         }
     }
 
-    // Kitty keyboard protocol.
+    // Keyboard protocols: xterm's modifyOtherKeys, kitty's flags.
+
+    pub(crate) fn set_modify_other_keys(&mut self, level: u8) {
+        if self.modes.modify_other_keys != level {
+            self.modes.modify_other_keys = level;
+            self.mode_changed(ModeChange::ModifyOtherKeys(level));
+        }
+    }
 
     pub(crate) fn kitty_push(&mut self, flags: u8) {
         let stack = &mut self.kitty[self.screen()];

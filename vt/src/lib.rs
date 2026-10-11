@@ -56,6 +56,7 @@ mod snapshot;
 mod term;
 
 pub use cell::{Attrs, Cell, Color, Underline};
+pub use dispatch::XTERM_VERSION;
 pub use event::{Event, Mark, MarkKind, ModeChange};
 pub use modes::{CursorShape, CursorStyle, Modes, MouseEncoding, MouseMode};
 pub use row::{Hyperlink, Row};

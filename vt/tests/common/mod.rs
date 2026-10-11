@@ -374,49 +374,52 @@ pub struct Fixture {
     /// The byte offsets the metadata names (checkpoints and queries), then
     /// the end.
     pub stops: Vec<usize>,
+    /// The queries the program sent: the offset just past each, its name.
+    pub queries: Vec<(usize, String)>,
 }
 
-/// The fixtures in `fixtures/`, none while it is absent.
+/// The fixtures in the directories `RTTY_VT_FIXTURES` lists (a path list,
+/// as `PATH` is), else in `fixtures/` (none while it is absent), by name.
 pub fn fixtures() -> Vec<Fixture> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
+    let default = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let dirs: Vec<std::path::PathBuf> = match std::env::var_os("RTTY_VT_FIXTURES") {
+        Some(dirs) => std::env::split_paths(&dirs).collect(),
+        None => [default].into_iter().filter(|dir| dir.exists()).collect(),
     };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok()?.path().file_stem()?.to_str().map(String::from))
-        .filter(|name| dir.join(format!("{name}.out")).exists())
+    let mut fixtures: Vec<Fixture> = dirs
+        .iter()
+        .flat_map(|dir| std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{dir:?}: {e}")))
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "out"))
+        .map(|path| fixture(&path))
         .collect();
-    names.sort();
-    names.dedup();
-    names
-        .into_iter()
-        .map(|name| {
-            let output = std::fs::read(dir.join(format!("{name}.out"))).expect("a fixture");
-            let meta = std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("metadata");
-            let mut stops: Vec<usize> = json_numbers(&meta, "offset")
-                .into_iter()
-                .map(|offset| offset as usize)
-                .filter(|&offset| offset <= output.len())
-                .chain([output.len()])
-                .collect();
-            stops.sort();
-            stops.dedup();
-            let rows = json_numbers(&meta, "rows")[0] as u16;
-            let cols = json_numbers(&meta, "cols")[0] as u16;
-            Fixture { name, output, rows, cols, stops }
-        })
-        .collect()
+    fixtures.sort_by(|a, b| a.name.cmp(&b.name));
+    fixtures
 }
 
-/// Every number after `"key":` in a JSON document.
-fn json_numbers(json: &str, key: &str) -> Vec<u64> {
-    json.match_indices(&format!("\"{key}\""))
-        .filter_map(|(at, quoted)| {
-            let rest = json[at + quoted.len()..].trim_start().strip_prefix(':')?.trim_start();
-            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse().ok()
-        })
-        .collect()
+fn fixture(path: &std::path::Path) -> Fixture {
+    let output = std::fs::read(path).expect("a fixture");
+    let meta = std::fs::read(path.with_extension("json")).expect("its metadata");
+    let meta: serde_json::Value = serde_json::from_slice(&meta).expect("JSON metadata");
+    let records = |key: &str| meta[key].as_array().cloned().unwrap_or_default();
+    let offset =
+        |record: &serde_json::Value| record["offset"].as_u64().expect("an offset") as usize;
+    let queries: Vec<(usize, String)> = records("queries")
+        .iter()
+        .map(|query| (offset(query), query["query"].as_str().expect("a name").to_string()))
+        .collect();
+    let mut stops: Vec<usize> = records("checkpoints")
+        .iter()
+        .map(offset)
+        .chain(queries.iter().map(|query| query.0))
+        .filter(|&offset| offset <= output.len())
+        .chain([output.len()])
+        .collect();
+    stops.sort();
+    stops.dedup();
+    let size = |key: &str| meta[key].as_u64().expect("the size") as u16;
+    let name = path.file_stem().expect("a name").to_string_lossy().into_owned();
+    Fixture { name, rows: size("rows"), cols: size("cols"), output, stops, queries }
 }
 
 /// Another engine fed the stream as it is built, with a say in which tokens
