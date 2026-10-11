@@ -96,9 +96,10 @@ impl Encoder {
         row.push_grapheme(col, &mut self.out);
     }
 
-    /// Draw a screen onto a cleared one, letting soft-wrapped rows wrap so
-    /// the terminal marks them as the grid does.
-    fn screen<'a>(&mut self, rows: u16, line: impl Fn(u16) -> &'a Row) {
+    /// Draw a screen, letting soft-wrapped rows wrap so the terminal marks
+    /// them as the grid does: onto a cleared one, or, given `only`, those
+    /// rows over what the terminal shows.
+    fn screen<'a>(&mut self, rows: u16, line: impl Fn(u16) -> &'a Row, only: Option<&[u16]>) {
         let mut flowing = false;
         // The cluster printed last: an emoji sequence's next character
         // printed straight after it would join it.
@@ -106,6 +107,22 @@ impl Encoder {
         for r in 0..rows {
             let row = line(r);
             let len = row.cells.len();
+            if only.is_some_and(|only| !only.contains(&r)) {
+                if flowing {
+                    // A row above wrapped into this one, unchanged: its first
+                    // two columns land the wrap (and mend a stand-in's).
+                    for col in (0..len.min(2)).filter(|&col| !row.cells[col].is_spacer()) {
+                        if joins(&last, row.cells[col].ch) {
+                            let _ = write!(self.out, "\x1b[{}m", sgr(&self.pen));
+                        }
+                        self.cell(row, col);
+                        last.clear();
+                        row.push_grapheme(col, &mut last);
+                    }
+                }
+                flowing = false;
+                continue;
+            }
             let flows = row.wrapped && r + 1 < rows;
             // A pad is the terminal's own doing when a wide character does
             // not fit: leave it to the terminal.
@@ -124,7 +141,12 @@ impl Encoder {
                 // Flowing in from above, a character must land to wrap.
                 used.map_or(usize::from(flowing), |last| last + 1)
             };
-            if !flowing && end > 0 {
+            if only.is_some() && !flowing {
+                self.goto(r, 0);
+                self.pen(&Pen::default());
+                self.out.push_str("\x1b[2K");
+                last.clear();
+            } else if !flowing && end > 0 {
                 self.goto(r, 0);
                 last.clear();
             }
@@ -151,9 +173,16 @@ impl Encoder {
                 self.out.push_str("\x1b[2D\x1b[2X");
                 last.clear();
             }
+            if only.is_some() && flowing && !flows && end < len {
+                // Flowed into, the row's old end is cleared after its text.
+                self.pen(&Pen::default());
+                self.out.push_str("\x1b[K");
+            }
             flowing = flows;
         }
-        self.wrap_bottom(rows, line(rows - 1));
+        if only.is_none_or(|only| only.contains(&(rows - 1))) {
+            self.wrap_bottom(rows, line(rows - 1));
+        }
     }
 
     /// Soft-wrap the bottom row, drawn already, if it is: below a scroll
@@ -291,7 +320,7 @@ impl Terminal {
         if let Some(saved) = &self.saved[PRIMARY] {
             self.saved_cursor(&mut e, saved, primary);
         }
-        e.screen(rows, primary);
+        e.screen(rows, primary, None);
         self.kitty_stack(&mut e, PRIMARY);
         if self.grid.alt_active {
             // 1049 saves the cursor as DECSC does: DECRC brings the saved
@@ -309,7 +338,7 @@ impl Terminal {
             if let Some(saved) = &self.saved[ALTERNATE] {
                 self.saved_cursor(&mut e, saved, alternate);
             }
-            e.screen(rows, alternate);
+            e.screen(rows, alternate, None);
             self.kitty_stack(&mut e, ALTERNATE);
         }
 
@@ -335,7 +364,33 @@ impl Terminal {
         if !self.title.is_empty() {
             let _ = write!(e.out, "\x1b]2;{}\x1b\\", self.title);
         }
+        self.state(&mut e, false);
+        e.out.into_bytes()
+    }
 
+    /// Escape sequences that redraw visible rows `rows` — what
+    /// `take_damage` named — and set the scroll region, cursor, rendition,
+    /// character sets and the modes input is encoded by (cursor keys, keypad,
+    /// mouse, focus, bracketed paste, kitty flags) on a terminal that showed
+    /// this one's state before: the update to send after a `snapshot`. The
+    /// same screen must be up as before: a switch of screens or a resize
+    /// calls for a new `snapshot`.
+    pub fn redraw(&self, rows: &[u16]) -> Vec<u8> {
+        let mut e = Encoder { out: String::new(), pen: Pen::default() };
+        e.out.push_str("\x1b[?25l\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[0m\x1b]8;;\x1b\\");
+        charsets(&mut e.out, &Charsets::default());
+        if !rows.is_empty() {
+            e.screen(self.grid.rows, |r| self.grid.line(r), Some(rows));
+        }
+        self.state(&mut e, true);
+        e.out.into_bytes()
+    }
+
+    /// The scroll region, cursor, rendition, character sets and modes, onto
+    /// a screen drawn in the plain state. `explicit` also turns off what is
+    /// off, for a terminal that may have had it on.
+    fn state(&self, e: &mut Encoder, explicit: bool) {
+        let (rows, _) = self.size();
         let modes = &self.modes;
         if (self.top, self.bottom) != (0, rows - 1) {
             let _ = write!(e.out, "\x1b[{};{}r", self.top + 1, self.bottom + 1);
@@ -348,6 +403,7 @@ impl Terminal {
         let flags = [
             (modes.cursor_keys, "?1"),
             (modes.reverse_video, "?5"),
+            (modes.autowrap, "?7"),
             (modes.cursor_blink, "?12"),
             (modes.alternate_scroll, "?1007"),
             (modes.focus_reports, "?1004"),
@@ -357,15 +413,12 @@ impl Terminal {
             (modes.newline, "20"),
         ];
         for (on, mode) in flags {
-            if on {
-                let _ = write!(e.out, "\x1b[{mode}h");
+            if on != (mode == "?7") || explicit {
+                let _ = write!(e.out, "\x1b[{mode}{}", if on { 'h' } else { 'l' });
             }
         }
-        if !modes.autowrap {
-            e.out.push_str("\x1b[?7l");
-        }
-        if modes.keypad {
-            e.out.push_str("\x1b=");
+        if modes.keypad || explicit {
+            e.out.push_str(if modes.keypad { "\x1b=" } else { "\x1b>" });
         }
         let mouse = match modes.mouse {
             MouseMode::None => None,
@@ -381,19 +434,26 @@ impl Terminal {
             MouseEncoding::Urxvt => Some(1015),
             MouseEncoding::SgrPixels => Some(1016),
         };
+        if explicit {
+            // Turning off the one that is on turns it off: any of them.
+            for mode in [9, 1000, 1002, 1003, 1005, 1006, 1015, 1016] {
+                let _ = write!(e.out, "\x1b[?{mode}l");
+            }
+            let _ = write!(e.out, "\x1b[={};1u", self.kitty_keyboard());
+        }
         for mode in mouse.into_iter().chain(encoding) {
             let _ = write!(e.out, "\x1b[?{mode}h");
         }
-        if modes.modify_other_keys != 0 {
+        if modes.modify_other_keys != 0 || explicit {
             let _ = write!(e.out, "\x1b[>4;{}m", modes.modify_other_keys);
         }
-        if let Some(style) = self.cursor_style {
-            let _ = write!(e.out, "\x1b[{} q", style.decscusr());
+        if self.cursor_style.is_some() || explicit {
+            let _ =
+                write!(e.out, "\x1b[{} q", self.cursor_style.map_or(0, |style| style.decscusr()));
         }
         if modes.cursor_visible {
             e.out.push_str("\x1b[?25h");
         }
-        e.out.into_bytes()
     }
 
     /// Bring the cursor to a saved state and DECSC it, then put back the

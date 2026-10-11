@@ -8,8 +8,26 @@ use crate::snapshot::sgr;
 use crate::term::{CURSOR, Charset, FOREGROUND, Pen, Rgb, Terminal};
 
 /// The `vte::Perform` side of a `Terminal`: everything above the byte
-/// state machine.
-pub(crate) struct Performer<'a>(pub(crate) &'a mut Terminal);
+/// state machine. Printed characters gather into a run, written in one go
+/// when anything else comes.
+pub(crate) struct Performer<'a>(pub(crate) &'a mut Terminal, pub(crate) Vec<char>);
+
+impl Performer<'_> {
+    /// Write the run printed so far.
+    pub(crate) fn flush(&mut self) {
+        if !self.1.is_empty() {
+            self.0.print_run(&self.1);
+            self.1.clear();
+        }
+    }
+
+    /// Something other than a printed character: the run before it is
+    /// written, and no emoji sequence continues past it.
+    fn interrupt(&mut self) {
+        self.flush();
+        self.0.joinable = false;
+    }
+}
 
 /// The DCS strings that are answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,11 +42,11 @@ const DCS_MAX: usize = 1024;
 
 impl Perform for Performer<'_> {
     fn print(&mut self, c: char) {
-        self.0.print(c);
+        self.1.push(c);
     }
 
     fn execute(&mut self, byte: u8) {
-        self.0.joinable = false;
+        self.interrupt();
         let term = &mut *self.0;
         match byte {
             0x07 => term.push_event(Event::Bell),
@@ -43,7 +61,7 @@ impl Perform for Performer<'_> {
     }
 
     fn hook(&mut self, _: &Params, intermediates: &[u8], ignore: bool, action: char) {
-        self.0.joinable = false;
+        self.interrupt();
         self.0.dcs = match (intermediates, action) {
             _ if ignore => None,
             (b"+", 'q') => Some((DcsKind::Termcap, Vec::new())),
@@ -69,13 +87,13 @@ impl Perform for Performer<'_> {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
-        self.0.joinable = false;
+        self.interrupt();
         let terminator = if bell_terminated { "\x07" } else { "\x1b\\" };
         osc(self.0, params, terminator);
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
-        self.0.joinable = false;
+        self.interrupt();
         if ignore {
             return;
         }
@@ -83,7 +101,7 @@ impl Perform for Performer<'_> {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        self.0.joinable = false;
+        self.interrupt();
         if ignore {
             return;
         }

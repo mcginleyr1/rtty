@@ -106,6 +106,9 @@ pub struct Terminal {
     parser: vte::Parser,
     /// The start of a UTF-8 character the last `advance` ended in.
     held: Vec<u8>,
+    /// The printed characters gathered for one write, kept for its
+    /// allocation.
+    run: Vec<char>,
     pub(crate) grid: Grid,
     pub(crate) cursor: Cursor,
     /// DECSC slots, one per screen.
@@ -145,6 +148,7 @@ impl Terminal {
         Terminal {
             parser: vte::Parser::new(),
             held: Vec::new(),
+            run: Vec::new(),
             grid: Grid::new(rows, cols, scrollback),
             cursor: Cursor::default(),
             saved: [None, None],
@@ -176,19 +180,28 @@ impl Terminal {
     /// after it.
     pub fn advance(&mut self, mut bytes: &[u8]) {
         let mut parser = std::mem::take(&mut self.parser);
-        if let Some(&lead) = self.held.first() {
+        let held = if let Some(&lead) = self.held.first() {
             let take = (utf8_len(lead) - self.held.len()).min(bytes.len());
             self.held.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
             if self.held.len() == utf8_len(lead) {
-                let held = std::mem::take(&mut self.held);
-                parser.advance(&mut Performer(self), &held);
+                std::mem::take(&mut self.held)
+            } else {
+                Vec::new()
             }
-        }
+        } else {
+            Vec::new()
+        };
         let whole = whole_chars(bytes);
-        parser.advance(&mut Performer(self), &bytes[..whole]);
-        self.held.extend_from_slice(&bytes[whole..]);
-        self.parser = parser;
+        let run = std::mem::take(&mut self.run);
+        let mut performer = Performer(self, run);
+        parser.advance(&mut performer, &held);
+        parser.advance(&mut performer, &bytes[..whole]);
+        performer.flush();
+        let Performer(term, run) = performer;
+        term.run = run;
+        term.held.extend_from_slice(&bytes[whole..]);
+        term.parser = parser;
     }
 
     /// The events queued since the last call, in stream order. Drain after
@@ -418,10 +431,116 @@ impl Terminal {
 
     // Writing characters.
 
+    /// Print a run of characters with nothing else between them.
+    pub(crate) fn print_run(&mut self, run: &[char]) {
+        let mut rest = run;
+        while let Some((&c, tail)) = rest.split_first() {
+            match self.write_simple(rest) {
+                0 => {
+                    self.print(c);
+                    rest = tail;
+                }
+                n => rest = &rest[n..],
+            }
+        }
+    }
+
+    /// Write the characters `run` starts with that need nothing but a cell
+    /// or two — no character set, no insert mode, nothing that joins a
+    /// cluster — as many as fit on the cursor's row, in one go. How many
+    /// were written: 0 when the first is not that simple.
+    fn write_simple(&mut self, run: &[char]) -> usize {
+        let charsets = &self.cursor.charsets;
+        let plain = charsets.single_shift.is_none()
+            && charsets.g[usize::from(charsets.gl)] == Charset::Ascii
+            && !self.modes.insert
+            && self.last_printed != Some('\u{200D}');
+        if !plain || self.cursor.pending_wrap && !self.modes.autowrap {
+            return 0;
+        }
+        let cols = usize::from(self.grid.cols);
+        let width = |c: char| match c {
+            ' '..='~' => 1,
+            _ if c.is_ascii() || regional_indicator(c) || emoji_modifier(c) => 0,
+            _ if cols < 2 => 0,
+            _ => c.width().unwrap_or(0),
+        };
+        let first = run.first().map_or(0, |&c| width(c));
+        if first == 0 {
+            return 0;
+        }
+        if self.cursor.pending_wrap {
+            self.wrap();
+        }
+        let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
+        // Up to the row's end, or to the first character that needs more.
+        let (mut n, mut end) = (0, col);
+        for &c in run {
+            match width(c) {
+                0 => break,
+                w if end + w > cols => break,
+                w => {
+                    n += 1;
+                    end += w;
+                }
+            }
+        }
+        if n == 0 {
+            // A wide character at the last column: it wraps first.
+            return 0;
+        }
+        let pen = &self.cursor.pen;
+        let line = self.grid.line_mut(row);
+        let split = line.cells[col].width() != 1 || line.cells[end - 1].width() != 1;
+        let unpads = col <= 1
+            && !(col == 0 && first == 2)
+            && line.cells[col..end.min(2)].iter().any(|cell| cell.width() != 1);
+        if split {
+            line.split_wide(col..end);
+        }
+        let extra = line.pen_extra(pen.underline, &pen.link);
+        let mut at = col;
+        for &c in &run[..n] {
+            let mut cell = Cell::new(c, pen.fg, pen.bg, pen.attrs, extra);
+            if c.is_ascii() || width(c) == 1 {
+                line.cells[at] = cell;
+                at += 1;
+            } else {
+                cell.set_wide();
+                let mut spacer = Cell::new(' ', pen.fg, pen.bg, pen.attrs, extra);
+                spacer.set_spacer();
+                line.cells[at] = cell;
+                line.cells[at + 1] = spacer;
+                at += 2;
+            }
+        }
+        line.touch(end);
+        line.wrapped &= end < cols;
+        if end < cols {
+            self.cursor.col = end as u16;
+        } else {
+            self.cursor.col = (cols - 1) as u16;
+            self.cursor.pending_wrap = true;
+        }
+        if unpads && let Some(last) = self.grid.above_mut(row).and_then(|row| row.cells.last_mut())
+        {
+            last.clear_pad();
+        }
+        self.last_printed = Some(run[n - 1]);
+        self.joinable = true;
+        n
+    }
+
     pub(crate) fn print(&mut self, c: char) {
-        let shift = self.cursor.charsets.single_shift.take();
-        let set = self.cursor.charsets.g[usize::from(shift.unwrap_or(self.cursor.charsets.gl))];
-        self.put_char(set.map(c));
+        let charsets = &mut self.cursor.charsets;
+        let set = match charsets.single_shift {
+            None => charsets.g[usize::from(charsets.gl)],
+            Some(shift) => {
+                charsets.single_shift = None;
+                charsets.g[usize::from(shift)]
+            }
+        };
+        self.put_char(if set == Charset::Ascii { c } else { set.map(c) });
     }
 
     /// Write `c`, already through the character sets: REP repeats from here.
@@ -437,10 +556,16 @@ impl Terminal {
                 None => return,
             }
         };
+        // Only a cluster ending in a ZWJ takes more than a modifier or the
+        // second half of a flag.
+        let may_join = self.joinable
+            && (self.last_printed == Some('\u{200D}')
+                || regional_indicator(c)
+                || emoji_modifier(c));
         self.last_printed = Some(c);
         if width == 0 {
             self.join_zero_width(c);
-        } else if c.is_ascii() || !self.joinable || !self.join_cluster(c) {
+        } else if !may_join || !self.join_cluster(c) {
             self.write(c, width);
         }
         self.joinable = true;
@@ -461,7 +586,10 @@ impl Terminal {
 
     fn join_zero_width(&mut self, c: char) {
         let col = self.previous_cell();
-        self.grid.line_mut(self.cursor.row).extend_cluster(col, c);
+        // A pad holds no character to combine with.
+        if !self.grid.line(self.cursor.row).cells[col].is_pad() {
+            self.grid.line_mut(self.cursor.row).extend_cluster(col, c);
+        }
     }
 
     /// Join `c` to the cluster printed just before it (nothing else in
@@ -520,6 +648,7 @@ impl Terminal {
         spacer.set_spacer();
         line.cells[col] = wide;
         line.cells[col + 1] = spacer;
+        line.touch(col + 2);
         line.wrapped &= col + 2 < cols;
         if col + 2 < cols {
             self.cursor.col = (col + 2) as u16;
@@ -548,25 +677,27 @@ impl Terminal {
             let extra = line.pen_extra(pen.underline, &pen.link);
             line.cells[col] = Cell::new(' ', pen.fg, pen.bg, pen.attrs, extra);
             line.cells[col].set_pad();
+            line.touch(col + 1);
             self.wrap();
         }
         let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
-        if self.modes.insert {
-            self.grid.line_mut(row).insert_blanks(col, usize::from(width), self.cursor.pen.bg);
-        }
-        let cells = &self.grid.line(row).cells;
-        let overwritten = col..(col + usize::from(width)).min(2);
-        let replaced = !(col == 0 && width == 2);
-        if replaced && overwritten.clone().any(|c| cells[c].is_wide() || cells[c].is_spacer()) {
-            // The wide character a pad above made room for is going.
-            if let Some(last) = self.grid.above_mut(row).and_then(|above| above.cells.last_mut()) {
-                last.clear_pad();
-            }
-        }
+        let end = col + usize::from(width);
         let pen = &self.cursor.pen;
         let line = self.grid.line_mut(row);
-        let end = col + usize::from(width);
-        line.split_wide(col..end);
+        if self.modes.insert {
+            line.insert_blanks(col, usize::from(width), pen.bg);
+        }
+        // Writing over part of a wide character, rarely: it loses its other
+        // half, and the pad above that made room for it is going unless
+        // another wide one takes its place.
+        let split = line.cells[col].width() != 1 || width == 2 && line.cells[col + 1].width() != 1;
+        let unpads = split && {
+            let unpads = col <= 1
+                && !(col == 0 && width == 2)
+                && line.cells[col..end.min(2)].iter().any(|cell| cell.width() != 1);
+            line.split_wide(col..end);
+            unpads
+        };
         let extra = line.pen_extra(pen.underline, &pen.link);
         let mut cell = Cell::new(c, pen.fg, pen.bg, pen.attrs, extra);
         if width == 2 {
@@ -576,6 +707,7 @@ impl Terminal {
             line.cells[col + 1] = spacer;
         }
         line.cells[col] = cell;
+        line.touch(end);
         // A soft wrap lives in the last cell: rewritten, the row ends there
         // until the next character wraps it again.
         line.wrapped &= end < usize::from(cols);
@@ -584,6 +716,10 @@ impl Terminal {
         } else {
             self.cursor.col = cols - 1;
             self.cursor.pending_wrap = true;
+        }
+        if unpads && let Some(last) = self.grid.above_mut(row).and_then(|row| row.cells.last_mut())
+        {
+            last.clear_pad();
         }
     }
 
@@ -832,6 +968,7 @@ impl Terminal {
             let line = self.grid.line_mut(row);
             line.reset(line.cells.len() as u16, Color::Default);
             line.cells.iter_mut().for_each(|cell| cell.ch = 'E');
+            line.touch(line.cells.len());
         }
         self.top = 0;
         self.bottom = self.grid.rows - 1;
@@ -1030,6 +1167,10 @@ impl Row {
         }
         self.cells[col..].rotate_right(n);
         self.cells[col..col + n].fill(Cell::blank(bg));
+        self.occupied = (self.occupied + n).min(len);
+        if bg != Color::Default {
+            self.touch(col + n);
+        }
         self.wrapped &= n == 0;
     }
 
@@ -1046,6 +1187,9 @@ impl Row {
         self.cells[len - 1].clear_pad();
         self.cells[col..].rotate_left(n);
         self.cells[len - n..].fill(Cell::blank(bg));
+        if bg != Color::Default {
+            self.touch(len);
+        }
         self.wrapped &= n == 0;
     }
 }
@@ -1082,13 +1226,22 @@ pub(crate) fn default_tabs(cols: u16) -> Vec<bool> {
 /// when Unicode's segmentation agrees. Combining marks (zero width) always
 /// join and are not asked about here.
 pub(crate) fn joins(cluster: &str, c: char) -> bool {
-    let regional = |c: char| ('\u{1F1E6}'..='\u{1F1FF}').contains(&c);
     let candidate = cluster.ends_with('\u{200D}')
-        || ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
-        || regional(c) && cluster.chars().count() == 1 && cluster.chars().all(regional);
+        || emoji_modifier(c)
+        || regional_indicator(c)
+            && cluster.chars().count() == 1
+            && cluster.chars().all(regional_indicator);
     candidate && {
         let mut joined = cluster.to_owned();
         joined.push(c);
         joined.graphemes(true).nth(1).is_none()
     }
+}
+
+fn regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+fn emoji_modifier(c: char) -> bool {
+    ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
 }

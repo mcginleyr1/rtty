@@ -22,6 +22,14 @@
 //! with `rows(since, screen_top())` and OSC 133 marks (`marks`) name rows that
 //! stay put while output scrolls.
 //!
+//! # Followers
+//!
+//! `snapshot()` is the escape bytes that bring a fresh terminal of the same
+//! size to this one's visible state, both screens included; after it,
+//! `redraw(&take_damage())` brings that follower level again with only the
+//! rows that changed. A switch of screens or a resize calls for a new
+//! snapshot.
+//!
 //! # Unicode
 //!
 //! A cell holds one grapheme cluster. Width is `unicode-width`'s per

@@ -112,8 +112,12 @@ impl Grid {
             } else {
                 Row::new(self.cols, bg)
             };
-            let at = self.primary.len() + 1 + usize::from(bottom) - usize::from(self.rows);
-            self.primary.insert(at, row);
+            if bottom + 1 == self.rows {
+                self.primary.push_back(row);
+            } else {
+                let at = self.primary.len() + 1 + usize::from(bottom) - usize::from(self.rows);
+                self.primary.insert(at, row);
+            }
         }
     }
 
@@ -183,7 +187,9 @@ mod tests {
 
     fn labelled(grid: &mut Grid) {
         for r in 0..grid.rows {
-            grid.line_mut(r).cells[0].ch = char::from(b'a' + r as u8);
+            let line = grid.line_mut(r);
+            line.cells[0].ch = char::from(b'a' + r as u8);
+            line.touch(1);
         }
     }
 

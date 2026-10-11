@@ -88,10 +88,18 @@ fn ours(term: &Terminal) -> State {
         screen: (0..rows).map(|r| seen(term.screen_row(r))).collect(),
         // alacritty's grid is the alternate one while it is up, with no
         // scrollback; this engine keeps the primary's in reach.
+        // Every cell's text, as alacritty's cells give it: a pad's
+        // included, which `Row::text` leaves out.
         history: if modes.alt_screen {
             Vec::new()
         } else {
-            term.rows(term.oldest_row(), top).map(|(_, row)| (row.text(), row.wrapped())).collect()
+            term.rows(term.oldest_row(), top)
+                .map(|(_, row)| {
+                    let mut text = String::new();
+                    (0..row.cells().len()).for_each(|col| row.push_grapheme(col, &mut text));
+                    (text.trim_end_matches(' ').to_string(), row.wrapped())
+                })
+                .collect()
         },
         cursor: term.cursor_position(),
         pending: Some(term.wrap_pending()),

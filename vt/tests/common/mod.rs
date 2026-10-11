@@ -303,7 +303,7 @@ impl Model {
             Token::Edit('b', _) => {
                 self.printed != Some((self.gl, self.designated))
                     || self.last_zero_width
-                    || term.modes().insert && any_wide()
+                    || term.modes().insert
             }
             Token::Text(text) => {
                 // A cluster stops growing at 32 characters here.
@@ -313,8 +313,14 @@ impl Model {
                 let marks = text.chars().filter(|&c| zero_width(c)).count();
                 let wide_text =
                     text.chars().any(|c| matches!(c, '日' | '本' | '語' | '中' | '😀' | '🎉'));
+                // A combining mark is dropped on a pad here; alacritty puts
+                // it on its leading spacer. Only a pending wrap or a wide
+                // character dropped with autowrap off lands the cursor on one.
+                let pad = line.last().is_some_and(|cell| cell.is_pad());
+                let on_pad = pad && marks > 0 && (pending || !term.modes().autowrap);
                 term.modes().insert && (any_wide() || wide_text)
                     || cluster.chars().count() + marks > 31
+                    || on_pad
             }
             // DECRC restores origin mode and the invoked set here, not in
             // alacritty.

@@ -38,6 +38,9 @@ impl Extra {
 #[derive(Clone, Debug)]
 pub struct Row {
     pub(crate) cells: Vec<Cell>,
+    /// Every cell from here on is `Cell::default()`: a reset clears no
+    /// further. Writes beyond it `touch` it.
+    pub(crate) occupied: usize,
     /// The side entries cells point into (`Cell::extra`); entries no cell
     /// points at any more are dropped when the vector outgrows the row.
     extras: Vec<Extra>,
@@ -47,20 +50,38 @@ pub struct Row {
 
 impl Row {
     pub(crate) fn new(cols: u16, bg: Color) -> Row {
+        let cols = usize::from(cols);
         Row {
-            cells: vec![Cell::blank(bg); usize::from(cols)],
+            cells: vec![Cell::blank(bg); cols],
+            occupied: if bg == Color::Default { 0 } else { cols },
             extras: Vec::new(),
             marks: Vec::new(),
             wrapped: false,
         }
     }
 
+    /// Blank the row at `cols` cells. A row recycled from the far end of the
+    /// scrollback is cold in the cache: only what was written is cleared.
     pub(crate) fn reset(&mut self, cols: u16, bg: Color) {
-        self.cells.clear();
-        self.cells.resize(usize::from(cols), Cell::blank(bg));
+        let cols = usize::from(cols);
+        if bg == Color::Default {
+            let occupied = self.occupied.min(self.cells.len());
+            self.cells[..occupied].fill(Cell::default());
+            self.cells.resize(cols, Cell::default());
+            self.occupied = 0;
+        } else {
+            self.cells.clear();
+            self.cells.resize(cols, Cell::blank(bg));
+            self.occupied = cols;
+        }
         self.extras.clear();
         self.marks.clear();
         self.wrapped = false;
+    }
+
+    /// Cells up to `end` may now differ from a blank.
+    pub(crate) fn touch(&mut self, end: usize) {
+        self.occupied = self.occupied.max(end);
     }
 
     pub fn cells(&self) -> &[Cell] {
@@ -169,13 +190,17 @@ impl Row {
     pub(crate) fn extend_cluster(&mut self, col: usize, c: char) {
         let cell = self.cells[col];
         let mut extra = self.extra(&cell).cloned().unwrap_or_default();
-        let mut cluster = extra.cluster.map_or_else(|| String::from(cell.ch), String::from);
-        if cluster.chars().nth(31).is_some() {
+        let mut base = [0; 4];
+        let old = extra.cluster.as_deref().unwrap_or_else(|| cell.ch.encode_utf8(&mut base));
+        if old.chars().nth(31).is_some() {
             return;
         }
+        let mut cluster = String::with_capacity(old.len() + c.len_utf8());
+        cluster.push_str(old);
         cluster.push(c);
         extra.cluster = Some(cluster.into_boxed_str());
         self.cells[col].extra = self.intern(extra);
+        self.touch(col + 1);
     }
 
     /// Turn the cell at `col` into a one-column space in the same rendition,
@@ -209,6 +234,9 @@ impl Row {
         if range.end == self.cells.len() && !range.is_empty() {
             self.wrapped = false;
         }
+        if bg != Color::Default {
+            self.touch(range.end);
+        }
         self.cells[range].fill(Cell::blank(bg));
     }
 
@@ -228,6 +256,7 @@ impl Row {
             cell.extra = from.extra(&cell).cloned().map_or(0, |extra| self.intern(extra));
             self.cells.push(cell);
         }
+        self.touch(self.cells.len());
     }
 }
 

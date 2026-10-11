@@ -58,11 +58,13 @@ fn main() {
     let (rows, cols) = (24u16, 80u16);
     let streams =
         [("seq", seq(2_000_000)), ("dense SGR", dense(5_000)), ("unicode", unicode(100_000))];
+    // `cargo bench -- seq` runs the streams whose names hold `seq`.
+    let filter = std::env::args().skip(1).find(|arg| !arg.starts_with('-')).unwrap_or_default();
     println!(
         "{:<12} {:>8} {:>14} {:>18} {:>10}",
         "stream", "MB", "rtty-vt MB/s", "alacritty MB/s", "vt100 MB/s"
     );
-    for (name, stream) in &streams {
+    for (name, stream) in streams.iter().filter(|(name, _)| name.contains(filter.as_str())) {
         let ours = best(5, stream, |stream| {
             let mut term = rtty_vt::Terminal::new(rows, cols, SCROLLBACK);
             for read in stream.chunks(READ) {

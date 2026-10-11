@@ -54,6 +54,14 @@ fn tiny(term: &Terminal) -> bool {
     rows < 3 || cols < 3
 }
 
+/// In origin mode, cursor addressing cannot reach a cursor a restore left
+/// outside the scroll region.
+fn unreachable_cursor(term: &Terminal) -> bool {
+    let (top, bottom) = term.scroll_region();
+    let row = term.cursor_position().0;
+    term.modes().origin && !(top..=bottom).contains(&row)
+}
+
 fn visible(term: &Terminal) -> Visible {
     let (rows, _) = term.size();
     Visible {
@@ -61,6 +69,10 @@ fn visible(term: &Terminal) -> Visible {
             .map(|r| {
                 let row = term.screen_row(r);
                 let bottom = r + 1 == rows && tiny(term);
+                // A pending wrap is made by reprinting the cursor's cell,
+                // which ends its row's soft wrap and pad.
+                let pending_here = term.wrap_pending() && term.cursor_position().0 == r;
+                let last = row.cells().len() - 1;
                 let cells = (0..row.cells().len())
                     .map(|col| {
                         let mut text = String::new();
@@ -70,11 +82,10 @@ fn visible(term: &Terminal) -> Visible {
                             link: row.hyperlink(col).map(|link| (**link).clone()),
                             ..seen(&row.cells()[col], text)
                         };
-                        seen.layout.1 &= !bottom;
+                        seen.layout.1 &= !bottom && !(pending_here && col == last);
                         seen
                     })
                     .collect();
-                let pending_here = term.wrap_pending() && term.cursor_position().0 == r;
                 (cells, row.wrapped() && !bottom && !pending_here)
             })
             .collect(),
@@ -110,7 +121,9 @@ fn check(rows: u16, cols: u16, tokens: &[Token]) -> Result<(), TestCaseError> {
         // a soft wrap of its row.
         let pending_on_wrap =
             original.wrap_pending() && original.screen_row(original.cursor_position().0).wrapped();
-        if (tiny(&original) || pending_on_wrap) && !probe.is_empty() {
+        if (tiny(&original) || pending_on_wrap) && !probe.is_empty()
+            || unreachable_cursor(&original)
+        {
             // A probe would bring what is not reproduced into view.
             continue;
         }
@@ -120,31 +133,89 @@ fn check(rows: u16, cols: u16, tokens: &[Token]) -> Result<(), TestCaseError> {
         copy.advance(&snapshot);
         original.advance(probe.as_bytes());
         copy.advance(probe.as_bytes());
-        let (want, got) = (visible(&original), visible(&copy));
-        if want != got {
-            let cell = want.rows.iter().zip(&got.rows).enumerate().find_map(|(r, (a, b))| {
-                if a.1 != b.1 {
-                    return Some(format!("row {r} wrapped: want {} got {}", a.1, b.1));
-                }
-                let c = a.0.iter().zip(&b.0).position(|(x, y)| x != y)?;
-                Some(format!("cell {r},{c}:\n want {:?}\n got  {:?}", a.0[c], b.0[c]))
-            });
-            let detail = cell.unwrap_or_else(|| {
-                let Visible { rows: _, colors: a, .. } = &want;
-                let Visible { rows: _, colors: b, .. } = &got;
-                let short = |v: &Visible| {
-                    format!(
-                        "{:?} {} {:?} {:?} {:?} {}",
-                        v.cursor, v.pending, v.style, v.modes, v.region, v.kitty
-                    )
-                };
-                format!("want {}\n got  {}\n colours equal: {}", short(&want), short(&got), a == b)
-            });
+        if let Some(detail) = difference(&visible(&original), &visible(&copy)) {
             return Err(TestCaseError::fail(format!(
                 "probe {probe:?}: {detail}\nsnapshot {:?}",
                 String::from_utf8_lossy(&snapshot)
             )));
         }
+    }
+    Ok(())
+}
+
+fn difference(want: &Visible, got: &Visible) -> Option<String> {
+    if want == got {
+        return None;
+    }
+    let cell = want.rows.iter().zip(&got.rows).enumerate().find_map(|(r, (a, b))| {
+        if a.1 != b.1 {
+            return Some(format!("row {r} wrapped: want {} got {}", a.1, b.1));
+        }
+        let c = a.0.iter().zip(&b.0).position(|(x, y)| x != y)?;
+        Some(format!("cell {r},{c}:\n want {:?}\n got  {:?}", a.0[c], b.0[c]))
+    });
+    Some(cell.unwrap_or_else(|| {
+        let short = |v: &Visible| {
+            format!(
+                "{:?} {} {:?} {:?} {:?} {}",
+                v.cursor, v.pending, v.style, v.modes, v.region, v.kitty
+            )
+        };
+        format!(
+            "want {}\n got  {}\n colours equal: {}",
+            short(want),
+            short(got),
+            want.colors == got.colors
+        )
+    }))
+}
+
+/// A terminal seeded with a snapshot and then fed only `redraw` of the
+/// damage matches, but for what `redraw` leaves out: the title and the
+/// colours a program set.
+fn check_redraw(
+    rows: u16,
+    cols: u16,
+    before: &[Token],
+    after: &[Token],
+) -> Result<(), TestCaseError> {
+    let (_, mut original) = build(rows, cols, before, false);
+    let pending_on_wrap =
+        original.wrap_pending() && original.screen_row(original.cursor_position().0).wrapped();
+    if tiny(&original) || pending_on_wrap {
+        // The snapshot the follower starts from leaves a soft wrap out.
+        return Ok(());
+    }
+    let (rows, cols) = original.size();
+    let mut copy = Terminal::new(rows, cols, 0);
+    copy.advance(&original.snapshot());
+    original.take_damage();
+    let screen = original.modes().alt_screen;
+    let mut stream = Vec::new();
+    for token in after.iter().filter(|token| !matches!(token, Token::Resize(..))) {
+        let bytes = token.bytes();
+        original.advance(&bytes);
+        stream.extend(bytes);
+    }
+    if original.modes().alt_screen != screen || unreachable_cursor(&original) {
+        // A switch of screens calls for a snapshot.
+        return Ok(());
+    }
+    let damage = original.take_damage();
+    let redraw = original.redraw(&damage);
+    copy.advance(&redraw);
+    let plain = |term: &Terminal| Visible {
+        title: String::new(),
+        icon: String::new(),
+        colors: Vec::new(),
+        ..visible(term)
+    };
+    if let Some(detail) = difference(&plain(&original), &plain(&copy)) {
+        return Err(TestCaseError::fail(format!(
+            "{detail}\nafter {:?}\nredraw {:?}",
+            String::from_utf8_lossy(&stream),
+            String::from_utf8_lossy(&redraw)
+        )));
     }
     Ok(())
 }
@@ -156,6 +227,27 @@ proptest! {
     fn a_snapshot_reproduces_the_visible_state((rows, cols, tokens) in stream(Profile::Full)) {
         check(rows, cols, &tokens)?;
     }
+
+    #[test]
+    fn redraws_of_the_damage_keep_a_follower_level(
+        (rows, cols, before) in stream(Profile::Full),
+        after in prop::collection::vec(common::token(Profile::Full, 6, 20), 0..60),
+    ) {
+        check_redraw(rows, cols, &before, &after)?;
+    }
+}
+
+#[test]
+#[ignore]
+fn many_redraws_keep_a_follower_level() {
+    let config =
+        ProptestConfig { cases: 20_000, failure_persistence: None, ..ProptestConfig::default() };
+    proptest!(config, |(
+        (rows, cols, before) in stream(Profile::Full),
+        after in prop::collection::vec(common::token(Profile::Full, 6, 20), 0..60),
+    )| {
+        check_redraw(rows, cols, &before, &after)?;
+    });
 }
 
 #[test]
