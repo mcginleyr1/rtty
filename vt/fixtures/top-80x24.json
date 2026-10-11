@@ -1,0 +1,92 @@
+{
+ "name": "top-80x24",
+ "description": "macOS top sorted by ascending pid, 12 rows (system daemons only), first frame plus two one-second refreshes",
+ "program": "top",
+ "version": "macOS 27.0.1 /usr/bin/top",
+ "argv": [
+  "/usr/bin/top",
+  "-o",
+  "+pid",
+  "-n",
+  "12",
+  "-s",
+  "1"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {},
+ "input": [
+  {
+   "wait_for": "[\\s\\S]",
+   "timeout": 15
+  },
+  {
+   "settle": 0.2
+  },
+  {
+   "sleep": 2.6
+  },
+  {
+   "keys": "q"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [],
+ "features": [
+  "alt-screen",
+  "alt-screen-1049",
+  "decawm",
+  "decckm",
+  "decstbm",
+  "ed",
+  "ich-dch",
+  "keypad-mode",
+  "meta-1034",
+  "reverse"
+ ],
+ "checkpoints": [
+  {
+   "offset": 45,
+   "after_step": 1
+  },
+  {
+   "offset": 2393,
+   "after_step": 2
+  },
+  {
+   "offset": 2416,
+   "after_step": 4
+  }
+ ],
+ "bytes": 2416,
+ "sha256": "fafbfbc66a69c486f2024866914b9e60f623b6a4a4d1eb69e627a06f00675d76",
+ "exit_status": 0,
+ "duration_s": 2.8,
+ "recorded": "2026-10-11"
+}

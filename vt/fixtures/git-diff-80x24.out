@@ -1,0 +1,47 @@
+[?1h=[1mdiff --git a/README.md b/README.md[m[m
+[1mindex 32ebdf1..b161abc 100644[m[m
+[1m--- a/README.md[m[m
+[1m+++ b/README.md[m[m
+[36m@@ -1,3 +1,3 @@[m[m
+ # fixture[m[m
+ [m[m
+[31m-A grid.[m[m
+[32m+[m[32mA grid, now with a parser.[m[m
+[1mdiff --git a/src/grid.c b/src/grid.c[m[m
+[1mindex ae3f1b4..a9fa913 100644[m[m
+[1m--- a/src/grid.c[m[m
+[1m+++ b/src/grid.c[m[m
+[36m@@ -3,10 +3,9 @@[m [mgrid line 001: input kitty[m[m
+ grid line 002: region layout[m[m
+ grid line 003: title line[m[m
+ grid line 004: decoder margin[m[m
+[31m-grid line 005: damage mode[m[m
+[31m-grid line 006: parser parser[m[m
+[31m-grid line 007: tab render[m[m
+[31m-grid line 008: blink reflow[m[m
+[32m+[m       [32mgrid_resize(cols, rows);[m[m
+[32m+[m[32mchanged line with trailing space[m[41m   [m[m
+:[K[K[32m+[m[32m端末 wide text ✓[m[m
+ grid line 009: cache region[m[m
+ grid line 010: line scroll[m[m
+ grid line 011: shader selection[m[m
+[36m@@ -29,6 +28,18 @@[m [mgrid line 027: input decoder[m[m
+ grid line 028: region encoder[m[m
+ grid line 029: title font[m[m
+ grid line 030: decoder alpha[m[m
+[32m+[m[32madded line 0[m[m
+[32m+[m[32madded line 1[m[m
+[32m+[m[32madded line 2[m[m
+[32m+[m[32madded line 3[m[m
+[32m+[m[32madded line 4[m[m
+[32m+[m[32madded line 5[m[m
+[32m+[m[32madded line 6[m[m
+[32m+[m[32madded line 7[m[m
+[32m+[m[32madded line 8[m[m
+[32m+[m[32madded line 9[m[m
+[32m+[m[32madded line 10[m[m
+[32m+[m[32madded line 11[m[m
+ grid line 031: damage anchor[m[m
+ grid line 032: parser buffer[m[m
+ grid line 033: tab cache[m[m
+:[K[K[?1l>

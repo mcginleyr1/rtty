@@ -1,0 +1,68 @@
+{
+ "name": "unicode",
+ "description": "wide CJK, combining marks, ZWJ emoji, skin tones, flags, VS15/VS16, wide at the margin",
+ "program": "synth.py",
+ "version": "synth.py (Python 3.14.4)",
+ "argv": [
+  "python3",
+  "-I",
+  "synth.py",
+  "unicode"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {},
+ "input": [
+  {
+   "exit": 30
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [],
+ "features": [
+  "ambiguous-width",
+  "combining",
+  "ed",
+  "emoji",
+  "emoji-modifier",
+  "emoji-zwj",
+  "format-chars",
+  "regional-indicator",
+  "reverse",
+  "soft-wrap",
+  "vs15",
+  "vs16",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 706,
+   "after_step": 0
+  }
+ ],
+ "bytes": 706,
+ "sha256": "29cd24d7eeefd8c1b2e2768c6093f6071f474b9816012cdf67e6697720ceb37a",
+ "exit_status": 0,
+ "duration_s": 0.1,
+ "recorded": "2026-10-11"
+}

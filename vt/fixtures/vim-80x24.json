@@ -1,0 +1,274 @@
+{
+ "name": "vim-80x24",
+ "description": "vim --clean: scroll, split, vsplit, insert wide text, search, :qa!",
+ "program": "vim",
+ "version": "VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Aug  8 2026 16:52:02)",
+ "argv": [
+  "/usr/bin/vim",
+  "--clean",
+  "fnmatch.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "fnmatch.py": "CPython 3.14.4 Lib/fnmatch.py, 209 lines, sha256 ce582bc266922e4c"
+ },
+ "input": [
+  {
+   "wait_for": "fnmatch\\.py",
+   "timeout": 15
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0006"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0004"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "10j"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "G"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "gg"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":split\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":vsplit\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0017w"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0006"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "# 端末 terminal ✓ 😀 👨‍👩‍👧 é ❤️"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "/match\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "n"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":qa!\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 167,
+   "query": "CPR",
+   "seq": "\u001b[6n",
+   "answer": "\u001b[2;2R"
+  },
+  {
+   "offset": 196,
+   "query": "CPR",
+   "seq": "\u001b[6n",
+   "answer": "\u001b[3;1R"
+  },
+  {
+   "offset": 223,
+   "query": "DA2",
+   "seq": "\u001b[>c",
+   "answer": "\u001b[>1;10;0c"
+  },
+  {
+   "offset": 1091,
+   "query": "XTQMODKEYS 4",
+   "seq": "\u001b[?4m",
+   "answer": null
+  },
+  {
+   "offset": 1098,
+   "query": "DECRQM ?12",
+   "seq": "\u001b[?12$p",
+   "answer": "\u001b[?12;2$y"
+  }
+ ],
+ "features": [
+  "16-color",
+  "256-color",
+  "alt-screen",
+  "alt-screen-1049",
+  "ambiguous-width",
+  "backspace",
+  "bold",
+  "bracketed-paste",
+  "bright-color",
+  "combining",
+  "cursor-blink",
+  "dcs",
+  "decckm",
+  "decstbm",
+  "dectcem",
+  "ed",
+  "el",
+  "emoji",
+  "focus-1004",
+  "il-dl",
+  "keypad-mode",
+  "modify-other-keys",
+  "mouse-1000",
+  "mouse-1002",
+  "mouse-1006",
+  "reverse",
+  "soft-wrap",
+  "title-stack",
+  "vs16",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 1098,
+   "after_step": 1
+  },
+  {
+   "offset": 2044,
+   "after_step": 3
+  },
+  {
+   "offset": 2550,
+   "after_step": 5
+  },
+  {
+   "offset": 2613,
+   "after_step": 7
+  },
+  {
+   "offset": 3988,
+   "after_step": 9
+  },
+  {
+   "offset": 5068,
+   "after_step": 11
+  },
+  {
+   "offset": 5804,
+   "after_step": 13
+  },
+  {
+   "offset": 6903,
+   "after_step": 15
+  },
+  {
+   "offset": 7102,
+   "after_step": 17
+  },
+  {
+   "offset": 7572,
+   "after_step": 19
+  },
+  {
+   "offset": 8094,
+   "after_step": 21
+  },
+  {
+   "offset": 8655,
+   "after_step": 23
+  },
+  {
+   "offset": 8749,
+   "after_step": 25
+  },
+  {
+   "offset": 9224,
+   "after_step": 27
+  },
+  {
+   "offset": 9306,
+   "after_step": 29
+  },
+  {
+   "offset": 9446,
+   "after_step": 31
+  }
+ ],
+ "bytes": 9446,
+ "sha256": "6cfcc25068f3fdc1dad018d7c7fa4834dd430bec70cb58d797a7ff3169bc4d28",
+ "exit_status": 0,
+ "duration_s": 4.8,
+ "recorded": "2026-10-11"
+}

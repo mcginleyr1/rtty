@@ -1,0 +1,249 @@
+{
+ "name": "tmux-80x24",
+ "description": "tmux -f /dev/null on an isolated socket: three panes, typing, zoom, kill-server",
+ "program": "tmux",
+ "version": "tmux 3.6a",
+ "argv": [
+  "tmux",
+  "-L",
+  "rtty-vt-fixtures",
+  "-f",
+  "/dev/null",
+  "new-session",
+  "-s",
+  "fx",
+  "/bin/sh",
+  ";",
+  "set-option",
+  "-g",
+  "default-command",
+  "/bin/sh",
+  ";",
+  "set-option",
+  "-g",
+  "status-right",
+  " rtty-vt fixture "
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux",
+  "PS1": "$ "
+ },
+ "inputs": {},
+ "input": [
+  {
+   "wait_for": "\\$ ",
+   "timeout": 15
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "printf '\\033[1;31mred\\033[0m wide:端末\\n'\r",
+   "delay": 0.02
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002%"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "seq 1 40\r",
+   "delay": 0.02
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002\""
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "echo hello from pane three\r",
+   "delay": 0.02
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002z"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002z"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0002:"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "kill-server\r",
+   "delay": 0.02
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 97,
+   "query": "DSR ?996",
+   "seq": "\u001b[?996n",
+   "answer": null
+  },
+  {
+   "offset": 163,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  },
+  {
+   "offset": 167,
+   "query": "DA2",
+   "seq": "\u001b[>c",
+   "answer": "\u001b[>1;10;0c"
+  },
+  {
+   "offset": 171,
+   "query": "XTVERSION",
+   "seq": "\u001b[>q",
+   "answer": null
+  },
+  {
+   "offset": 179,
+   "query": "OSC 10",
+   "seq": "\u001b]10;?\u001b\\",
+   "answer": "\u001b]10;rgb:d0d0/d0d0/d0d0\u001b\\"
+  },
+  {
+   "offset": 187,
+   "query": "OSC 11",
+   "seq": "\u001b]11;?\u001b\\",
+   "answer": "\u001b]11;rgb:1c1c/1c1c/1c1c\u001b\\"
+  },
+  {
+   "offset": 433,
+   "query": "XTWINOPS 18",
+   "seq": "\u001b[18t",
+   "answer": null
+  },
+  {
+   "offset": 438,
+   "query": "XTWINOPS 14",
+   "seq": "\u001b[14t",
+   "answer": null
+  }
+ ],
+ "features": [
+  "16-color",
+  "alt-screen",
+  "alt-screen-1049",
+  "bold",
+  "box-drawing",
+  "bracketed-paste",
+  "color-scheme-2031",
+  "dec-mode-7727",
+  "decckm",
+  "decstbm",
+  "dectcem",
+  "ech",
+  "ed",
+  "el",
+  "keypad-mode",
+  "osc-dynamic-colors",
+  "wide",
+  "xtwinops"
+ ],
+ "checkpoints": [
+  {
+   "offset": 1133,
+   "after_step": 1
+  },
+  {
+   "offset": 1346,
+   "after_step": 3
+  },
+  {
+   "offset": 2049,
+   "after_step": 5
+  },
+  {
+   "offset": 2499,
+   "after_step": 7
+  },
+  {
+   "offset": 3410,
+   "after_step": 9
+  },
+  {
+   "offset": 3481,
+   "after_step": 11
+  },
+  {
+   "offset": 3887,
+   "after_step": 13
+  },
+  {
+   "offset": 4226,
+   "after_step": 15
+  },
+  {
+   "offset": 5212,
+   "after_step": 17
+  },
+  {
+   "offset": 5358,
+   "after_step": 19
+  },
+  {
+   "offset": 7818,
+   "after_step": 21
+  }
+ ],
+ "bytes": 7818,
+ "sha256": "eab874172f9fec08d83f5a5b8c77ef0a1cfdc6362d82442e88a95e545f1b3a2a",
+ "exit_status": 1,
+ "duration_s": 5.8,
+ "recorded": "2026-10-11"
+}

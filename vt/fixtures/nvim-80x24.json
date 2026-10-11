@@ -1,0 +1,677 @@
+{
+ "name": "nvim-80x24",
+ "description": "nvim --clean: scroll, 256-color/truecolor, habamax, splits, mouse, insert/replace/visual, paste, search, diagnostics with curly/dashed/double/dotted coloured underlines, floats, :terminal, :qa!",
+ "program": "nvim",
+ "version": "NVIM v0.12.4",
+ "argv": [
+  "nvim",
+  "--clean",
+  "fnmatch.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "fnmatch.py": "CPython 3.14.4 Lib/fnmatch.py, 209 lines, sha256 ce582bc266922e4c"
+ },
+ "input": [
+  {
+   "wait_for": "fnmatch\\.py",
+   "timeout": 15
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "20j"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0004"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0004"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0015"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "G"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "gg"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0005\u0005\u0005"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":set notermguicolors\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":set termguicolors\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":colorscheme habamax\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":vsplit\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":split\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0017l"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "30j"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0017x"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0017K"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0017="
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[<0;5;20M\u001b[<0;5;20m"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "gg"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "# 端末 terminal ✓ 😀 👨‍👩‍👧 é ❤️"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "R"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "REPLACED"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[200~pasted line one\rpasted line two\u001b[201~"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "V5j"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00163j8l"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "/match\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "n"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "n"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":nohlsearch\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "gg"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":hi DiagnosticUnderlineError gui=undercurl guisp=#ff5f5f\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":hi DiagnosticUnderlineWarn gui=underdashed guisp=#ffaf00\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":hi DiagnosticUnderlineInfo gui=underdouble guisp=#5fafff\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":hi DiagnosticUnderlineHint gui=underdotted guisp=#5fd7af\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":lua vim.diagnostic.config({virtual_text=true}) vim.diagnostic.set(vim.api.nvim_create_namespace('fixture'),0,{{lnum=1,col=0,end_col=4,severity=1,message='fixture error'},{lnum=3,col=4,end_col=11,severity=2,message='fixture warning'},{lnum=2,col=0,end_col=6,severity=3,message='fixture info'},{lnum=5,col=0,end_col=8,severity=4,message='fixture hint'}})\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "2G"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":lua vim.diagnostic.open_float()\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":lua local b=vim.api.nvim_create_buf(false,true) vim.api.nvim_buf_set_lines(b,0,-1,false,{'floating window','wide: 端末エミュ','emoji: 😀 ✓ é'}) vim.api.nvim_open_win(b,false,{relative='editor',row=3,col=8,width=30,height=3,border='rounded',title=' fixture '})\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":only\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":terminal printf '\\033[1;32mgreen\\033[0m wide:端末\\n'; seq 1 5\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "wait_for": "Process exited",
+   "timeout": 15
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": ":qa!\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 37,
+   "query": "DECRQM ?69",
+   "seq": "\u001b[?69$p",
+   "answer": "\u001b[?69;0$y"
+  },
+  {
+   "offset": 46,
+   "query": "DECRQM ?2026",
+   "seq": "\u001b[?2026$p",
+   "answer": "\u001b[?2026;2$y"
+  },
+  {
+   "offset": 55,
+   "query": "DECRQM ?2027",
+   "seq": "\u001b[?2027$p",
+   "answer": "\u001b[?2027;0$y"
+  },
+  {
+   "offset": 64,
+   "query": "DECRQM ?2031",
+   "seq": "\u001b[?2031$p",
+   "answer": "\u001b[?2031;0$y"
+  },
+  {
+   "offset": 73,
+   "query": "DECRQM ?2048",
+   "seq": "\u001b[?2048$p",
+   "answer": "\u001b[?2048;0$y"
+  },
+  {
+   "offset": 90,
+   "query": "DECRQSS m",
+   "seq": "\u001bP$qm\u001b\\",
+   "answer": "\u001bP1$r0;4:3m\u001b\\"
+  },
+  {
+   "offset": 94,
+   "query": "KITTY-KBD",
+   "seq": "\u001b[?u",
+   "answer": null
+  },
+  {
+   "offset": 97,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  },
+  {
+   "offset": 104,
+   "query": "OSC 11",
+   "seq": "\u001b]11;?\u0007",
+   "answer": "\u001b]11;rgb:1c1c/1c1c/1c1c\u0007"
+  },
+  {
+   "offset": 108,
+   "query": "DSR 5",
+   "seq": "\u001b[5n",
+   "answer": "\u001b[0n"
+  },
+  {
+   "offset": 121,
+   "query": "OSC 11",
+   "seq": "\u001b]11;?\u0007",
+   "answer": "\u001b]11;rgb:1c1c/1c1c/1c1c\u0007"
+  },
+  {
+   "offset": 125,
+   "query": "DSR 5",
+   "seq": "\u001b[5n",
+   "answer": "\u001b[0n"
+  },
+  {
+   "offset": 2171,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  },
+  {
+   "offset": 7190,
+   "query": "XTGETTCAP Ms",
+   "seq": "\u001bP+q4D73\u001b\\",
+   "answer": null
+  },
+  {
+   "offset": 57530,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  }
+ ],
+ "features": [
+  "alt-screen",
+  "alt-screen-1049",
+  "ambiguous-width",
+  "backspace",
+  "bold",
+  "box-drawing",
+  "bracketed-paste",
+  "bright-color",
+  "combining",
+  "dashed-underline",
+  "decckm",
+  "decscusr",
+  "decstbm",
+  "dectcem",
+  "dotted-underline",
+  "double-underline",
+  "ech",
+  "ed",
+  "el",
+  "emoji",
+  "emoji-zwj",
+  "focus-1004",
+  "il-dl",
+  "keypad-mode",
+  "modify-other-keys",
+  "mouse-1002",
+  "mouse-1006",
+  "osc-dynamic-colors",
+  "reverse",
+  "sgr-colon",
+  "sync-2026",
+  "truecolor",
+  "undercurl",
+  "underline-color",
+  "vs16",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 7214,
+   "after_step": 1
+  },
+  {
+   "offset": 7333,
+   "after_step": 3
+  },
+  {
+   "offset": 8568,
+   "after_step": 5
+  },
+  {
+   "offset": 10159,
+   "after_step": 7
+  },
+  {
+   "offset": 11550,
+   "after_step": 9
+  },
+  {
+   "offset": 14645,
+   "after_step": 11
+  },
+  {
+   "offset": 17022,
+   "after_step": 13
+  },
+  {
+   "offset": 17707,
+   "after_step": 15
+  },
+  {
+   "offset": 18808,
+   "after_step": 17
+  },
+  {
+   "offset": 21398,
+   "after_step": 19
+  },
+  {
+   "offset": 25223,
+   "after_step": 21
+  },
+  {
+   "offset": 28821,
+   "after_step": 23
+  },
+  {
+   "offset": 29620,
+   "after_step": 25
+  },
+  {
+   "offset": 29900,
+   "after_step": 27
+  },
+  {
+   "offset": 31102,
+   "after_step": 29
+  },
+  {
+   "offset": 31213,
+   "after_step": 31
+  },
+  {
+   "offset": 33396,
+   "after_step": 33
+  },
+  {
+   "offset": 33503,
+   "after_step": 35
+  },
+  {
+   "offset": 33778,
+   "after_step": 37
+  },
+  {
+   "offset": 34263,
+   "after_step": 39
+  },
+  {
+   "offset": 34967,
+   "after_step": 41
+  },
+  {
+   "offset": 35168,
+   "after_step": 43
+  },
+  {
+   "offset": 35301,
+   "after_step": 45
+  },
+  {
+   "offset": 35478,
+   "after_step": 47
+  },
+  {
+   "offset": 35602,
+   "after_step": 49
+  },
+  {
+   "offset": 35735,
+   "after_step": 51
+  },
+  {
+   "offset": 36036,
+   "after_step": 53
+  },
+  {
+   "offset": 36317,
+   "after_step": 55
+  },
+  {
+   "offset": 36447,
+   "after_step": 57
+  },
+  {
+   "offset": 37528,
+   "after_step": 59
+  },
+  {
+   "offset": 38328,
+   "after_step": 61
+  },
+  {
+   "offset": 39487,
+   "after_step": 63
+  },
+  {
+   "offset": 39791,
+   "after_step": 65
+  },
+  {
+   "offset": 41169,
+   "after_step": 67
+  },
+  {
+   "offset": 41607,
+   "after_step": 69
+  },
+  {
+   "offset": 41930,
+   "after_step": 71
+  },
+  {
+   "offset": 42295,
+   "after_step": 73
+  },
+  {
+   "offset": 42829,
+   "after_step": 75
+  },
+  {
+   "offset": 43031,
+   "after_step": 77
+  },
+  {
+   "offset": 43193,
+   "after_step": 79
+  },
+  {
+   "offset": 43355,
+   "after_step": 81
+  },
+  {
+   "offset": 43517,
+   "after_step": 83
+  },
+  {
+   "offset": 48483,
+   "after_step": 85
+  },
+  {
+   "offset": 48603,
+   "after_step": 87
+  },
+  {
+   "offset": 48896,
+   "after_step": 89
+  },
+  {
+   "offset": 51953,
+   "after_step": 91
+  },
+  {
+   "offset": 55969,
+   "after_step": 93
+  },
+  {
+   "offset": 57314,
+   "after_step": 95
+  },
+  {
+   "offset": 57562,
+   "after_step": 99
+  }
+ ],
+ "bytes": 57562,
+ "sha256": "10e5c7800aa325ff214ffd55dc29f5d1530792da814e03842960d1a5d2ebbefc",
+ "exit_status": 0,
+ "duration_s": 15.6,
+ "recorded": "2026-10-11"
+}

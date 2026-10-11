@@ -1,0 +1,11 @@
+[H[2J[7mDECSCUSR[0m
+[0 q0: default (0)
+[1 q1: blinking block
+[2 q2: steady block
+[3 q3: blinking underline
+[4 q4: steady underline
+[5 q5: blinking bar
+[6 q6: steady bar
+[ qdefault form without a parameter
+[?12lblink off [?12hblink on [?25lhidden [?25hshown
+[6 qending with a steady bar, then [0 qback to default

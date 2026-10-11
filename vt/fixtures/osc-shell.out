@@ -1,0 +1,10 @@
+[H[2J]0;fixture shell]2;window title\]1;icon\]7;file://fixture-host/home/fixture/work\]1337;SetUserVar=fixture_var=cnR0eS12dCBmaXh0dXJlIOKckw==]133;A\[1;34m~/work[0m $ ]133;B\ls
+]133;C\Cargo.toml
+README.md
+src
+]133;D;0\]133;A\[1;34m~/work[0m $ ]133;B\cat missing.txt
+]133;C\cat: missing.txt: No such file or directory
+]133;D;1\]133;A\[1;34m~/work[0m $ ]133;B\printf 'colour\n'
+]133;C\[32mcolour[0m
+]133;D;0\]7;file://fixture-host/home/fixture/work/src\]133;A;aid=7src $ ]133;B]1337;CurrentDir=/home/fixture/work/src]52;c;Y29waWVkIGJ5IE9TQyA1Mg==\]9;4;1;50\]9;4;0;0\]133;D\
+end

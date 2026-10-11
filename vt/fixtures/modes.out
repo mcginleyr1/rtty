@@ -1,0 +1,20 @@
+[H[2J[7minput modes[0m
+mouse 1000+1006[?1000h[?1006h
+mouse 1002[?1002h
+mouse 1003[?1003h
+mouse 1015[?1015h
+mouse 1005[?1005h
+mouse off[?1005l[?1015l[?1003l[?1002l[?1006l[?1000l
+focus 1004[?1004h
+bracketed paste[?2004h
+DECCKM[?1h
+keypad app=
+kitty push 1[>1u
+kitty push 31[>31u
+kitty set 5;1[=5;1u
+kitty pop 2[<2u
+modifyOtherKeys 2[>4;2m
+title push[22;0t]2;pushed title\
+title pop[23;0t
+alternate scroll[?1007h
+everything off[?1004l[?2004l[?1l>[<u[>4m[?1007l

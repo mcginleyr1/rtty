@@ -1,0 +1,82 @@
+{
+ "name": "bat-80x24",
+ "description": "bat --style=full: line numbers, grid, header, truecolor syntax highlighting",
+ "program": "bat",
+ "version": "bat 0.26.1 (979ba22)",
+ "argv": [
+  "bat",
+  "--style=full",
+  "--paging=never",
+  "fnmatch.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "fnmatch.py": "CPython 3.14.4 Lib/fnmatch.py, 209 lines, sha256 ce582bc266922e4c"
+ },
+ "input": [
+  {
+   "exit": 20
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 7,
+   "query": "OSC 10",
+   "seq": "\u001b]10;?\u0007",
+   "answer": "\u001b]10;rgb:d0d0/d0d0/d0d0\u0007"
+  },
+  {
+   "offset": 14,
+   "query": "OSC 11",
+   "seq": "\u001b]11;?\u0007",
+   "answer": "\u001b]11;rgb:1c1c/1c1c/1c1c\u0007"
+  },
+  {
+   "offset": 17,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  }
+ ],
+ "features": [
+  "bold",
+  "box-drawing",
+  "linefeed-scroll",
+  "osc-dynamic-colors",
+  "soft-wrap",
+  "truecolor"
+ ],
+ "checkpoints": [
+  {
+   "offset": 54674,
+   "after_step": 0
+  }
+ ],
+ "bytes": 54674,
+ "sha256": "912168efa45c84cba2e1d30ed201a63eaa985628e10a15542a74ca05b030e867",
+ "exit_status": 0,
+ "duration_s": 0.1,
+ "recorded": "2026-10-11"
+}

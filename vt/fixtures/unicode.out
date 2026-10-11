@@ -1,0 +1,12 @@
+[H[2J[7municode[0m
+wide: 端末エミュレータ 한국어 中文 ｆｕｌｌｗｉｄｔｈ|
+combining: é à ñ ȫ x̶̶ q̣̇|
+scripts: नमस्ते สวัสดี مرحبا שלום|
+emoji: 😀 👍🏽 👨‍👩‍👧‍👦 🏳️‍🌈 🇯🇵 🇺🇸|
+vs16: ❤️ ☀️ ✔️ ⚠️  vs15: ❤︎ ☀︎  bare: ❤ ☀|
+ambiguous: § ° ± × ÷ ① ★ ←|
+zero-width: a​b a‌b soft­hyphen|
+[10;80H端 <- a wide char at column 80 wraps[13;1H端末[DX <- overwrote the right half
+端末[4DY <- overwrote the left half of the first wide char
+[16;79H😀<- emoji at column 79 fits[18;1Hé̂ stacked marks, then a bare mark at line start:
+́x

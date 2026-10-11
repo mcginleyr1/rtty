@@ -1,0 +1,346 @@
+{
+ "name": "emacs-80x24-alacritty-da2",
+ "description": "emacs as above, with an alacritty-style DA2 reply (version 2500): xterm.el queries the background and enables modifyOtherKeys",
+ "program": "emacs",
+ "version": "GNU Emacs 32.0.50",
+ "argv": [
+  "/opt/homebrew/bin/emacs",
+  "-nw",
+  "-Q",
+  "fnmatch.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "fnmatch.py": "CPython 3.14.4 Lib/fnmatch.py, 209 lines, sha256 ce582bc266922e4c"
+ },
+ "input": [
+  {
+   "wait_for": "fnmatch\\.py",
+   "timeout": 20
+  },
+  {
+   "settle": 1.0
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bv"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00182"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00183"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u000e\u000e\u000e\u000e\u000e"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bx"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "list-colors-display",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.6
+  },
+  {
+   "keys": "\u0018o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bx"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "xterm-mouse-mode",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[<0;10;3M\u001b[<0;10;3m"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00181"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "*scratch*",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "端末 wide ✓ 😀 é\r",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018\u0003"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>0;2500;1c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 104,
+   "query": "DA2",
+   "seq": "\u001b[>0c",
+   "answer": "\u001b[>0;2500;1c"
+  },
+  {
+   "offset": 112,
+   "query": "OSC 11",
+   "seq": "\u001b]11;?\u001b\\",
+   "answer": "\u001b]11;rgb:1c1c/1c1c/1c1c\u001b\\"
+  },
+  {
+   "offset": 120,
+   "query": "OSC 10",
+   "seq": "\u001b]10;?\u001b\\",
+   "answer": "\u001b]10;rgb:d0d0/d0d0/d0d0\u001b\\"
+  },
+  {
+   "offset": 130,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  },
+  {
+   "offset": 135,
+   "query": "XTVERSION",
+   "seq": "\u001b[>0q",
+   "answer": null
+  }
+ ],
+ "features": [
+  "alt-screen",
+  "alt-screen-1049",
+  "ambiguous-width",
+  "backspace",
+  "bold",
+  "bracketed-paste",
+  "combining",
+  "cursor-blink",
+  "decckm",
+  "decstbm",
+  "dectcem",
+  "ed",
+  "el",
+  "emoji",
+  "focus-1004",
+  "ich-dch",
+  "il-dl",
+  "keypad-mode",
+  "modify-other-keys",
+  "mouse-1000",
+  "mouse-1003",
+  "mouse-1006",
+  "osc-dynamic-colors",
+  "reverse",
+  "tabs",
+  "truecolor",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 5781,
+   "after_step": 1
+  },
+  {
+   "offset": 7343,
+   "after_step": 3
+  },
+  {
+   "offset": 8743,
+   "after_step": 5
+  },
+  {
+   "offset": 10485,
+   "after_step": 7
+  },
+  {
+   "offset": 11827,
+   "after_step": 9
+  },
+  {
+   "offset": 13089,
+   "after_step": 11
+  },
+  {
+   "offset": 13527,
+   "after_step": 13
+  },
+  {
+   "offset": 14322,
+   "after_step": 15
+  },
+  {
+   "offset": 14432,
+   "after_step": 17
+  },
+  {
+   "offset": 14964,
+   "after_step": 19
+  },
+  {
+   "offset": 16830,
+   "after_step": 21
+  },
+  {
+   "offset": 17332,
+   "after_step": 23
+  },
+  {
+   "offset": 18649,
+   "after_step": 25
+  },
+  {
+   "offset": 18759,
+   "after_step": 27
+  },
+  {
+   "offset": 19207,
+   "after_step": 29
+  },
+  {
+   "offset": 19366,
+   "after_step": 31
+  },
+  {
+   "offset": 19868,
+   "after_step": 33
+  },
+  {
+   "offset": 21227,
+   "after_step": 35
+  },
+  {
+   "offset": 21371,
+   "after_step": 37
+  },
+  {
+   "offset": 21623,
+   "after_step": 39
+  },
+  {
+   "offset": 22185,
+   "after_step": 41
+  },
+  {
+   "offset": 22632,
+   "after_step": 43
+  },
+  {
+   "offset": 22721,
+   "after_step": 45
+  }
+ ],
+ "bytes": 22721,
+ "sha256": "c336deee9501be15498090eb518253331199e76f041f15e35223a497d252ecce",
+ "exit_status": 0,
+ "duration_s": 12.1,
+ "recorded": "2026-10-11"
+}

@@ -1,0 +1,159 @@
+{
+ "name": "fzf-80x24",
+ "description": "fzf full screen over generated paths: type a query, move, select",
+ "program": "fzf",
+ "version": "0.74.5 (Homebrew)",
+ "argv": [
+  "/bin/sh",
+  "-c",
+  "/opt/homebrew/bin/fzf < words.txt"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "words.txt": "generated: 273 synthetic paths"
+ },
+ "input": [
+  {
+   "wait_for": "[\\s\\S]",
+   "timeout": 15
+  },
+  {
+   "settle": 0.6
+  },
+  {
+   "type": "rend",
+   "delay": 0.12
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[B"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[B"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[A"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "er",
+   "delay": 0.12
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 31,
+   "query": "CPR",
+   "seq": "\u001b[6n",
+   "answer": "\u001b[1;1R"
+  },
+  {
+   "offset": 40,
+   "query": "DECRQM ?2004",
+   "seq": "\u001b[?2004$p",
+   "answer": "\u001b[?2004;2$y"
+  },
+  {
+   "offset": 44,
+   "query": "CPR",
+   "seq": "\u001b[6n",
+   "answer": "\u001b[1;1R"
+  }
+ ],
+ "features": [
+  "256-color",
+  "alt-screen",
+  "alt-screen-1049",
+  "bold",
+  "box-drawing",
+  "bracketed-paste",
+  "decawm",
+  "decawm-off",
+  "dectcem",
+  "el",
+  "mouse-1000",
+  "mouse-1002",
+  "mouse-1006",
+  "soft-wrap",
+  "sync-2026"
+ ],
+ "checkpoints": [
+  {
+   "offset": 5764,
+   "after_step": 1
+  },
+  {
+   "offset": 15779,
+   "after_step": 3
+  },
+  {
+   "offset": 15821,
+   "after_step": 5
+  },
+  {
+   "offset": 15863,
+   "after_step": 7
+  },
+  {
+   "offset": 16286,
+   "after_step": 9
+  },
+  {
+   "offset": 23548,
+   "after_step": 11
+  },
+  {
+   "offset": 23645,
+   "after_step": 13
+  }
+ ],
+ "bytes": 23645,
+ "sha256": "6de1ff6384e068618d4268c5ecbd522d384f0d14a1e4577992f5ad20d37a9c9d",
+ "exit_status": 0,
+ "duration_s": 3.1,
+ "recorded": "2026-10-11"
+}

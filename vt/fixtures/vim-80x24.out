@@ -1,0 +1,72 @@
+[?1006;1000h[?1002h[?1049h[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H"fnmatch.py" 209L, 6791B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[1;1H[31m"""Filename matching with shell patterns.[m[2;1H[K[3;1H[31mfnmatch(FILENAME, PATTERN) matches according to the local convention.[m[3;70H[K[4;1H[31mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+
+The functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.
+
+The function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""[m
+
+[35mimport[m functools
+[35mimport[m itertools
+[35mimport[m os
+[35mimport[m posixpath
+[35mimport[m re
+
+__all__ = [[31m"filter"[m, [31m"filterfalse"[m, [31m"fnmatch"[m, [31m"fnmatchcase"[m, [31m"translate"[m]
+
+
+[38;5;130mdef[m [36mfnmatch[m(name, pat):
+    [31m"""Test whether FILENAME matches PATTERN.[m[24;63H1,1[11CTop[1;1H[?25h[?4m[?12$p[?25l[24;53H^F[1;1H[24;53H  [6;5H[27m[23m[29m[m[H[2J[1;1H[38;5;130mdef[m [36mfnmatch[m(name, pat):
+    [31m"""Test whether FILENAME matches PATTERN.
+
+    Patterns are Unix shell style:
+
+    *       matches everything
+    ?       matches any single character
+    [seq]   matches any character in seq
+    [!seq]  matches any char not in seq
+
+    An initial period in FILENAME is not special.
+    Both FILENAME and PATTERN are first case-normalized
+    if the operating system requires it.
+    If you don't want this, use fnmatchcase(FILENAME, PATTERN).
+    """[m
+    name = os.path.normcase(name)
+    pat = os.path.normcase(pat)
+    [38;5;130mreturn[m fnmatchcase(name, pat)
+
+
+[35m@[m[36mfunctools.lru_cache[m(maxsize=[31m32768[m, [36mtype[md=[36mTrue[m)
+[38;5;130mdef[m [36m_compile_pattern[m(pat):
+    [38;5;130mif[m [36misinstance[m(pat, [36mbytes[m):[24;63H27,5[10C11%[6;5H[?25h[?25l[24;53H^D[6;5H[24;53H  [6;5H[1;23r[1;1H[11M[1;24r[13;9Hpat_str = [36mstr[m(pat, [31m'ISO-8859-1'[m)[14;9Hres_str = translate(pat_str)[15;9Hres = [36mbytes[m(res_str, [31m'ISO-8859-1'[m)
+    [38;5;130melse[m:[17;9Hres = translate(pat)
+    [38;5;130mreturn[m re.compile(res).match
+
+
+[38;5;130mdef[m [36mfilter[m(names, pat):
+    [31m"""Construct a list from those elements of the iterable NAMES that match PATT[23;1H."""[m[24;63H[K[24;63H38,5[10C17%[6;5H[?25h[?25l[24;53H10j[6;5H[24;53H   [16;5H[24;63H4[16;5H[?25h[?25l[24;53HG[16;5H[24;53H [23;5H[1;1H    [38;5;130mif[m [38;5;130mnot[m star_indices:[1;25H[K[2;1H        [38;5;130mreturn[m [31mfr'(?s:[m[35m{[m[31m""[m.join(parts)[35m}[m[31m)\z'[m
+    iter_star_indices = [36miter[m(star_indices)[3;43H[K[4;1H    j = [36mnext[m(iter_star_indices)
+    buffer = parts[:j]  [34m# fixed pieces at the start[m
+    append, extend = buffer.append, buffer.extend
+    i = j + [31m1[m[7;14H[K[8;5H[38;5;130mfor[m j [38;5;130min[m iter_star_indices:[9;9H[34m# Now deal with STAR fixed STAR fixed ...[m
+        [34m# For an interior `STAR fixed` pairing, we want to do a minimal[m
+        [34m# .*? match followed by `fixed`, with no possibility of backtracking.[m
+        [34m# Atomic groups ("(?>...)") allow us to spell that directly.[13;9H# Note: people rely on the undocumented ability to join multiple[14;9H# translate() results together via "|" to build large regexps matching[15;9H# "one of many" shell patterns.[m[15;40H[K[16;5H    append([31m'(?>.*?'[m)[17;9Hextend(parts[i:j])[17;27H[K[18;5H    append([31m')'[m)[18;20H[K[19;9Hi = j + [31m1[m
+    append([31m'.*'[m)
+    extend(parts[i:])[21;22H[K[22;5Hres = [31m''[m.join(buffer)[22;26H[K[23;1H    [38;5;130mreturn[m [31mfr'(?s:[m[35m{[mres[35m}[m[31m)\z'[m[24;63H209,5[9CBot[23;5H[?25h[?25l[24;53Hgg[23;5H[24;53H  [1;1H[31m"""Filename matching with shell patterns.[m[2;9H[K[3;1H[31mfnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.[m[5;5H[K[6;1H[31mThe functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.[m[8;5H[K[9;1H[31mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)[m[10;53H[K[11;1H[31m"""[m[11;9H[K[12;9H[K[13;1H[35mimport[m functools[13;17H[K[14;1H[35mimport[m itertools[14;17H[K[15;1H[35mimport[m os[15;10H[K[16;1H[35mimport[m posixpath[16;17H[K[17;1H[35mimport[m r[17;10H[K[18;9H[K[19;1H__all__ = [[31m"filter"[m, [31m"filterfalse"[m, [31m"fnmatch"[m, [31m"fnmatchcase"[m, [31m"translate"[m][20;5H[K[21;5H[K[22;1H[38;5;130mdef[m [36mfnmatch[m(name, pat):[22;24H[K[23;5H[31m"""Test whether FILENAME matches PATTERN.[m[24;63H1,1  [9CTop[1;1H[?25h[?25l[24;63H[K[24;1H:split[12;1H[1m[7mfnmatch.py                                                    1,1            Top[m[13;1H[31m"""Filename matching with shell patterns.[m[14;1H[K[15;1H[31mfnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.[m[17;1H[K[18;1H[31mThe functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.[m[19;68H[K[21;1H[31mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)[m
+[7mfnmatch.py                                                    1,1            Top[1;1H[?25h[?25l[m[24;1H[K[24;1H:vsplit[1;41H[7m|[m
+[31m.[m[39C[7m|[m
+                                        [7m|[m[4;8H[31m(FILENAME, PATTERN) matches accor[m[7m|[m
+[31mding to the local convention.[m[11C[7m|[m
+[31mfnmatchcase(FILENAME, PATTERN) always ta[m[7m|[m
+[31mkes case in account.[m                    [7m|[8;41H|[m[9;13H[31ms operate by translating the[m[7m|[m
+[31m pattern into a regular[m                 [7m|[m
+[31mexpression.  They cache the compiled reg[m[7m|[m[94m@@@                                     [m[12;23H[1m[7m1,1[12CTop[m[1;42H[31m"""Filename matching with shell pattern[2;42Hs.[m[3;42H[K[4;42H[31mfnmatch(FILENAME, PATTERN) matches acco[5;42Hrding to the local convention.[6;42Hfnmatchcase(FILENAME, PATTERN) always t[7;42Hakes case in account.[m[7;63H[K[9;42H[31mThe functions operate by translating th[10;42He pattern into a regular[11;42Hexpression.  They cache the compiled re[m[11;42H[94m@@@                                    [m[12;42H[7mfnmatch.py           1,1            Top[1;1H[?25h[?25l[m[24;70H^Ww[1;1H[24;70H   [1;42H[12;1H[7mfnmatch.py[m[1m[7m [m[7m            1,1            Top[m[1m[7m [m[7m [m[1m[7mfnmatch.py           1,1            Top[1;42H[?25h[?25l[m[24;70H^F[1;42H[24;70H  [5;42H[1;42H[31mThe functions operate by translating th[2;42He pattern into a regular[3;42Hexpression.  They cache the compiled re[4;42Hgular expressions for speed.[m[4;70H[K[5;42H[K[6;42H[31mThe function translate(PATTERN) returns[7;42H a regular expression[8;42Hcorresponding to PATTERN.  (It does not[9;42H compile it.)[m[9;55H[K[10;42H[31m"""[m[10;45H[K[11;42H[K[12;63H[1m[7m8,0-1[10C 2%[5;42H[?25h[?25l[m[24;70Ho[5;42H[24;70H [6;42H[24;1H[1m-- INSERT --[m[11;1H[31mexpression.  They cache the compiled reg[m[94m@@@                                     [m[12;12H[7m[+][m[6;42H[K[7;42H[31mThe function translate(PATTERN) returns[8;42H a regular expression[m[8;63H[K[9;42H[31mcorresponding to PATTERN.  (It does not[10;42H compile it.)[11;42H"""[m[12;53H[1m[7m[+][7C9,1   [m[21;1H[K[22;1H[31mThe function translate(PATTERN) returns a regular expression[m[23;12H[7m[+][6;42H[?25h[?25l[m
+[41C                                       [8;42H[31mThe function translate(PATTERN) returns[9;42H a regular expression[m                  [10;42H[31mcorresponding to PATTERN.  (It does not[11;42H compile it.)[m                          [6;42H[31m# 端末 terminal ✓ 😀[6;62H 👨[m[6;65H[34m<200d>[m[31m👩[m[6;73H[34m<200d>[m[31m👧[7;42H é ❤️[21;1H# 端末 terminal ✓ 😀[21;21H 👨[m[21;24H[34m<200d>[m[31m👩[m[21;32H[34m<200d>[m[31m👧[21;40H é ❤️[m[12;65H[1m[7m57-44[7;46H[?25h[m[24;1H[K[7;45H[?25l[24;70H^[[7;45H[24;70H  [7;46H[12;66H[1m[7m1-43 [7;45H[?25h[?25l[24;1H[m/match[1;42H[35mimport[m os[1;51H[K[2;42H[35mimport[m posixpath[2;58H[K[3;42H[35mimport[m re[3;51H[K[4;42H[K[5;42H__all__ = [[31m"filter"[m, [31m"filterfalse"[m, [31m"fn[6;42Hmatch"[m, [31m"fnmatchcase"[m, [31m"translate"[m][6;77H[K[7;42H[K[8;42H[K[9;42H[38;5;130mdef[m [36mfnmatch[m(name, pat):[10;42H    [31m"""Test whether FILENAME matches PA[11;42HTTERN.[m[11;48H[K[12;63H[1m[7m20,40   [8C7%[6;42H[?25h[?25l[m[24;70Hn[6;42H[24;70H[K[24;1H[6;53H[12;66H[1m[7m51 [6;53H[?25h[?25l[m[24;1H[K[24;1H:qa![?1006;1000l[?1002l[?2004l[>4;m[23;2t[23;1t[24;1H[K[24;1H[?1004l[?2004l[?1l>[?1049l[?25h[>4;m

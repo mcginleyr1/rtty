@@ -1,0 +1,334 @@
+[?1049h[?12;25h[?1h=[H[2J[40d[K[?1l>[?12l[?25h[?1049l[39;49m[?1049h[?12;25h[?1h=[>0c[c[>0q[H[2J[40d[K[H[?25l[7mFile Edit Options Buffers Tools Lisp-Interaction Help                                                                   [0m[39;49m[27m
+[A
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[38;2;0;0;0m[48;2;191;191;191m-UUU:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191m*scratch*   [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   All L1     (Lisp Interaction ElDoc) --------------------------------------------------------[39;49m
+[A[?12l[?25h[?12;25h[2d[?2004h[?1004h[40d[?25lFor information about GNU Emacs and the GNU system, type [38;2;0;0;139m[48;2;245;245;245mC-h C-a[39;49m.[?12l[?25h[?12;25h[H
+[40d[?25lFor information about GNU Emacs and the GNU system, type [38;2;0;0;139m[48;2;245;245;245mC-h C-a[39;49m.[K[H[7mFile Edit Options Buffers Tools Python Help                                                                             [0m[39;49m[27m
+[A
+[38;2;139;34;82m"""Filename matching with shell patterns. [39;49m                                                                              
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82mfnmatch(FILENAME, PATTERN) matches according to the local convention. [39;49m                                                  
+[A
+[38;2;139;34;82mfnmatchcase(FILENAME, PATTERN) always takes case in account. [39;49m                                                           
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82mThe functions operate by translating the pattern into a regular [39;49m                                                        
+[A
+[38;2;139;34;82mexpression.  They cache the compiled regular expressions for speed. [39;49m                                                    
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82mThe function translate(PATTERN) returns a regular expression [39;49m                                                           
+[A
+[38;2;139;34;82mcorresponding to PATTERN.  (It does not compile it.) [39;49m                                                                   
+[A
+[38;2;139;34;82m"""[39;49m[K
+[K
+[38;2;160;32;240mimport[39;49m functools[K
+[38;2;160;32;240mimport[39;49m itertools[K
+[38;2;160;32;240mimport[39;49m os[K
+[38;2;160;32;240mimport[39;49m posixpath[K
+[38;2;160;32;240mimport[39;49m re[K
+[K
+[38;2;72;61;139m__all__[39;49m = [[38;2;139;34;82m"filter"[39;49m, [38;2;139;34;82m"filterfalse"[39;49m, [38;2;139;34;82m"fnmatch"[39;49m, [38;2;139;34;82m"fnmatchcase"[39;49m, [38;2;139;34;82m"translate"[39;49m][K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfnmatch[39;49m(name, pat):[K
+    [38;2;139;34;82m"""Test whether FILENAME matches PATTERN. [39;49m                                                                          
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82m    Patterns are Unix shell style: [39;49m                                                                                     
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82m    *       matches everything [39;49m                                                                                         
+[A
+[38;2;139;34;82m    ?       matches any single character [39;49m                                                                               
+[A
+[38;2;139;34;82m    [seq]   matches any character in seq [39;49m                                                                               
+[A
+[38;2;139;34;82m    [!seq]  matches any char not in seq [39;49m                                                                                
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82m    An initial period in FILENAME is not special. [39;49m                                                                      
+[A
+[38;2;139;34;82m    Both FILENAME and PATTERN are first case-normalized [39;49m                                                                
+[A
+[38;2;139;34;82m    if the operating system requires it. [39;49m                                                                               
+[A
+[38;2;139;34;82m    If you don't want this, use fnmatchcase(FILENAME, PATTERN). [39;49m                                                        
+[A
+[38;2;139;34;82m    """[39;49m[K
+    [38;2;160;82;45mname[39;49m = os.path.normcase(name)[K
+[38;2;0;0;0m[48;2;191;191;191m-UU-:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191mfnmatch.py  [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   Top L1     (Python ElDoc) ------------------------------------------------------------------[39;49m
+[A[?12l[?25h[?12;25h[2d[40d[K[2d[?25l[38;2;139;34;82m    """[39;49m[K
+    [38;2;160;82;45mname[39;49m = os.path.normcase(name)[K
+    [38;2;160;82;45mpat[39;49m = os.path.normcase(pat)[K
+    [38;2;160;32;240mreturn[39;49m fnmatchcase(name, pat)[K
+[K
+[K
+[38;2;34;139;34m@functools.lru_cache[39;49m(maxsize=32768, typed=[38;2;0;139;139mTrue[39;49m)[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255m_compile_pattern[39;49m(pat):[K
+    [38;2;160;32;240mif[39;49m [38;2;72;61;139misinstance[39;49m(pat, [38;2;72;61;139mbytes[39;49m):[K
+        [38;2;160;82;45mpat_str[39;49m = [38;2;72;61;139mstr[39;49m(pat, [38;2;139;34;82m'ISO-8859-1'[39;49m)[K
+        [38;2;160;82;45mres_str[39;49m = translate(pat_str)
+	[38;2;160;82;45mres[39;49m = [38;2;72;61;139mbytes[39;49m(res_str, [38;2;139;34;82m'ISO-8859-1'[39;49m)
+    [38;2;160;32;240melse[39;49m:[K
+        [38;2;160;82;45mres[39;49m = translate(pat)
+    [38;2;160;32;240mreturn[39;49m re.[38;2;72;61;139mcompile[39;49m(res).[38;2;160;32;240mmatch[39;49m
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilter[39;49m(names, pat):
+    [38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that match PAT."""[39;49m[21;5H[38;2;160;82;45mresult[39;49m = [][22;5H[38;2;160;82;45mpat[39;49m = os.path.normcase(pat)
+    [38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[24;5H[38;2;160;32;240mif[39;49m os.path [38;2;160;32;240mis[39;49m posixpath:[K
+        [38;2;178;34;34m# normcase on posix is NOP. Optimize it away from the loop. [39;49m
+        [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+            [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(name):[K
+                result.append(name)[K
+    [38;2;160;32;240melse[39;49m:[K
+        [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+            [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)):[K
+                result.append(name)[K
+    [38;2;160;32;240mreturn[39;49m result[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilterfalse[39;49m(names, pat):[K
+    [38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that do not match PAT."""[39;49m[38;5H[38;2;160;82;45mpat[39;49m = os.path.normcase(pat)[K
+[38;2;0;0;0m[48;2;191;191;191m16% L36[39;49m[?12l[?25h[?12;25h[H
+[1;25r[3;1H[19M[1;40r[2;1H[?25l    [38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that do not match PAT."""[39;49m[7;1H        [38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))[K
+[K
+    [38;2;160;82;45mresult[39;49m = [][K
+    [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+        [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)) [38;2;160;32;240mis[39;49m [38;2;0;139;139mNone[39;49m:[K
+            result.append(name)[K
+    [38;2;160;32;240mreturn[39;49m result[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfnmatchcase[39;49m(name, pat):[K
+    [38;2;139;34;82m"""Test whether FILENAME matches PATTERN, including case. [39;49m                                                          
+[A
+[38;2;139;34;82m [39;49m                                                                                                                       
+[A
+[38;2;139;34;82m    This is a version of fnmatch() which doesn't case-normalize [39;49m                                                        
+[A
+[38;2;139;34;82m    its arguments. [39;49m                                                                                                     
+[A
+[38;2;139;34;82m    """[39;49m[K
+    [38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[K
+    [38;2;160;32;240mreturn[39;49m [38;2;160;32;240mmatch[39;49m(name) [38;2;160;32;240mis[39;49m [38;2;160;32;240mnot[39;49m [38;2;0;139;139mNone[39;49m[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mtranslate[39;49m(pat):[K[27;5H[38;2;139;34;82m"""Translate a shell PATTERN to a regular expression. [39;49m                                                              
+[38;2;139;34;82m [39;49m                                                                                                                       
+[38;2;139;34;82m    There is no way to quote meta-characters. [39;49m                                                                          
+[38;2;139;34;82m    """[39;49m[K
+[K[32;5H[38;2;160;82;45mparts[39;49m, [38;2;160;82;45mstar_indices[39;49m = _translate(pat, [38;2;139;34;82m'*'[39;49m, [38;2;139;34;82m'.'[39;49m)[33;12H_join_translated_parts(parts, star_indices)
+
+
+[38;2;160;82;45m_re_setops_sub[39;49m = re.[38;2;72;61;139mcompile[39;49m(r[38;2;139;34;82m'([&~|])'[39;49m).sub
+[38;2;160;82;45m_re_escape[39;49m = functools.lru_cache(maxsize=512)(re.escape)[K
+[K[39;29H[38;2;0;0;0m[48;2;191;191;191m30% L71[39;49m[?12l[?25h[?12;25h[H
+[1;25r[3;1H[19L[1;40r[2;1H[?25l[38;2;139;34;82m    """[39;49m[K
+    [38;2;160;82;45mname[39;49m = os.path.normcase(name)[K
+    [38;2;160;82;45mpat[39;49m = os.path.normcase(pat)[K
+    [38;2;160;32;240mreturn[39;49m fnmatchcase(name, pat)[K
+[K
+[K
+[38;2;34;139;34m@functools.lru_cache[39;49m(maxsize=32768, typed=[38;2;0;139;139mTrue[39;49m)[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255m_compile_pattern[39;49m(pat):[K
+    [38;2;160;32;240mif[39;49m [38;2;72;61;139misinstance[39;49m(pat, [38;2;72;61;139mbytes[39;49m):[K
+        [38;2;160;82;45mpat_str[39;49m = [38;2;72;61;139mstr[39;49m(pat, [38;2;139;34;82m'ISO-8859-1'[39;49m)[K
+        [38;2;160;82;45mres_str[39;49m = translate(pat_str)[K
+        [38;2;160;82;45mres[39;49m = [38;2;72;61;139mbytes[39;49m(res_str, [38;2;139;34;82m'ISO-8859-1'[39;49m)[K
+    [38;2;160;32;240melse[39;49m:[K
+        [38;2;160;82;45mres[39;49m = translate(pat)[K
+    [38;2;160;32;240mreturn[39;49m re.[38;2;72;61;139mcompile[39;49m(res).[38;2;160;32;240mmatch[39;49m[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilter[39;49m(names, pat):[K
+    [38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that match PAT."""[39;49m[K
+    [38;2;160;82;45mresult[39;49m = [][K
+
+
+
+
+        [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[27;5H        [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(name):[K
+                result.append(name)[K
+    [38;2;160;32;240melse[39;49m:[K
+        [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[31;13H[38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)):[32;5H            result.append(name)[K[33;12Hresult[K
+
+
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilterfalse[39;49m(names, pat):[K
+    [38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that do not match PAT."""[39;49m[38;5H[38;2;160;82;45mpat[39;49m = os.path.normcase(pat)
+[38;2;0;0;0m[48;2;191;191;191m16[39;49m[?12l[?25h[?12;25h[37;1H[1;25r[12;1H[10M[1;38r[21;1H[7M[1;40r[2;1H[?25l                result.append(name)[3;5H[38;2;160;32;240melse[39;49m:[K[4;5H    [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K[5;5H        [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)):
+		result.append(name)[7;5H[38;2;160;32;240mreturn[39;49m result
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilterfalse[39;49m(names, pat):[K[11;5H[38;2;139;34;82m"""Construct a list from those elements of the iterable NAMES that do not match PAT."""[39;49m
+
+
+
+
+        [38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))[K
+[K
+    [38;2;160;82;45mresult[39;49m = [][K
+    [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+[38;2;0;0;0m[48;2;191;191;191m-UU-:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191mfnmatch.py  [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   27% L71    (Python ElDoc) ------------------------------------------------------------------[39;49m
+[A[32d    [38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[K
+    [38;2;160;32;240mif[39;49m os.path [38;2;160;32;240mis[39;49m posixpath:[K
+        [38;2;178;34;34m# normcase on posix is NOP. Optimize it away from the loop. [39;49m                                                    
+[A
+        [38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))[K
+[K
+    [38;2;160;82;45mresult[39;49m = [][K
+    [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+[38;2;51;51;51m[48;2;229;229;229m-UU-:--- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229mfnmatch.py  [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m   27% L71    (Python ElDoc) ------------------------------------------------------------------[39;49m
+[?12l[?25h[?12;25h[11d[2;60H[?25l[38;2;51;51;51m[48;2;229;229;229m|[39;49m                result.append(name)[3;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;160;32;240melse[39;49m:[4;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m        [38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[5;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m            [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)):[6;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m                result.append(name)[7;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;160;32;240mreturn[39;49m result[8;60H[38;2;51;51;51m[48;2;229;229;229m|[39;49m
+[38;2;51;51;51m[48;2;229;229;229m|[39;49m
+[38;2;51;51;51m[48;2;229;229;229m|[39;49m[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfilterfalse[39;49m(names, pat):[11;59H\[38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;139;34;82m"""Construct a list from those elements of the iterable[39;49m\
+[38;2;139;34;82me NAMES that do not match PAT."""[39;49m                          [38;2;51;51;51m[48;2;229;229;229m|[39;49m[38;2;139;34;82m NAMES that do not match PAT."""[39;49m[13;5H[38;2;160;82;45mpat[39;49m = os.path.normcase(pat)                            [38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;160;82;45mpat[39;49m = os.path.normcase(pat)[14;5H[38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)                          [38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[15;5H[38;2;160;32;240mif[39;49m os.path [38;2;160;32;240mis[39;49m posixpath:                               [38;2;51;51;51m[48;2;229;229;229m|[39;49m    [38;2;160;32;240mif[39;49m os.path [38;2;160;32;240mis[39;49m posixpath:[K
+	[38;2;178;34;34m# normcase on posix is NOP. Optimize it away from [39;49m\[38;2;51;51;51m[48;2;229;229;229m|[39;49m        [38;2;178;34;34m# normcase on posix is NOP. Optimize it away from t[39;49m\
+[38;2;178;34;34mthe loop. [39;49m                                                 [38;2;51;51;51m[48;2;229;229;229m|[39;49m[38;2;178;34;34mhe loop. [39;49m                                                   
+[18;5H    [38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))   [38;2;51;51;51m[48;2;229;229;229m|[39;49m        [38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))[19;5H                                                       [38;2;51;51;51m[48;2;229;229;229m|[39;49m
+[38;2;51;51;51m[48;2;229;229;229m|[39;49m[38;2;51;51;51m[48;2;229;229;229m-UU-:--- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229mfnmatch.py  [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m   27% L71    (Python ElDoc) ------[39;49m
+[?12l[?25h[?12;25h[11d[20d[?25l[38;2;51;51;51m[48;2;229;229;229m-UU-:--- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229mfnmatch.py  [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m   27% L71    (Python ElDoc) -----[39;49m[38;2;51;51;51m[48;2;229;229;229m|[39;49m[38;2;0;0;0m[48;2;191;191;191m-UU-:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191mfnmatch.py  [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   27% L71    (Python ElDoc) ------[39;49m
+[?12l[?25h[?12;25h[11;61H[20;95H[?25l[38;2;0;0;0m[48;2;191;191;191m5[39;49m[?12l[?25h[?12;25h[16;61H[40;1H[?25l[38;2;0;0;205mM-x [39;49m[1;33H[7mMinibuf Help[0m[39;49m[27m[?12l[?25h[?12;25h[40;5H[?25ll[?12l[?25h[?12;25h[?25li[?12l[?25h[?12;25h[?25ls[?12l[?25h[?12;25h[?25lt[?12l[?25h[?12;25h[?25l-[?12l[?25h[?12;25h[?25lc[?12l[?25h[?12;25h[?25lo[?12l[?25h[?12;25h[?25ll[?12l[?25h[?12;25h[?25lo[?12l[?25h[?12;25h[?25lr[?12l[?25h[?12;25h[?25ls[?12l[?25h[?12;25h[?25l-[?12l[?25h[?12;25h[?25ld[?12l[?25h[?12;25h[?25li[?12l[?25h[?12;25h[?25ls[?12l[?25h[?12;25h[?25lp[?12l[?25h[?12;25h[?25ll[?12l[?25h[?12;25h[?25la[?12l[?25h[?12;25h[?25ly[?12l[?25h[?12;25h[?25lType [38;2;0;0;139m[48;2;245;245;245mq[39;49m in help window to restore previous buffer[?12l[?25h[?12;25h[16;61H[1;33H[?25l[7mPython Help [0m[39;49m[27m[21;1H[38;2;255;255;255m[48;2;0;0;0mblack                 [39;49m[38;2;0;0;0m black[39;49m                                                                                    #000000
+[38;2;255;255;255m[48;2;205;0;0mred                   [39;49m[38;2;205;0;0m red[39;49m                                                                                      #cd0000
+[38;2;0;0;0m[48;2;0;205;0mgreen                 [39;49m[38;2;0;205;0m green[39;49m                                                                                    #00cd00
+[38;2;0;0;0m[48;2;205;205;0myellow                [39;49m[38;2;205;205;0m yellow[39;49m                                                                                   #cdcd00
+[38;2;255;255;255m[48;2;0;0;238mblue                  [39;49m[38;2;0;0;238m blue[39;49m                                                                                     #0000ee
+[38;2;255;255;255m[48;2;205;0;205mmagenta               [39;49m[38;2;205;0;205m magenta[39;49m                                                                                  #cd00cd
+[38;2;0;0;0m[48;2;0;205;205mcyan                  [39;49m[38;2;0;205;205m cyan[39;49m                                                                                     #00cdcd
+[38;2;0;0;0m[48;2;229;229;229mwhite                 [39;49m[38;2;229;229;229m white[39;49m                                                                                    #e5e5e5
+[38;2;255;255;255m[48;2;127;127;127mbrightblack           [39;49m[38;2;127;127;127m brightblack[39;49m                                                                              #7f7f7f
+[38;2;255;255;255m[48;2;255;0;0mbrightred             [39;49m[38;2;255;0;0m brightred[39;49m                                                                                #ff0000
+[38;2;0;0;0m[48;2;0;255;0mbrightgreen           [39;49m[38;2;0;255;0m brightgreen[39;49m                                                                              #00ff00
+[38;2;0;0;0m[48;2;255;255;0mbrightyellow          [39;49m[38;2;255;255;0m brightyellow[39;49m                                                                             #ffff00
+[38;2;255;255;255m[48;2;92;92;255mbrightblue            [39;49m[38;2;92;92;255m brightblue[39;49m                                                                               #5c5cff
+[38;2;255;255;255m[48;2;255;0;255mbrightmagenta         [39;49m[38;2;255;0;255m brightmagenta[39;49m                                                                            #ff00ff[K
+[38;2;0;0;0m[48;2;0;255;255mbrightcyan            [39;49m[38;2;0;255;255m brightcyan[39;49m                                                                               #00ffff
+[38;2;0;0;0m[48;2;255;255;255mbrightwhite           [39;49m[38;2;255;255;255m brightwhite[39;49m                                                                              #ffffff
+[38;2;0;0;0m[48;2;255;250;250msnow                  [39;49m[38;2;255;250;250m snow[39;49m                                                                                     #fffafa
+[38;2;0;0;0m[48;2;248;248;255mghostwhite            [39;49m[38;2;248;248;255m ghostwhite[39;49m                                                                               #f8f8ff[39;4H[38;2;51;51;51m[48;2;229;229;229mU:%%- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229m*Colors*    [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m   Top L1     (Help) --------[39;49m[?12l[?25h[?12;25h[16;61H[40;1H[K[16;61H[1;33H[?25l[7mHelp-Mode Help[0m[39;49m[27m[20;61H[38;2;51;51;51m[48;2;229;229;229m-UU-:--- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229mfnmatch.py  [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m   27% L75    (Python ElDoc) ------[39;49m
+[39d[38;2;0;0;0m[48;2;191;191;191m-UUU:%%- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191m*Colors*    [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   Top L1     (Help) --------------------------------------------------------------------------[39;49m
+[?12l[?25h[?12;25h[21d[1;38r[21;1H[16M[1;40r[23;1H[?25l[38;2;0;0;0m[48;2;245;245;245mwhitesmoke            [39;49m[38;2;245;245;245m whitesmoke[39;49m                                                                               #f5f5f5[K
+[38;2;0;0;0m[48;2;220;220;220mgainsboro             [39;49m[38;2;220;220;220m gainsboro[39;49m                                                                                #dcdcdc[K
+[38;2;0;0;0m[48;2;255;250;240mfloralwhite           [39;49m[38;2;255;250;240m floralwhite[39;49m                                                                              #fffaf0[K
+[38;2;0;0;0m[48;2;253;245;230moldlace               [39;49m[38;2;253;245;230m oldlace[39;49m                                                                                  #fdf5e6[K
+[38;2;0;0;0m[48;2;250;240;230mlinen                 [39;49m[38;2;250;240;230m linen[39;49m                                                                                    #faf0e6[K
+[38;2;0;0;0m[48;2;250;235;215mantiquewhite          [39;49m[38;2;250;235;215m antiquewhite[39;49m                                                                             #faebd7[K
+[38;2;0;0;0m[48;2;255;239;213mpapayawhip            [39;49m[38;2;255;239;213m papayawhip[39;49m                                                                               #ffefd5[K
+[38;2;0;0;0m[48;2;255;235;205mblanchedalmond        [39;49m[38;2;255;235;205m blanchedalmond[39;49m                                                                           #ffebcd[K
+[38;2;0;0;0m[48;2;255;228;196mbisque                [39;49m[38;2;255;228;196m bisque[39;49m                                                                                   #ffe4c4[K
+[38;2;0;0;0m[48;2;255;218;185mpeachpuff             [39;49m[38;2;255;218;185m peachpuff[39;49m                                                                                #ffdab9[K
+[38;2;0;0;0m[48;2;255;222;173mnavajowhite           [39;49m[38;2;255;222;173m navajowhite[39;49m                                                                              #ffdead[K
+[38;2;0;0;0m[48;2;255;228;181mmoccasin              [39;49m[38;2;255;228;181m moccasin[39;49m                                                                                 #ffe4b5[K
+[38;2;0;0;0m[48;2;255;248;220mcornsilk              [39;49m[38;2;255;248;220m cornsilk[39;49m                                                                                 #fff8dc[K
+[38;2;0;0;0m[48;2;255;255;240mivory                 [39;49m[38;2;255;255;240m ivory[39;49m                                                                                    #fffff0[K
+[38;2;0;0;0m[48;2;255;250;205mlemonchiffon          [39;49m[38;2;255;250;205m lemonchiffon[39;49m                                                                             #fffacd[K
+[38;2;0;0;0m[48;2;255;245;238mseashell              [39;49m[38;2;255;245;238m seashell[39;49m                                                                                 #fff5ee[K[39;29H[38;2;0;0;0m[48;2;191;191;191m 3% L17[39;49m[?12l[?25h[?12;25h[21;1H[40d[?25l[38;2;0;0;205mM-x [39;49m[1;33H[7mMinibuf Help  [0m[39;49m[27m[?12l[?25h[?12;25h[40;5H[?25lx[?12l[?25h[?12;25h[?25lt[?12l[?25h[?12;25h[?25le[?12l[?25h[?12;25h[?25lr[?12l[?25h[?12;25h[?25lm[?12l[?25h[?12;25h[?25l-[?12l[?25h[?12;25h[?25lm[?12l[?25h[?12;25h[?25lo[?12l[?25h[?12;25h[?25lu[?12l[?25h[?12;25h[?25ls[?12l[?25h[?12;25h[?25le[?12l[?25h[?12;25h[?25l-[?12l[?25h[?12;25h[?25lm[?12l[?25h[?12;25h[?25lo[?12l[?25h[?12;25h[?25ld[?12l[?25h[?12;25h[?25le[?12l[?25h[?12;25h[?1000h[?1003h[?1006h[?25lXterm-Mouse mode enabled[?12l[?25h[?12;25h[21;1H[1;33H[?25l[7mHelp-Mode Help[0m[39;49m[27m[?12l[?25h[?12;25h[21;1H[40d[K[21d[11d[1;33H[?25l[7mPython Help   [0m[39;49m[27m[20;1H[38;2;0;0;0m[48;2;191;191;191m-UU-:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191mfnmatch.py  [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   27% L63    (Python ElDoc) -----[39;49m[39;1H[38;2;51;51;51m[48;2;229;229;229m-UUU:%%- F1  [39;49m[1m[38;2;51;51;51m[48;2;229;229;229m*Colors*    [0m[39;49m[38;2;51;51;51m[48;2;229;229;229m    3% L17    (Help) --------------------------------------------------------------------------[39;49m
+[?12l[?25h[?12;25h[3;10H[2;36H[K[3;10H[K[4;27H[K[5;46H[K[6;36H[K[7;18H[K
+[K
+[K[10;29H[K[11;59H[?25l[38;2;139;34;82me NAMES that do not match PAT."""[39;49m[K
+    [38;2;160;82;45mpat[39;49m = os.path.normcase(pat)[K[13;5H[38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[K[14;5H[38;2;160;32;240mif[39;49m os.path [38;2;160;32;240mis[39;49m posixpath:[K[15;5H    [38;2;178;34;34m# normcase on posix is NOP. Optimize it away from the loop. [39;49m                                                    
+	[38;2;160;32;240mreturn[39;49m [38;2;72;61;139mlist[39;49m(itertools.filterfalse([38;2;160;32;240mmatch[39;49m, names))[K
+[K[18;5H[38;2;160;82;45mresult[39;49m = [][K[19;5H[38;2;160;32;240mfor[39;49m name [38;2;160;32;240min[39;49m names:[K
+        [38;2;160;32;240mif[39;49m [38;2;160;32;240mmatch[39;49m(os.path.normcase(name)) [38;2;160;32;240mis[39;49m [38;2;0;139;139mNone[39;49m:[K
+            result.append(name)[K
+    [38;2;160;32;240mreturn[39;49m result[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mfnmatchcase[39;49m(name, pat):[K
+    [38;2;139;34;82m"""Test whether FILENAME matches PATTERN, including case. [39;49m                                                          
+[38;2;139;34;82m [39;49m                                                                                                                       
+[38;2;139;34;82m    This is a version of fnmatch() which doesn't case-normalize [39;49m                                                        
+[38;2;139;34;82m    its arguments. [39;49m                                                                                                     
+[38;2;139;34;82m    """[39;49m[K
+    [38;2;160;32;240mmatch[39;49m = _compile_pattern(pat)[K
+    [38;2;160;32;240mreturn[39;49m [38;2;160;32;240mmatch[39;49m(name) [38;2;160;32;240mis[39;49m [38;2;160;32;240mnot[39;49m [38;2;0;139;139mNone[39;49m[K
+[K
+[K
+[38;2;160;32;240mdef[39;49m [38;2;0;0;255mtranslate[39;49m(pat):[K
+    [38;2;139;34;82m"""Translate a shell PATTERN to a regular expression. [39;49m                                                              
+[38;2;139;34;82m [39;49m                                                                                                                       
+[38;2;139;34;82m    There is no way to quote meta-characters. [39;49m                                                                          
+[38;2;0;0;0m[48;2;191;191;191m-UU-:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191mfnmatch.py  [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   27% L63    (Python ElDoc) ------------------------------------------------------------------[39;49m
+[?12l[?25h[?12;25h[3;10H[40;1H[?25l[38;2;0;0;205mSwitch to buffer (default *Colors*): [39;49m[1;33H[7mMinibuf Help[0m[39;49m[27m[?12l[?25h[?12;25h[40;38H[?25l*[?12l[?25h[?12;25h[?25ls[?12l[?25h[?12;25h[?25lc[?12l[?25h[?12;25h[?25lr[?12l[?25h[?12;25h[?25la[?12l[?25h[?12;25h[?25lt[?12l[?25h[?12;25h[?25lc[?12l[?25h[?12;25h[?25lh[?12l[?25h[?12;25h[?25l*[?12l[?25h[?12;25h[K[1;33H[?25l[7mLisp-Interaction Help[0m[39;49m[27m
+[38;2;178;34;34m;; This buffer is for text that is not saved, and for Lisp evaluation. [39;49m                                                 
+[38;2;178;34;34m;; To create a file, visit it with ‘C-x C-f’ and enter text in its buffer. [39;49m                                             
+[K
+[K
+[K
+[K
+
+
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+
+[K
+[K
+[K
+[K
+[K
+
+
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+
+
+[K
+[K
+[K
+[K[39;4H[38;2;0;0;0m[48;2;191;191;191mU:--- F1  [39;49m[1m[38;2;0;0;0m[48;2;191;191;191m*scratch*   [0m[39;49m[38;2;0;0;0m[48;2;191;191;191m   All L4     (Lisp Interaction ElDoc) [39;49m[?12l[?25h[?12;25h[5;1H[?25l端[39;6H[38;2;0;0;0m[48;2;191;191;191m**[39;49m[?12l[?25h[?12;25h[5;3H[?25l末[?12l[?25h[?12;25h[C[?25lw[?12l[?25h[?12;25h[?25li[?12l[?25h[?12;25h[?25ld[?12l[?25h[?12;25h[?25le[?12l[?25h[?12;25h[C[?25l✓[?12l[?25h[?12;25h[C[?25l😀[?12l[?25h[?12;25h[C[?25le[?12l[?25h[?12;25h[?25lé[?12l[?25h[?12;25h[39;34H[?25l[38;2;0;0;0m[48;2;191;191;191m5[39;49m[?12l[?25h[?12;25h[6;1H[40d[K[?1006l[?1003l[?1000l[?1004l[?2004l[?1l>[?12l[?25h[?1049l[39;49m

@@ -1,0 +1,600 @@
+[?1049h[?1h=[H[2J[?2004h[?69$p[?2026$p[?2027$p[?2031$p[?2048$p[0m[4:3mP$qm\[?u[c]11;?[5n[?25h]11;?[5n[?2026h[>4;2m(B[m[H                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        [1 q[?1002h[?1006h[H[?2026l[?2026h[2 q[?2026l[c[?2026h(B[m[38;2;179;246;192m[48;2;20;22;27m"""Filename matching with shell patterns.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mfnmatch(FILENAME, PATTERN) matches according to the local convention.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe functions operate by translating the pattern into a regular(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe function translate(PATTERN) returns a regular expression(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m"""(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m functools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m itertools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m os[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m re[K
+[K
+__all__ = [(B[m[38;2;179;246;192m[48;2;20;22;27m"filter"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"filterfalse"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatch"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatchcase"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"translate"(B[m[38;2;224;226;234m[48;2;20;22;27m][K
+[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfnmatch(B[m[38;2;224;226;234m[48;2;20;22;27m(name, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Test whether FILENAME matches PATTERN.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Patterns are Unix shell style:(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    *       matches everything(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    ?       matches any single character(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [seq]   matches any character in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [!seq]  matches any char not in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    An initial period in FILENAME is not special.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    if the operating system requires it.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    """(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K
+(B[m[38;2;224;226;234m[48;2;79;82;88mfnmatch.py                                                                                            1,1            Top(B[m[38;2;224;226;234m[48;2;20;22;27m
+[J[2 q[H(B[m[38;2;179;246;192m[48;2;20;22;27m"""Filename matching with shell patterns.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mfnmatch(FILENAME, PATTERN) matches according to the local convention.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe functions operate by translating the pattern into a regular(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe function translate(PATTERN) returns a regular expression(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m"""(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m functools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m itertools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m os[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m re[K
+[K
+__all__ = [(B[m[38;2;179;246;192m[48;2;20;22;27m"filter"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"filterfalse"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatch"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatchcase"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"translate"(B[m[38;2;224;226;234m[48;2;20;22;27m][K
+[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfnmatch(B[m[38;2;224;226;234m[48;2;20;22;27m(name, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Test whether FILENAME matches PATTERN.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Patterns are Unix shell style:(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    *       matches everything(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    ?       matches any single character(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [seq]   matches any character in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [!seq]  matches any char not in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    An initial period in FILENAME is not special.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    if the operating system requires it.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    """(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K
+(B[m[38;2;224;226;234m[48;2;79;82;88mfnmatch.py                                                                                            1,1            Top(B[m[38;2;224;226;234m[48;2;20;22;27m
+[J[H[?2026lP+q4D73\[?2026h[?1004h[?2026l[?2026h[40;110H20j[H[?2026l[?2026h[40;110H   [39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m21,0-1[18A[?2026l[?2026h[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27m^D[19A[?2026l[?2026h[40;110H  [1;38r[H[19M[r[20;1H    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m fnmatchcase(name, pat)[K
+[K
+[K
+(B[m[38;2;224;226;234m[48;2;20;22;27m@(B[m[38;2;140;248;247m[48;2;20;22;27mfunctools.lru_cache(B[m[38;2;224;226;234m[48;2;20;22;27m(maxsize=(B[m[38;2;224;226;234m[48;2;20;22;27m32768(B[m[38;2;224;226;234m[48;2;20;22;27m, typed=(B[m[38;2;140;248;247m[48;2;20;22;27mTrue(B[m[38;2;224;226;234m[48;2;20;22;27m)[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27m_compile_pattern(B[m[38;2;224;226;234m[48;2;20;22;27m(pat):[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27misinstance(B[m[38;2;224;226;234m[48;2;20;22;27m(pat, (B[m[38;2;140;248;247m[48;2;20;22;27mbytes(B[m[38;2;224;226;234m[48;2;20;22;27m):[K
+        pat_str = (B[m[38;2;140;248;247m[48;2;20;22;27mstr(B[m[38;2;224;226;234m[48;2;20;22;27m(pat, (B[m[38;2;179;246;192m[48;2;20;22;27m'ISO-8859-1'(B[m[38;2;224;226;234m[48;2;20;22;27m)[K
+        res_str = translate(pat_str)[K
+        res = (B[m[38;2;140;248;247m[48;2;20;22;27mbytes(B[m[38;2;224;226;234m[48;2;20;22;27m(res_str, (B[m[38;2;179;246;192m[48;2;20;22;27m'ISO-8859-1'(B[m[38;2;224;226;234m[48;2;20;22;27m)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27melse(B[m[38;2;224;226;234m[48;2;20;22;27m:[K
+        res = translate(pat)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m re.compile(res).match[K
+[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfilter(B[m[38;2;224;226;234m[48;2;20;22;27m(names, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Construct a list from those elements of the iterable NAMES that match PAT."""(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    result = [][K
+    pat = os.path.normcase(pat)[K
+    match = _compile_pattern(pat)[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m40,0-1         11%[18A[?2026l[?2026h[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27m^D[19A[?2026l[?2026h[40;110H  [1;38r[H[19M[r[20;1H    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m os.path (B[m[38;2;224;226;234m[48;2;20;22;27mis(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath:[K
+        (B[m[38;2;155;158;164m[48;2;20;22;27m# normcase on posix is NOP. Optimize it away from the loop.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+        (B[0;1m[38;2;224;226;234m[48;2;20;22;27mfor(B[m[38;2;224;226;234m[48;2;20;22;27m name (B[m[38;2;224;226;234m[48;2;20;22;27min(B[m[38;2;224;226;234m[48;2;20;22;27m names:[K
+            (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m match(name):[K
+                result.append(name)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27melse(B[m[38;2;224;226;234m[48;2;20;22;27m:[K
+        (B[0;1m[38;2;224;226;234m[48;2;20;22;27mfor(B[m[38;2;224;226;234m[48;2;20;22;27m name (B[m[38;2;224;226;234m[48;2;20;22;27min(B[m[38;2;224;226;234m[48;2;20;22;27m names:[K
+            (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m match(os.path.normcase(name)):[K
+                result.append(name)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m result[K
+[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfilterfalse(B[m[38;2;224;226;234m[48;2;20;22;27m(names, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Construct a list from those elements of the iterable NAMES that do not match PAT."""(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    pat = os.path.normcase(pat)[K
+    match = _compile_pattern(pat)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m os.path (B[m[38;2;224;226;234m[48;2;20;22;27mis(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath:[K
+        (B[m[38;2;155;158;164m[48;2;20;22;27m# normcase on posix is NOP. Optimize it away from the loop.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+        (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mlist(B[m[38;2;224;226;234m[48;2;20;22;27m(itertools.filterfalse(match, names))[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m59,1           22[18A[?2026l[?2026h[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27m^U[19A[?2026l[?2026h[40;110H  [1;38r[H[19L[r[H[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfnmatch(B[m[38;2;224;226;234m[48;2;20;22;27m(name, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Test whether FILENAME matches PATTERN.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Patterns are Unix shell style:(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    *       matches everything(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    ?       matches any single character(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [seq]   matches any character in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [!seq]  matches any char not in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    An initial period in FILENAME is not special.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    if the operating system requires it.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    """(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m40,0-1         11[18A[?2026l[?2026h[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27mG[19A[?2026l[?2026h[40;110H [1;17H(B[0;1m[38;2;224;226;234m[48;2;20;22;27melse(B[m[38;2;224;226;234m[48;2;20;22;27m:[2;21H(B[m[38;2;155;158;164m[48;2;20;22;27m# Escape set operations (&&, ~~ and ||).
+(B[m[38;2;224;226;234m[48;2;20;22;27m                    stuff = _re_setops_sub((B[m[38;2;179;246;192m[48;2;20;22;27mr'\\\1'(B[m[38;2;224;226;234m[48;2;20;22;27m, stuff)[4;5H                (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m stuff[(B[m[38;2;224;226;234m[48;2;20;22;27m0(B[m[38;2;224;226;234m[48;2;20;22;27m] == (B[m[38;2;179;246;192m[48;2;20;22;27m'!'(B[m[38;2;224;226;234m[48;2;20;22;27m:[6X[5;25Hstuff = (B[m[38;2;179;246;192m[48;2;20;22;27m'^'(B[m[38;2;224;226;234m[48;2;20;22;27m + stuff[(B[m[38;2;224;226;234m[48;2;20;22;27m1(B[m[38;2;224;226;234m[48;2;20;22;27m:]
+                    (B[0;1m[38;2;224;226;234m[48;2;20;22;27melif(B[m[38;2;224;226;234m[48;2;20;22;27m stuff[(B[m[38;2;224;226;234m[48;2;20;22;27m0(B[m[38;2;224;226;234m[48;2;20;22;27m] (B[m[38;2;224;226;234m[48;2;20;22;27min(B[m[38;2;224;226;234m[48;2;20;22;27m ((B[m[38;2;179;246;192m[48;2;20;22;27m'^'(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m'['(B[m[38;2;224;226;234m[48;2;20;22;27m):[7;25Hstuff = (B[m[38;2;179;246;192m[48;2;20;22;27m'(B[m[38;2;140;248;247m[48;2;20;22;27m\\(B[m[38;2;179;246;192m[48;2;20;22;27m'(B[m[38;2;224;226;234m[48;2;20;22;27m + stuff
+                    add((B[m[38;2;179;246;192m[48;2;20;22;27mf'[(B[m[38;2;140;248;247m[48;2;20;22;27m{(B[m[38;2;224;226;234m[48;2;20;22;27mstuff(B[m[38;2;140;248;247m[48;2;20;22;27m}(B[m[38;2;179;246;192m[48;2;20;22;27m]'(B[m[38;2;224;226;234m[48;2;20;22;27m)
+        (B[0;1m[38;2;224;226;234m[48;2;20;22;27melse(B[m[38;2;224;226;234m[48;2;20;22;27m:[27X
+            add(_re_escape(c))[10X
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27massert(B[m[38;2;224;226;234m[48;2;20;22;27m i == n[22X[12;5H(B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m res, star_indices
+[49X
+[55X
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27m_join_translated_parts(B[m[38;2;224;226;234m[48;2;20;22;27m(parts, star_indices):
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mif(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;224;226;234m[48;2;20;22;27mnot(B[m[38;2;224;226;234m[48;2;20;22;27m star_indices:[39X
+        (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;179;246;192m[48;2;20;22;27mfr'(?s:(B[m[38;2;140;248;247m[48;2;20;22;27m{(B[m[38;2;179;246;192m[48;2;20;22;27m""(B[m[38;2;224;226;234m[48;2;20;22;27m.join(parts)(B[m[38;2;140;248;247m[48;2;20;22;27m}(B[m[38;2;179;246;192m[48;2;20;22;27m)\z'[18;5H(B[m[38;2;224;226;234m[48;2;20;22;27miter_star_indices = (B[m[38;2;140;248;247m[48;2;20;22;27miter(B[m[38;2;224;226;234m[48;2;20;22;27m(star_indices)[19;5Hj = (B[m[38;2;140;248;247m[48;2;20;22;27mnext(B[m[38;2;224;226;234m[48;2;20;22;27m(iter_star_indices[20;5Hbuffer = parts[:j]  (B[m[38;2;155;158;164m[48;2;20;22;27m# fixed pieces at the start[21;5H(B[m[38;2;224;226;234m[48;2;20;22;27mappend, extend = buffer.append, buffer.extend[22;5Hi = j + (B[m[38;2;224;226;234m[48;2;20;22;27m1
+(B[m[38;2;224;226;234m[48;2;20;22;27m    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mfor(B[m[38;2;224;226;234m[48;2;20;22;27m j (B[m[38;2;224;226;234m[48;2;20;22;27min(B[m[38;2;224;226;234m[48;2;20;22;27m iter_star_indices:[16X
+        (B[m[38;2;155;158;164m[48;2;20;22;27m# Now deal with STAR fixed STAR fixed ...[25;5H(B[m[38;2;224;226;234m[48;2;20;22;27m    (B[m[38;2;155;158;164m[48;2;20;22;27m# For an interior `STAR fixed` pairing, we want to do a minimal[26;9H# .*? match followed by `fixed`, with no possibility of backtracking.[27;9H# Atomic groups ("(?>...)") allow us to spell that directly.[28;9H# Note: people rely on the undocumented ability to join multiple[29;5H(B[m[38;2;224;226;234m[48;2;20;22;27m    (B[m[38;2;155;158;164m[48;2;20;22;27m# translate() results together via "|" to build large regexps matching[30;9H# "one of many" shell patterns.[31;5H(B[m[38;2;224;226;234m[48;2;20;22;27m    append((B[m[38;2;179;246;192m[48;2;20;22;27m'(?>.*?'(B[m[38;2;224;226;234m[48;2;20;22;27m)[8X[32;9Hextend(parts[i:j])[33;9Happend((B[m[38;2;179;246;192m[48;2;20;22;27m')'(B[m[38;2;224;226;234m[48;2;20;22;27m)
+        i = j + (B[m[38;2;224;226;234m[48;2;20;22;27m1(B[m[38;2;224;226;234m[48;2;20;22;27m[6X[35;5Happend((B[m[38;2;179;246;192m[48;2;20;22;27m'.*'(B[m[38;2;224;226;234m[48;2;20;22;27m)[68X[36;5Hextend(parts[i:])[37;5Hres = (B[m[38;2;179;246;192m[48;2;20;22;27m''(B[m[38;2;224;226;234m[48;2;20;22;27m.join(buffer)[6X[38;5H(B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;179;246;192m[48;2;20;22;27mfr'(?s:(B[m[38;2;140;248;247m[48;2;20;22;27m{(B[m[38;2;224;226;234m[48;2;20;22;27mres(B[m[38;2;140;248;247m[48;2;20;22;27m}(B[m[38;2;179;246;192m[48;2;20;22;27m)\z'(B[m[38;2;224;226;234m[48;2;20;22;27m[6X[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m209,1          Bot[A[?2026l[?2026h[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27mgg[A[A[?2026l[?2026h[40;110H  [H(B[m[38;2;179;246;192m[48;2;20;22;27m"""Filename matching with shell patterns.(B[m[38;2;224;226;234m[48;2;20;22;27m[2;21H[40X
+(B[m[38;2;179;246;192m[48;2;20;22;27mfnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;224;226;234m[48;2;20;22;27m[5;25H[23X
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.(B[m[38;2;224;226;234m[48;2;20;22;27m[8;21H[17X
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""(B[m[38;2;224;226;234m[48;2;20;22;27m[14X[12;5H[24X
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m functools
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m itertools
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m os[39X
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath[8X
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m re[33X[18;5H[38X
+__all__ = [(B[m[38;2;179;246;192m[48;2;20;22;27m"filter"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"filterfalse"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatch"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatchcase"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"translate"(B[m[38;2;224;226;234m[48;2;20;22;27m][20;5H[47X
+[45X
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfnmatch(B[m[38;2;224;226;234m[48;2;20;22;27m(name, pat):[23;5H(B[m[38;2;179;246;192m[48;2;20;22;27m"""Test whether FILENAME matches PATTERN.(B[m[38;2;224;226;234m[48;2;20;22;27m[24;9H[41X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Patterns are Unix shell style:(B[m[38;2;224;226;234m[48;2;20;22;27m[37X[26;9H[69X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    *       matches everything(B[m[38;2;224;226;234m[48;2;20;22;27m[38X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    ?       matches any single character(B[m[38;2;224;226;234m[48;2;20;22;27m[32X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [seq]   matches any character in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[38X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [!seq]  matches any char not in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[31;9H[16X
+(B[m[38;2;179;246;192m[48;2;20;22;27m    An initial period in FILENAME is not special.
+    Both FILENAME and PATTERN are first case-normalized
+    if the operating system requires it.
+    If you don't want this, use fnmatchcase(FILENAME, PATTERN).
+    """(B[m[38;2;224;226;234m[48;2;20;22;27m[14X[37;5Hname = os.path.normcase(name)[38;5Hpat = os.path.normcase(pat)[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m1,1            Top[H[?2026l[?2026h[1;38r[H(B[m[38;2;224;226;234m[48;2;20;22;27m[M[r[38;1H    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m fnmatchcase(name, pat)[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m2,0-1           0%[1;38r[H(B[m[38;2;224;226;234m[48;2;20;22;27m[M[r[38;1H[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m3,1             1[40;110H(B[m[38;2;224;226;234m[48;2;20;22;27m^E[H[?2026l[?2026h[40;110H  [1;38r[H[M[r[38;1H[K[39;103H(B[m[38;2;224;226;234m[48;2;79;82;88m4[H[?2026l[?2026h[39B(B[m[38;2;224;226;234m[48;2;20;22;27m:set[Cnotermguicolors[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[H(B[m[92mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[K
+[K
+[92mThe functions operate by translating the pattern into a regular(B[m[K
+[92mexpression.  They cache the compiled regular expressions for speed.(B[m[K
+[K
+[92mThe function translate(PATTERN) returns a regular expression(B[m[K
+[92mcorresponding to PATTERN.  (It does not compile it.)(B[m[K
+[92m"""(B[m[K
+[K
+import functools[K
+import itertools[K
+import os[K
+import posixpath[K
+import re[K
+[K
+__all__ = [[92m"filter"(B[m, [92m"filterfalse"(B[m, [92m"fnmatch"(B[m, [92m"fnmatchcase"(B[m, [92m"translate"(B[m][K
+[K
+[K
+(B[0;1mdef(B[m [96mfnmatch(B[m(name, pat):[K
+    [92m"""Test whether FILENAME matches PATTERN.(B[m[K
+[K
+[92m    Patterns are Unix shell style:(B[m[K
+[K
+[92m    *       matches everything(B[m[K
+[92m    ?       matches any single character(B[m[K
+[92m    [seq]   matches any character in seq(B[m[K
+[92m    [!seq]  matches any char not in seq(B[m[K
+[K
+[92m    An initial period in FILENAME is not special.(B[m[K
+[92m    Both FILENAME and PATTERN are first case-normalized(B[m[K
+[92m    if the operating system requires it.(B[m[K
+[92m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[K
+[92m    """(B[m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K
+    (B[0;1mreturn(B[m fnmatchcase(name, pat)[K
+[K
+[K
+(B[0;7mfnmatch.py                                                                                            4,1             1%
+(B[m:set notermguicolors[K[H[?2026l[?2026h[39B[20X:set[Ctermguicolors[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[H[38;2;179;246;192m[48;2;20;22;27mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe functions operate by translating the pattern into a regular(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mThe function translate(PATTERN) returns a regular expression(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m"""(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m functools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m itertools[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m os[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m posixpath[K
+(B[m[38;2;224;226;234m[48;2;20;22;27mimport(B[m[38;2;224;226;234m[48;2;20;22;27m re[K
+[K
+__all__ = [(B[m[38;2;179;246;192m[48;2;20;22;27m"filter"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"filterfalse"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatch"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"fnmatchcase"(B[m[38;2;224;226;234m[48;2;20;22;27m, (B[m[38;2;179;246;192m[48;2;20;22;27m"translate"(B[m[38;2;224;226;234m[48;2;20;22;27m][K
+[K
+[K
+(B[0;1m[38;2;224;226;234m[48;2;20;22;27mdef(B[m[38;2;224;226;234m[48;2;20;22;27m (B[m[38;2;140;248;247m[48;2;20;22;27mfnmatch(B[m[38;2;224;226;234m[48;2;20;22;27m(name, pat):[K
+    (B[m[38;2;179;246;192m[48;2;20;22;27m"""Test whether FILENAME matches PATTERN.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Patterns are Unix shell style:(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    *       matches everything(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    ?       matches any single character(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [seq]   matches any character in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    [!seq]  matches any char not in seq(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    An initial period in FILENAME is not special.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    if the operating system requires it.(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+(B[m[38;2;179;246;192m[48;2;20;22;27m    """(B[m[38;2;224;226;234m[48;2;20;22;27m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K
+    (B[0;1m[38;2;224;226;234m[48;2;20;22;27mreturn(B[m[38;2;224;226;234m[48;2;20;22;27m fnmatchcase(name, pat)[K
+[K
+[K
+(B[m[38;2;224;226;234m[48;2;79;82;88mfnmatch.py                                                                                            4,1             1%
+(B[m[38;2;224;226;234m[48;2;20;22;27m:set termguicolors[K[H[?2026l[?2026h[39B[18X:colorscheme[Chabamax[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[H(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+
+The functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.
+
+The function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""
+
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport
+import
+import
+import
+import[16;12H(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"
+
+
+(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfnmatch[20;5H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME matches PATTERN.
+
+    Patterns are Unix shell style:
+
+    *       matches everything
+    ?       matches any single character
+    [seq]   matches any character in seq
+    [!seq]  matches any char not in seq
+
+    An initial period in FILENAME is not special.
+    Both FILENAME and PATTERN are first case-normalized
+    if the operating system requires it.
+    If you don't want this, use fnmatchcase(FILENAME, PATTERN).
+    """[36;5H(B[m[38;2;175;135;175m[48;2;28;28;28mreturn
+
+
+(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                                                                                            4,1             1%[2 q[2 q[?1002h[?1006h[H(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m"""(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re[K
+[K
+__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"(B[m[38;2;199;199;199m[48;2;28;28;28m][K
+[K
+[K
+(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfnmatch(B[m[38;2;199;199;199m[48;2;28;28;28m(name, pat):[K
+    (B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME matches PATTERN.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    Patterns are Unix shell style:(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    *       matches everything(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    ?       matches any single character(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    [seq]   matches any character in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    [!seq]  matches any char not in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    An initial period in FILENAME is not special.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    if the operating system requires it.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    """(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+    name = os.path.normcase(name)[K
+    pat = os.path.normcase(pat)[K
+    (B[m[38;2;175;135;175m[48;2;28;28;28mreturn(B[m[38;2;199;199;199m[48;2;28;28;28m fnmatchcase(name, pat)[K
+[K
+[K
+(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                                                                                            4,1             1%
+(B[m[38;2;199;199;199m[48;2;28;28;28m:colorscheme habamax[K[H[?2026l[?2026h[39B[20X:vsplit[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[36A(B[m[38;2;95;175;95m[48;2;28;28;28mlar(B[m[38;2;199;199;199m[48;2;28;28;28m[57X
+(B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for
+ speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[53X
+[52X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""(B[m[38;2;199;199;199m[48;2;28;28;28m[13X
+[16X[12;8Hfunctools[13;8Hitertools[14;8Hos
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re[51X
+
+__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase"
+(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"(B[m[38;2;199;199;199m[48;2;28;28;28m][9X[20;5H[41X
+
+(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfnmatch(B[m[38;2;199;199;199m[48;2;28;28;28m(name, pat):[11X[23;5H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME matches PATTERN.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[30X[25;5H(B[m[38;2;95;175;95m[48;2;28;28;28mPatterns are Unix shell style:(B[m[38;2;199;199;199m[48;2;28;28;28m[6X
+[40X[27;5H(B[m[38;2;95;175;95m[48;2;28;28;28m*       matches everything(B[m[38;2;199;199;199m[48;2;28;28;28m[9X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    ?       matches any single character[29;5H[seq]   matches any character in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[9X[30;5H(B[m[38;2;95;175;95m[48;2;28;28;28m[!seq]  matches any char not in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[16X
+[40X[32;5H(B[m[38;2;95;175;95m[48;2;28;28;28mAn initial period in FILENAME is not special.(B[m[38;2;199;199;199m[48;2;28;28;28m[11X[33;5H(B[m[38;2;95;175;95m[48;2;28;28;28mBoth FILENAME and PATTERN are first case-normalized
+    if the operating system requires it.
+    If you don't want this, use fnmatchcase(FILENAME, PATTER
+N).(B[m[38;2;199;199;199m[48;2;28;28;28m[30X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    """[38;5H(B[m[38;2;199;199;199m[48;2;28;28;28mname = os.path.normcase(name)[1;61H(B[m[38;2;118;118;118m[48;2;118;118;118m│[2;61H│[3;61H│[4;61H│[5;61H│[6;61H│[7;61H│[8;61H│[9;61H│[10;61H│[11;61H│[12;61H│[13;61H│[14;61H│[15;61H│[16;61H│[17;61H│[18;61H│[19;61H│[20;61H│[21;61H│[22;61H│[23;61H│[24;61H│[25;61H│[26;61H│[27;61H│[28;61H│[29;61H│[30;61H│[31;61H│[32;61H│[33;61H│[34;61H│[35;61H│[36;61H│[37;61H│[38;61H│[39;43H(B[m[38;2;28;28;28m[48;2;158;158;158m4,1             1%[1;62H(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account[2;62H.(B[m[38;2;199;199;199m[48;2;28;28;28m[3;62H  [4;62H(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a reg[5;62Hular[6;62Hexpression.  They cache the compiled regular expressions fo[7;62Hr speed.[9;62HThe function translate(PATTERN) returns a regular expressio[10;62Hn[11;62Hcorresponding to PATTERN.  (It does not compile it.)[12;62H"""[14;62H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[15;62H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[16;62H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os    [17;62H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath[18;62H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re[20;62H__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase[21;62H"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"(B[m[38;2;199;199;199m[48;2;28;28;28m][24;62H(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfnmatch(B[m[38;2;199;199;199m[48;2;28;28;28m(name, pat):[25;66H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME matches PATTERN.[27;62H    Patterns are Unix shell style:[29;62H    *       matches everything[30;62H    ?       matches any single character[31;62H    [seq]   matches any character in seq[32;62H    [!seq]  matches any char not in seq[34;62H    An initial period in FILENAME is not special.[35;62H    Both FILENAME and PATTERN are first case-normalized[36;62H    if the operating system requires it.[37;62H    If you don't want this, use fnmatchcase(FILENAME, PATTE[38;62HRN).[39;62H(B[m[38;2;28;28;28m[48;2;118;118;118mfnmatch.py                               4,1             1%[2 q[?1002h[?1006h[H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[39B[7X:split[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[20A(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                                4,1             1%
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[23X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regu
+lar
+expression.  They cache the compiled regular expressions for
+ speed.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[30X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""(B[m[38;2;199;199;199m[48;2;28;28;28m[36X
+
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[33X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[39X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[31X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath[44X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re
+[7X
+__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase"(B[m[38;2;88;88;88m[48;2;28;28;28m@@@
+(B[m[38;2;28;28;28m[48;2;118;118;118mfnmatch.py                                4,1             1% [2 q[?1002h[?1006h[H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m^Wl[H[?2026l[?2026h[40;110H   [20A(B[m[38;2;28;28;28m[48;2;118;118;118mfnmatch.py                                4,1             1%[39;62H(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                               4,1             1%[1;62H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m30j[1;62H[?2026l[?2026h[40;110H   [39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m34,1[36;62H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m^Wx[36;62H[?2026l[?2026h[40;110H   [36;62H[?2026l[?2026h[40;110H^WK[36;62H[?2026l[?2026h[40;110H   [H(B[m[38;2;95;175;95m[48;2;28;28;28m    Patterns are Unix shell style:(B[m[38;2;199;199;199m[48;2;28;28;28m[K[2;61H  
+(B[m[38;2;95;175;95m[48;2;28;28;28m    *       matches everything(B[m[38;2;199;199;199m[48;2;28;28;28m[31X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    ?       matches any single character(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    [seq]   matches any character in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[25X[6;2H(B[m[38;2;95;175;95m[48;2;28;28;28m   [!seq]  matches any char not in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[K[7;61H[9X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    An initial period in FILENAME is not special.(B[m[38;2;199;199;199m[48;2;28;28;28m[12X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m    if the operating system requires it.(B[m[38;2;199;199;199m[48;2;28;28;28m[22X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).(B[m[38;2;199;199;199m[48;2;28;28;28m[50X
+(B[m[38;2;95;175;95m[48;2;28;28;28m    """(B[m[38;2;199;199;199m[48;2;28;28;28m[57X
+(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                                                                                            34,1           12%
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m[17X
+[77X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular(B[m[38;2;199;199;199m[48;2;28;28;28m[7X
+(B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[10X
+[70X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m 
+(B[m[38;2;95;175;95m[48;2;28;28;28mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+(B[m[38;2;95;175;95m[48;2;28;28;28m"""(B[m[38;2;199;199;199m[48;2;28;28;28m[73X[22;61H 
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[45X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[68X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[97X
+(B[m[38;2;28;28;28m[48;2;118;118;118mfnmatch.py                                                                                            4,1             1%
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m[35X
+[61X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular(B[m[38;2;199;199;199m[48;2;28;28;28m[28X
+(B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[34X[31;61H[41X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m[40X
+(B[m[38;2;95;175;95m[48;2;28;28;28mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;199;199;199m[48;2;28;28;28m[9X
+(B[m[38;2;95;175;95m[48;2;28;28;28m"""(B[m[38;2;199;199;199m[48;2;28;28;28m[107X
+[116X[36;8Hfunctools[85X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[K
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[56X[39;43H(B[m[38;2;28;28;28m[48;2;118;118;118m                                                            4,1             1%[29A[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m^W=[30A[?2026l[?2026h[40;110H   [30A[?2026l[?2026h
+
+
+(B[m[38;2;28;28;28m[48;2;118;118;118mfnmatch.py                                                                                            34,1           12%[26B(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py                                                                                            13,5            1%[36;5H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mgg[36;5H[?2026l[?2026h[40;110H  [27;38r[27;1H[3L[r[27;1H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Filename matching with shell patterns.(B[m[38;2;199;199;199m[48;2;28;28;28m[K
+[K
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatch(FILENAME, PATTERN) matches according to the local convention.(B[m[38;2;199;199;199m[48;2;28;28;28m[K[39;104H(B[m[38;2;28;28;28m[48;2;158;158;158m,5            Top[27;5H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mo[27;5H[?2026l[?2026h[40;110H [40;1H(B[0;1m[38;2;199;199;199m[48;2;28;28;28m-- INSERT --[13;12H(B[m[38;2;28;28;28m[48;2;118;118;118m[+]                                                                                        35[26;12H[+]                                                                                        5,1             2(B[m[38;2;199;199;199m[48;2;28;28;28m
+
+
+[69X[30;8H(B[m[38;2;95;175;95m[48;2;28;28;28m(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[63X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular(B[m[38;2;199;199;199m[48;2;28;28;28m    
+(B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[60X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression
+corresponding to PATTERN.  (It does not compile it.)
+"""[39;12H(B[m[38;2;28;28;28m[48;2;158;158;158m[+]                                                                                        2,1[6 q[11A[?2026l[?2026h(B[m[38;2;95;175;95m[48;2;28;28;28m# 端末 terminal ✓   😀[28;21H   👨‍👩‍👧[28;24H é   ❤️[39;105H(B[m[38;2;28;28;28m[48;2;158;158;158m57-29[28;29H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[12B[12X[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m1-27[2 q[28;27H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mR[28;27H[?2026l[?2026h[40;110H [40;1H(B[0;1m[38;2;199;199;199m[48;2;28;28;28m-- REPLACE --[4 q[28;27H[?2026l[?2026h(B[m[38;2;95;175;95m[48;2;28;28;28mREPLACED[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m9-35[28;35H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[12B[13X[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m8-34[2 q[28;34H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mo[28;34H[?2026l[?2026h[40;110H [40;1H(B[0;1m[38;2;199;199;199m[48;2;28;28;28m-- INSERT --[29;38r[29;1H(B[m[38;2;199;199;199m[48;2;28;28;28m[L[r[29;1H[K[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m3,1    [6 q[10A[?2026l[?2026h[30;38r[30;1H(B[m[38;2;199;199;199m[48;2;28;28;28m[L[r[29;1H(B[m[38;2;95;175;95m[48;2;28;28;28mpasted line one
+pasted line two(B[m[38;2;199;199;199m[48;2;28;28;28m[K[A[?2026l[?2026h[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m4,16[30;16H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[10B[12X[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m5[2 q[30;15H[?2026l[?2026h[30;1H(B[m[38;2;95;175;95m[48;2;26;52;86mpasted line tw[10B(B[0;1m[38;2;199;199;199m[48;2;28;28;28m-- VISUAL LINE --[92C(B[m[38;2;199;199;199m[48;2;28;28;28m5j[2 q[30;15H[?2026l[?2026h[40;110H6 [26A(B[m[38;2;95;175;95m[48;2;26;52;86mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+ 
+The functions operate by translating the pattern into a regular[30;15Ho
+ 
+fnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.
+ 
+The functions (B[m[38;2;95;175;95m[48;2;28;28;28mo(B[m[38;2;95;175;95m[48;2;26;52;86mperate by translating the pattern into a regular[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m9[35;15H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m^[[35;15H[?2026l[?2026h[40;110H  [26A(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+(B[m[38;2;199;199;199m[48;2;28;28;28m 
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular[14Bpasted line two
+(B[m[38;2;199;199;199m[48;2;28;28;28m 
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.
+(B[m[38;2;199;199;199m[48;2;28;28;28m 
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular(B[m[38;2;199;199;199m[48;2;28;28;28m[5B[17X[2 q[35;15H[?2026l[?2026h[19A(B[m[38;2;95;175;95m[48;2;26;52;86mo[24B(B[0;1m[38;2;199;199;199m[48;2;28;28;28m-- VISUAL BLOCK --[17;15H(B[m[38;2;95;175;95m[48;2;26;52;86mh[19;15Hr[35;15Ho[36;15Hh[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m12,15[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m8l[2 q[38;15H[?2026l[?2026h[40;110H4x9[16;16H(B[m[38;2;95;175;95m[48;2;26;52;86mperate b[17;16Hey cache[19;16Hanslate([35;16Hperate b[36;16Hey cache[38;15Hranslate(B[0;1m[38;2;255;0;175m[48;2;28;28;28m((B[m[38;2;95;175;95m[48;2;28;28;28mPATTERN(B[0;1m[38;2;255;0;175m[48;2;28;28;28m)[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m23[38;23H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28m^[ [38;23H[?2026l[?2026h[40;110H  [16;15H(B[m[38;2;95;175;95m[48;2;28;28;28moperate b[17;15Hhey cache[19;15Hranslate([35;15Hoperate b[36;15Hhey cache[38;15Hranslate(B[m[38;2;199;199;199m[48;2;28;28;28m
+
+[18X[2 q[38;23H[?2026l[?2026h
+
+/[13;104H(B[m[38;2;28;28;28m[48;2;118;118;118m7,1           13[26;103H7,1             3[40;2H(B[m[38;2;199;199;199m[48;2;28;28;28mmatch[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[?2026l[?25l[?2026h[101C[5/32][3;13H(B[m[38;2;95;175;95m[48;2;55;74;68mmatch[4;13Hmatch[5;13Hmatch[6;13Hmatch[11;35Hmatch[14;3Hmatch[13B(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[25X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[18X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[6X
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath
+(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re
+[69X
+__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fn(B[m[38;2;95;175;95m[48;2;90;74;69mmatch(B[m[38;2;95;175;95m[48;2;28;28;28m"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fn(B[m[38;2;95;175;95m[48;2;55;74;68mmatch(B[m[38;2;95;175;95m[48;2;28;28;28mcase"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"(B[m[38;2;199;199;199m[48;2;28;28;28m]
+
+[63X
+(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfn(B[m[38;2;135;175;175m[48;2;55;74;68mmatch(B[m[38;2;199;199;199m[48;2;28;28;28m(name, pat):[44X[37;5H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME (B[m[38;2;95;175;95m[48;2;55;74;68mmatch(B[m[38;2;95;175;95m[48;2;28;28;28mes PATTERN.(B[m[38;2;199;199;199m[48;2;28;28;28m
+[60X[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m22,40           7%[33;40H[?2026l[?25h[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mn[33;40H[?2026l[?2026h[40;102H      [C[C [40;1H[?2026l[?25l[?2026h[101C[6/32][33;40H(B[m[38;2;95;175;95m[48;2;55;74;68mmatch(B[m[38;2;95;175;95m[48;2;28;28;28m"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fn(B[m[38;2;95;175;95m[48;2;90;74;69mmatch[39;106H(B[m[38;2;28;28;28m[48;2;158;158;158m51[33;51H[?2026l[?25h[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mn[33;51H[?2026l[?2026h[40;102H      [C[C [40;1H[?2026l[?25l[?2026h[101C[7/32][33;51H(B[m[38;2;95;175;95m[48;2;55;74;68mmatch[36;7H(B[m[38;2;135;175;175m[48;2;90;74;69mmatch[39;104H(B[m[38;2;28;28;28m[48;2;158;158;158m5,7 [36;7H[?2026l[?25h[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m
+
+
+
+[107X:nohlsearch[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[3;13H(B[m[38;2;95;175;95m[48;2;28;28;28mmatch[4;13Hmatch[5;13Hmatch[6;13Hmatch[11;35Hmatch[14;3Hmatch[33;40Hmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch[36;7H(B[m[38;2;135;175;175m[48;2;28;28;28mmatch[37;30H(B[m[38;2;95;175;95m[48;2;28;28;28mmatch[2 q[?1002h[?1006h[36;7H[?2026l[?2026h[40;110H(B[m[38;2;199;199;199m[48;2;28;28;28mgg[36;7H[?2026l[?2026h[40;110H  [13A(B[m[38;2;95;175;95m[48;2;28;28;28m"""Filename matching with shell patterns.
+# 端末 terminal ✓   😀[28;21H   👨‍👩‍👧[28;24H é REPLACED
+pasted line one
+pasted line two(B[m[38;2;199;199;199m[48;2;28;28;28m 
+[9X
+(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatch(FILENAME, PATTERN) matches according to the local convention.
+fnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m[14X
+
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular
+expression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[37;5H[41X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression[39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m1,7            Top[27;7H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[13B[11X:hi[CDiagnosticUnderlineError[Cgui=undercurl[Cguisp=#ff5f5f[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[27;7H[?2026l[?2026h[13B[56X:hi[CDiagnosticUnderlineWarn[Cgui=underdashed[Cguisp=#ffaf00[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[27;7H[?2026l[?2026h[13B[57X:hi[CDiagnosticUnderlineInfo[Cgui=underdouble[Cguisp=#5fafff[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[27;7H[?2026l[?2026h[13B[57X:hi[CDiagnosticUnderlineHint[Cgui=underdotted[Cguisp=#5fd7af[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[27;7H[?2026l[?2026h[13B[57X:lua[Cvim.diagnostic.config({virtual_text=true})[Cvim.diagnostic.set(vim.api.nvim_create_namespace('fixture'),0,{{lnum=1,c[38;40r[38;1H[2M[r[37;1H(B[m[38;2;28;28;28m[48;2;158;158;158m                                                                                                                        
+
+(B[m[38;2;199;199;199m[48;2;28;28;28mol=0,end_col=4,severity=1,message='fixture error'},{lnum=3,col=4,end_col=11,severity=2,message='fixture warning'},{lnum=
+2,col=0,end_col=6,severity=3,message='fixture info'},{lnum=5,col=0,end_col=8,severity=4,message='fixture hint'}})       [2 q[?1002l[?1006l[40;1H[?2026l[?2026h[13;87H(B[m[38;2;255;0;0m[48;2;118;118;118mE:1 (B[m[38;2;255;165;0m[48;2;118;118;118mW:1 (B[m[38;2;173;216;230m[48;2;118;118;118mI:1 (B[m[38;2;211;211;211m[48;2;118;118;118mH:1[26;87H(B[m[38;2;255;0;0m[48;2;118;118;118mE:1 (B[m[38;2;255;165;0m[48;2;118;118;118mW:1 (B[m[38;2;173;216;230m[48;2;118;118;118mI:1 (B[m[38;2;211;211;211m[48;2;118;118;118mH:1[39;87H(B[m[38;2;199;199;199m[48;2;28;28;28m,message='fixtu[2 q[?1002h[?1006h
+[?2026l[?2026h[3A                                                                                                                        
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m                                                            
+(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py [+]                                                                        (B[m[38;2;255;0;0m[48;2;158;158;158mE:1 (B[m[38;2;255;165;0m[48;2;158;158;158mW:1 (B[m[38;2;173;216;230m[48;2;158;158;158mI:1 (B[m[38;2;211;211;211m[48;2;158;158;158mH:1(B[m[38;2;28;28;28m[48;2;158;158;158m 1,7            Top[H(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    Patterns are Unix shell style:
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28m    *       matches everything
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    ?       matches any single character
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    [seq]   matches any character in seq
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    [!seq]  matches any char not in seq
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28m    An initial period in FILENAME is not special.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    Both FILENAME and PATTERN are first case-normalized
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    if the operating system requires it.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    If you don't want this, use fnmatchcase(FILENAME, PATTERN).
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    """
+
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mcorresponding to PATTERN.  (It does not compile it.)
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m"""
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools
+  (B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools
+  (B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os
+
+  (B[m[38;2;95;175;95m[48;2;28;28;28m"""Filename matching with shell patterns.
+(B[m[38;2;255;0;0m[48;2;28;28;28mE (B[m[4:3m[58:2::255:95:95m[38;2;95;175;95m[48;2;28;28;28m# 端(B[m[38;2;95;175;95m[48;2;28;28;28m末 terminal ✓   😀[28;23H   👨‍👩‍👧[28;26H é REPLACED(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;255;0;0m[48;2;28;28;28m■[28;43H fixture error
+(B[m[38;2;173;216;230m[48;2;28;28;28mI (B[m[4:2m[58:2::95:175:255m[38;2;95;175;95m[48;2;28;28;28mpasted(B[m[38;2;95;175;95m[48;2;28;28;28m line one(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;173;216;230m[48;2;28;28;28m■[29;24H fixture info
+(B[m[38;2;255;165;0m[48;2;28;28;28mW (B[m[38;2;95;175;95m[48;2;28;28;28mpast(B[m[4:5m[58:2::255:175:0m[38;2;95;175;95m[48;2;28;28;28med line(B[m[38;2;95;175;95m[48;2;28;28;28m two(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;255;165;0m[48;2;28;28;28m■[30;24H fixture warning
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+(B[m[38;2;211;211;211m[48;2;28;28;28mH (B[m[4:4m[58:2::95:215:175m[38;2;95;175;95m[48;2;28;28;28mfnmatch((B[m[38;2;95;175;95m[48;2;28;28;28mFILENAME, PATTERN) matches according to the local convention.(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;211;211;211m[48;2;28;28;28m■[32;78H fixture hint
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mexpression.  They cache the compiled regular expressions for speed.
+(B[m[38;2;199;199;199m[48;2;28;28;28m  
+  (B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m
+
+[J[27;9H[?2026l[?2026h[40;110H2G[27;9H[?2026l[?2026h[40;110H  [39;103H(B[m[38;2;28;28;28m[48;2;158;158;158m2,9-7[28;9H[?2026l[?2026h[12B(B[m[38;2;199;199;199m[48;2;28;28;28m:lua[Cvim.diagnostic.open_float()[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[29;9H(B[m[38;2;199;199;199m[48;2;58;58;58mDiagnostics:    [30;9H1. (B[m[38;2;255;0;0m[48;2;58;58;58mfixture error[2 q[?1002h[?1006h[28;9H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[12B[32X:lua[Clocal[Cb=vim.api.nvim_create_buf(false,true)[Cvim.api.nvim_buf_set_lines(b,0,-1,false,{'floating[Cwindow','wide:[C端末(B[m[38;2;88;88;88m[48;2;28;28;28m>[39;40r[39;1H(B[m[38;2;199;199;199m[48;2;28;28;28m[M[r[38;1H(B[m[38;2;28;28;28m[48;2;158;158;158m                                                                                                                        
+
+(B[m[38;2;199;199;199m[48;2;28;28;28mエミ                                                                                                                    [2 q[?1002l[?1006l[40;5H[?2026l[?2026hュ','emoji:[C  😀[40;20H✓[Ceé'})[Cvim.api.nvim_open_win(b,false,{relative='editor',row=3,col=8,width=30,height=3,border='rounded[37;40r[37;1H[M[r[40;1H',title=' fixture '})                                                                                                   [40;1H[?2026l[?2026h[3A                                                                                                                        
+  (B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression(B[m[38;2;199;199;199m[48;2;28;28;28m                                                          
+(B[m[38;2;28;28;28m[48;2;158;158;158mfnmatch.py [+]                                                                        (B[m[38;2;255;0;0m[48;2;158;158;158mE:1 (B[m[38;2;255;165;0m[48;2;158;158;158mW:1 (B[m[38;2;173;216;230m[48;2;158;158;158mI:1 (B[m[38;2;211;211;211m[48;2;158;158;158mH:1(B[m[38;2;28;28;28m[48;2;158;158;158m 2,9-7          Top(B[m[38;2;199;199;199m[48;2;28;28;28m
+[J[4;9H(B[m[38;2;118;118;118m[48;2;118;118;118m╭[4;10H(B[0;1m[38;2;199;199;199m[48;2;28;28;28m fixture (B[m[38;2;118;118;118m[48;2;118;118;118m─[4;20H─[4;21H─[4;22H─[4;23H─[4;24H─[4;25H─[4;26H─[4;27H─[4;28H─[4;29H─[4;30H─[4;31H─[4;32H─[4;33H─[4;34H─[4;35H─[4;36H─[4;37H─[4;38H─[4;39H─[4;40H╮[5;9H│[5;10H(B[m[38;2;199;199;199m[48;2;58;58;58mfloating window               (B[m[38;2;118;118;118m[48;2;118;118;118m│[6;9H│[6;10H(B[m[38;2;199;199;199m[48;2;58;58;58mwide: 端末エミュ              (B[m[38;2;118;118;118m[48;2;118;118;118m│[7;9H│[7;10H(B[m[38;2;199;199;199m[48;2;58;58;58memoji:   😀[7;19H ✓ é                 (B[m[38;2;118;118;118m[48;2;118;118;118m│[8;9H╰[8;10H─[8;11H─[8;12H─[8;13H─[8;14H─[8;15H─[8;16H─[8;17H─[8;18H─[8;19H─[8;20H─[8;21H─[8;22H─[8;23H─[8;24H─[8;25H─[8;26H─[8;27H─[8;28H─[8;29H─[8;30H─[8;31H─[8;32H─[8;33H─[8;34H─[8;35H─[8;36H─[8;37H─[8;38H─[8;39H─[8;40H╯[2 q[?1002h[?1006h[28;9H[?2026l[?2026h[12B(B[m[38;2;199;199;199m[48;2;28;28;28m:only[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[4;9H(B[m[38;2;95;175;95m[48;2;28;28;28m      matches any single charact[5;9Heq]   matches any character in s[6;9Hseq]  matches any char not in se[7;9H(B[m[38;2;199;199;199m[48;2;28;28;28m                                [8;9H(B[m[38;2;95;175;95m[48;2;28;28;28m initial period in FILENAME is n[29;9H line one(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;173;216;230m[48;2;28;28;28m■[29;24H [30;9H(B[m[4:5m[58:2::255:175:0m[38;2;95;175;95m[48;2;28;28;28m line(B[m[38;2;95;175;95m[48;2;28;28;28m two(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;255;165;0m[48;2;28;28;28m■[30;24H [1;3H(B[m[38;2;95;175;95m[48;2;28;28;28m"""Filename matching with shell patterns.
+(B[m[38;2;255;0;0m[48;2;28;28;28mE (B[m[4:3m[58:2::255:95:95m[38;2;95;175;95m[48;2;28;28;28m# 端(B[m[38;2;95;175;95m[48;2;28;28;28m末 terminal ✓   😀[2;23H   👨‍👩‍👧[2;26H é REPLACED(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;255;0;0m[48;2;28;28;28m■[2;43H fixture error
+(B[m[38;2;173;216;230m[48;2;28;28;28mI (B[m[4:2m[58:2::95:175:255m[38;2;95;175;95m[48;2;28;28;28mpasted(B[m[38;2;95;175;95m[48;2;28;28;28m line one(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;173;216;230m[48;2;28;28;28m■[3;24H fixture info
+(B[m[38;2;255;165;0m[48;2;28;28;28mW (B[m[38;2;95;175;95m[48;2;28;28;28mpast(B[m[4:5m[58:2::255:175:0m[38;2;95;175;95m[48;2;28;28;28med line(B[m[38;2;95;175;95m[48;2;28;28;28m two(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;255;165;0m[48;2;28;28;28m■[4;24H fixture warning(B[m[38;2;199;199;199m[48;2;28;28;28m   [5;3H[40X
+(B[m[38;2;211;211;211m[48;2;28;28;28mH (B[m[4:4m[58:2::95:215:175m[38;2;95;175;95m[48;2;28;28;28mfnmatch((B[m[38;2;95;175;95m[48;2;28;28;28mFILENAME, PATTERN) matches according to the local convention.(B[m[38;2;199;199;199m[48;2;28;28;28m     (B[m[38;2;211;211;211m[48;2;28;28;28m■[6;78H fixture hint[7;3H(B[m[38;2;95;175;95m[48;2;28;28;28mfnmatchcase(FILENAME, PATTERN) always takes case in account.(B[m[38;2;199;199;199m[48;2;28;28;28m[8;3H[49X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe functions operate by translating the pattern into a regular[10;3Hexpression.  They cache the compiled regular expressions for speed.(B[m[38;2;199;199;199m[48;2;28;28;28m[11;3H[63X
+(B[m[38;2;95;175;95m[48;2;28;28;28mThe function translate(PATTERN) returns a regular expression
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28mcorresponding to PATTERN.  (It does not compile it.)(B[m[38;2;199;199;199m[48;2;28;28;28m[K[14;3H(B[m[38;2;95;175;95m[48;2;28;28;28m"""(B[m[38;2;199;199;199m[48;2;28;28;28m[57X[16;3H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m functools[47X[17;3H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m itertools[51X[18;3H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m os[19;3H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m posixpath[44X[20;3H(B[m[38;2;175;135;95m[48;2;28;28;28mimport(B[m[38;2;199;199;199m[48;2;28;28;28m re[43X[21;3H   [22;3H__all__ = [(B[m[38;2;95;175;95m[48;2;28;28;28m"filter"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"filterfalse"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatch"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"fnmatchcase"(B[m[38;2;199;199;199m[48;2;28;28;28m, (B[m[38;2;95;175;95m[48;2;28;28;28m"translate"(B[m[38;2;199;199;199m[48;2;28;28;28m][23;3H[16X
+[16X
+(B[m[38;2;175;135;175m[48;2;28;28;28mdef(B[m[38;2;199;199;199m[48;2;28;28;28m (B[m[38;2;135;175;175m[48;2;28;28;28mfnmatch(B[m[38;2;199;199;199m[48;2;28;28;28m(name, pat):
+      (B[m[38;2;95;175;95m[48;2;28;28;28m"""Test whether FILENAME matches PATTERN.(B[m[38;2;199;199;199m[48;2;28;28;28m[K[27;3H[41X
+  (B[m[38;2;95;175;95m[48;2;28;28;28m    Patterns are Unix shell style:(B[m[38;2;199;199;199m[48;2;28;28;28m[20X
+  [34X
+  (B[m[38;2;95;175;95m[48;2;28;28;28m    *       matches everything(B[m[38;2;199;199;199m[48;2;28;28;28m[7X[31;3H(B[m[38;2;95;175;95m[48;2;28;28;28m    ?       matches any single character
+(B[m[38;2;199;199;199m[48;2;28;28;28m  (B[m[38;2;95;175;95m[48;2;28;28;28m    [seq]   matches any character in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[48X[33;3H(B[m[38;2;95;175;95m[48;2;28;28;28m    [!seq]  matches any char not in seq(B[m[38;2;199;199;199m[48;2;28;28;28m[21X[35;3H(B[m[38;2;95;175;95m[48;2;28;28;28m    An initial period in FILENAME is not special.(B[m[38;2;199;199;199m[48;2;28;28;28m[14X[36;3H(B[m[38;2;95;175;95m[48;2;28;28;28m    Both FILENAME and PATTERN are first case-normalized(B[m[38;2;199;199;199m[48;2;28;28;28m[12X[37;3H(B[m[38;2;95;175;95m[48;2;28;28;28m    if the operating system requires it.[38;3H    If you don't want this, use fnmatchcase(FILENAME, PATTERN).[2 q[?1002h[?1006h[2;9H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[38B[5X:terminal[Cprintf[C'\033[1;32mgreen\033[0m[Cwide:端末\n';[Cseq[C1[C5[2 q[?1002l[?1006l[40;1H[?2026l[?2026h[H                                           
+                                                        
+                                    
+                                       
+  
+                                                                                          
+                                                              
+  
+                                                                 
+                                                                     
+  
+                                                              
+                                                      
+     
+  
+                  
+                  
+           
+                  
+           
+  
+                                                                            
+  
+  
+                         
+                                               
+  
+                                    
+  
+                                
+                                          
+                                          
+                                         
+  
+                                                   
+                                                         
+                                          
+                                                                 
+(B[m[38;2;28;28;28m[48;2;158;158;158mterm://~/work//28396:printf '\033[1;32mgreen\033[0m wide:端末\n'; seq 1 5 [-]                         1,0-1          All[2 q[?1002h[?1006h[H[?2026l[?2026h(B[0;1m[38;2;95;175;95m[48;2;28;28;28mgreen(B[m[38;2;199;199;199m[48;2;28;28;28m wide:端末[39;105H(B[m[38;2;28;28;28m[48;2;158;158;158m1  [H[?2026l[?2026h
+(B[m[38;2;199;199;199m[48;2;28;28;28m1
+2
+3
+4
+5
+
+[Process exited 0][39;79H(B[m[38;2;28;28;28m[48;2;158;158;158m[Exit: 0][H[?2026l[?2026h(B[m[38;2;199;199;199m[48;2;28;28;28m[39B[62X:qa![2 q[?1002l[?1006l[40;1H[?2026l[?2026h[2 q[?1002h[?1006h[?2026l[?2026h[2 q[?1002l[?1006l(B[m[?25h[0 q[?1l>[>4;0m[?2004l[?1004l[c[?2026l[?2026h[?1049l[?2026l

@@ -1,0 +1,236 @@
+[?1049h[24;1H[?1h=# Author: Steven J. Bethard <steven.bethard@gmail.com>.
+# New maintainer as of 29 August 2019:  Raymond Hettinger <raymond.hettinger@gma il.com>
+
+"""Command-line parsing library
+
+This module is an optparse-inspired command-line parsing library that:
+
+    - handles both optional and positional arguments
+    - produces highly informative usage messages
+    - supports parsers that dispatch to sub-parsers
+
+The following is a simple usage example that sums integers from the
+command-line and writes the result to a file::
+
+    parser = argparse.ArgumentParser(
+        description='sum the integers at the command line')
+    parser.add_argument(
+        'integers', metavar='int', nargs='+', type=int,
+        help='an integer to be summed')
+    parser.add_argument(
+        '--log',
+        help='the file where the sum should be written')
+[7margparse.py[27m[K[K    args = parser.parse_args()
+    with (open(args.log, 'w') if args.log is not None
+          else contextlib.nullcontext(sys.stdout)) as log:
+        log.write('%s' % sum(args.integers))
+
+The module contains the following public classes:
+
+    - ArgumentParser -- The main entry point for command-line parsing. As the
+        example above shows, the add_argument() method is used to populate
+        the parser with actions for optional and positional arguments. Then
+        the parse_args() method is invoked to convert the args at the
+        command-line into an object with attributes.
+
+    - ArgumentError -- The exception raised by ArgumentParser objects when
+        there are errors with the parser's actions. Errors raised while
+        parsing the command-line are caught by ArgumentParser and emitted
+        as command-line messages.
+
+    - FileType -- A factory for defining types of files to be created. As the
+        example above shows, instances of FileType are typically passed as
+        the type= argument of add_argument() calls. Deprecated since
+        Python 3.14.
+
+:[K[K    - Action -- The base class for parser actions. Typically actions are
+        selected by passing strings like 'store_true' or 'append_const' to
+        the action= argument of add_argument(). However, for greater
+        customization of ArgumentParser actions, subclasses of Action may
+        be defined and passed as the action= argument.
+
+    - HelpFormatter, RawDescriptionHelpFormatter, RawTextHelpFormatter,
+        ArgumentDefaultsHelpFormatter -- Formatter classes which
+        may be passed as the formatter_class= argument to the
+        ArgumentParser constructor. HelpFormatter is the default,
+        RawDescriptionHelpFormatter and RawTextHelpFormatter tell the parser
+        not to change the formatting for help text, and
+        ArgumentDefaultsHelpFormatter adds information about argument defaults
+        to the help.
+
+All other classes in this module are considered implementation details.
+(Also note that HelpFormatter and RawDescriptionHelpFormatter are only
+considered public as object names -- the API of the formatter objects is
+still considered an implementation detail.)
+"""
+
+__version__ = '1.1'
+__all__ = [
+:[K[K[HM
+[HM        Python 3.14.
+[HM        the type= argument of add_argument() calls. Deprecated since
+[HM        example above shows, instances of FileType are typically passed as
+[HM    - FileType -- A factory for defining types of files to be created. As the
+[HM
+[HM        as command-line messages.
+[HM        parsing the command-line are caught by ArgumentParser and emitted
+[HM        there are errors with the parser's actions. Errors raised while
+[HM    - ArgumentError -- The exception raised by ArgumentParser objects when
+[HM
+[HM        command-line into an object with attributes.
+[HM        the parse_args() method is invoked to convert the args at the
+[HM        the parser with actions for optional and positional arguments. Then
+[HM        example above shows, the add_argument() method is used to populate
+[HM    - ArgumentParser -- The main entry point for command-line parsing. As the
+[HM
+[HMThe module contains the following public classes:
+[HM
+[HM        log.write('%s' % sum(args.integers))
+[HM          else contextlib.nullcontext(sys.stdout)) as log:
+[HM    with (open(args.log, 'w') if args.log is not None
+[HM    args = parser.parse_args()
+[24;1H[K:[K[K/[Kaa[Kdd[Kdd[K__[Kaa[Krr[Kgg[Kuu[Kmm[Kee[Knn[Ktt[K[1;1H[K    args = parser.parse_args()
+[2;1H[K    with (open(args.log, 'w') if args.log is not None
+[3;1H[K          else contextlib.nullcontext(sys.stdout)) as log:
+[4;1H[K        log.write('%s' % sum(args.integers))
+[5;1H[K
+[6;1H[KThe module contains the following public classes:
+[7;1H[K
+[8;1H[K    - ArgumentParser -- The main entry point for command-line parsing. As the
+[9;1H[K        example above shows, the add_argument() method is used to populate
+[10;1H[K        the parser with actions for optional and positional arguments. Then
+[11;1H[K        the parse_args() method is invoked to convert the args at the
+[12;1H[K        command-line into an object with attributes.
+[13;1H[K
+[14;1H[K    - ArgumentError -- The exception raised by ArgumentParser objects when
+[15;1H[K        there are errors with the parser's actions. Errors raised while
+[16;1H[K        parsing the command-line are caught by ArgumentParser and emitted
+[17;1H[K        as command-line messages.
+[18;1H[K
+[19;1H[K    - FileType -- A factory for defining types of files to be created. As the
+[20;1H[K        example above shows, instances of FileType are typically passed as
+[21;1H[K        the type= argument of add_argument() calls. Deprecated since
+[22;1H[K        Python 3.14.
+[23;1H[K
+[24;1H[1;1H[K    args = parser.parse_args()
+[2;1H[K    with (open(args.log, 'w') if args.log is not None
+[3;1H[K          else contextlib.nullcontext(sys.stdout)) as log:
+[4;1H[K        log.write('%s' % sum(args.integers))
+[5;1H[K
+[6;1H[KThe module contains the following public classes:
+[7;1H[K
+[8;1H[K    - ArgumentParser -- The main entry point for command-line parsing. As the
+[9;1H[K        example above shows, the [7madd_argument[27m() method is used to populate
+[10;1H[K        the parser with actions for optional and positional arguments. Then
+[11;1H[K        the parse_args() method is invoked to convert the args at the
+[12;1H[K        command-line into an object with attributes.
+[13;1H[K
+[14;1H[K    - ArgumentError -- The exception raised by ArgumentParser objects when
+[15;1H[K        there are errors with the parser's actions. Errors raised while
+[16;1H[K        parsing the command-line are caught by ArgumentParser and emitted
+[17;1H[K        as command-line messages.
+[18;1H[K
+[19;1H[K    - FileType -- A factory for defining types of files to be created. As the
+[20;1H[K        example above shows, instances of FileType are typically passed as
+[21;1H[K        the type= argument of [7madd_argument[27m() calls. Deprecated since
+[22;1H[K        Python 3.14.
+[23;1H[K
+[24;1H    - Action -- The base class for parser actions. Typically actions are
+        selected by passing strings like 'store_true' or 'append_const' to
+        the action= argument of [7madd_argument[27m(). However, for greater
+        customization of ArgumentParser actions, subclasses of Action may
+        be defined and passed as the action= argument.
+
+    - HelpFormatter, RawDescriptionHelpFormatter, RawTextHelpFormatter,
+        ArgumentDefaultsHelpFormatter -- Formatter classes which
+:[K[K/[K        may be passed as the formatter_class= argument to the
+        ArgumentParser constructor. HelpFormatter is the default,
+        RawDescriptionHelpFormatter and RawTextHelpFormatter tell the parser
+        not to change the formatting for help text, and
+        ArgumentDefaultsHelpFormatter adds information about argument defaults
+        to the help.
+
+All other classes in this module are considered implementation details.
+(Also note that HelpFormatter and RawDescriptionHelpFormatter are only
+considered public as object names -- the API of the formatter objects is
+still considered an implementation detail.)
+"""
+:[K[K/[K
+__version__ = '1.1'
+__all__ = [
+    'ArgumentParser',
+    'ArgumentError',
+:[K[K?[K[HM        selected by passing strings like 'store_true' or 'append_const' to
+[HM    - Action -- The base class for parser actions. Typically actions are
+[HM
+[HM        Python 3.14.
+[HM        the type= argument of [7madd_argument[27m() calls. Deprecated since
+[24;1H[K:[K[K...skipping...
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+        _sys.exit(status)
+
+    def error(self, message):
+        """error(message: string)
+
+        Prints a usage message incorporating the message to stderr and
+        exits.
+
+        If you override this in a subclass, it should not return -- it
+        should either exit or raise an exception.
+        """
+        self.print_usage(_sys.stderr)
+        args = {'prog': self.prog, 'message': message}
+        self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+
+    def _warning(self, message):
+        args = {'prog': self.prog, 'message': message}
+        self._print_message(_('%(prog)s: warning: %(message)s\n') % args, _sys.s tderr)
+[7m(END)[27m[K[K[H[2J[HM        help='the file where the sum should be written')
+[HM        '--log',
+[HM    parser.[7madd_argument[27m(
+[HM        help='an integer to be summed')
+[HM        'integers', metavar='int', nargs='+', type=int,
+[HM    parser.[7madd_argument[27m(
+[HM        description='sum the integers at the command line')
+[HM    parser = argparse.ArgumentParser(
+[HM
+[HMcommand-line and writes the result to a file::
+[HMThe following is a simple usage example that sums integers from the
+[HM
+[HM    - supports parsers that dispatch to sub-parsers
+[HM    - produces highly informative usage messages
+[HM    - handles both optional and positional arguments
+[HM
+[HMThis module is an optparse-inspired command-line parsing library that:
+[HM
+[HM"""Command-line parsing library
+[HM
+[HMil.com>
+[HM# New maintainer as of 29 August 2019:  Raymond Hettinger <raymond.hettinger@gma[HM# Author: Steven J. Bethard <steven.bethard@gmail.com>.
+[24;1H[K:[K[K-[K[7mConstantly display line numbers  (press RETURN)[27m[24;1H[K[K     [1m23[0m     args = parser.parse_args()
+[H[2J[H      [1m2[0m # New maintainer as of 29 August 2019:  Raymond Hettinger <raymond.hetti       [1m2[0m nger@gmail.com>
+      [1m3[0m 
+      [1m4[0m """Command-line parsing library
+      [1m5[0m 
+      [1m6[0m This module is an optparse-inspired command-line parsing library that:
+      [1m7[0m 
+      [1m8[0m     - handles both optional and positional arguments
+      [1m9[0m     - produces highly informative usage messages
+     [1m10[0m     - supports parsers that dispatch to sub-parsers
+     [1m11[0m 
+     [1m12[0m The following is a simple usage example that sums integers from the
+     [1m13[0m command-line and writes the result to a file::
+     [1m14[0m 
+     [1m15[0m     parser = argparse.ArgumentParser(
+     [1m16[0m         description='sum the integers at the command line')
+     [1m17[0m     parser.[7madd_argument[27m(
+     [1m18[0m         'integers', metavar='int', nargs='+', type=int,
+     [1m19[0m         help='an integer to be summed')
+     [1m20[0m     parser.[7madd_argument[27m(
+     [1m21[0m         '--log',
+     [1m22[0m         help='the file where the sum should be written')
+     [1m23[0m     args = parser.parse_args()
+:[K[K[?1l>[?1049l

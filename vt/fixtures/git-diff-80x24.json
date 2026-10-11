@@ -1,0 +1,91 @@
+{
+ "name": "git-diff-80x24",
+ "description": "git diff --color of unstaged edits in a synthetic repo, paged by less -FRX",
+ "program": "git",
+ "version": "git version 2.56.0",
+ "argv": [
+  "/opt/homebrew/bin/git",
+  "diff",
+  "--color"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux",
+  "GIT_CONFIG_NOSYSTEM": "1"
+ },
+ "inputs": {
+  "repo": "generated git repository: 23 commits, 4 branches, a tag, unstaged edits"
+ },
+ "input": [
+  {
+   "wait_for": "[\\s\\S]",
+   "timeout": 15
+  },
+  {
+   "settle": 0.6
+  },
+  {
+   "keys": " "
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "q"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [],
+ "features": [
+  "16-color",
+  "bold",
+  "decckm",
+  "el",
+  "keypad-mode",
+  "linefeed-scroll",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 873,
+   "after_step": 1
+  },
+  {
+   "offset": 1726,
+   "after_step": 3
+  },
+  {
+   "offset": 1737,
+   "after_step": 5
+  }
+ ],
+ "bytes": 1737,
+ "sha256": "0b2ff44820ccab7ecec8f0bb33286da87af5713ec4c85751a4687b9d6aad8029",
+ "exit_status": 0,
+ "duration_s": 0.9,
+ "recorded": "2026-10-11"
+}

@@ -1,0 +1,331 @@
+{
+ "name": "emacs-80x24",
+ "description": "emacs -nw -Q: font-locked Python, C-x 2/3, M-x list-colors-display, xterm-mouse-mode, wide text in *scratch*, C-x C-c",
+ "program": "emacs",
+ "version": "GNU Emacs 32.0.50",
+ "argv": [
+  "/opt/homebrew/bin/emacs",
+  "-nw",
+  "-Q",
+  "fnmatch.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "fnmatch.py": "CPython 3.14.4 Lib/fnmatch.py, 209 lines, sha256 ce582bc266922e4c"
+ },
+ "input": [
+  {
+   "wait_for": "fnmatch\\.py",
+   "timeout": 20
+  },
+  {
+   "settle": 1.0
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bv"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00182"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00183"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u000e\u000e\u000e\u000e\u000e"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bx"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "list-colors-display",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.6
+  },
+  {
+   "keys": "\u0018o"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0016"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001bx"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "xterm-mouse-mode",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u001b[<0;10;3M\u001b[<0;10;3m"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u00181"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "*scratch*",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "type": "端末 wide ✓ 😀 é\r",
+   "delay": 0.06
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "\u0018\u0003"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [
+  {
+   "offset": 104,
+   "query": "DA2",
+   "seq": "\u001b[>0c",
+   "answer": "\u001b[>1;10;0c"
+  },
+  {
+   "offset": 107,
+   "query": "DA1",
+   "seq": "\u001b[c",
+   "answer": "\u001b[?62;22c"
+  },
+  {
+   "offset": 112,
+   "query": "XTVERSION",
+   "seq": "\u001b[>0q",
+   "answer": null
+  }
+ ],
+ "features": [
+  "alt-screen",
+  "alt-screen-1049",
+  "ambiguous-width",
+  "backspace",
+  "bold",
+  "bracketed-paste",
+  "combining",
+  "cursor-blink",
+  "decckm",
+  "decstbm",
+  "dectcem",
+  "ed",
+  "el",
+  "emoji",
+  "focus-1004",
+  "il-dl",
+  "keypad-mode",
+  "mouse-1000",
+  "mouse-1003",
+  "mouse-1006",
+  "reverse",
+  "tabs",
+  "truecolor",
+  "wide"
+ ],
+ "checkpoints": [
+  {
+   "offset": 2802,
+   "after_step": 1
+  },
+  {
+   "offset": 4331,
+   "after_step": 3
+  },
+  {
+   "offset": 5698,
+   "after_step": 5
+  },
+  {
+   "offset": 7405,
+   "after_step": 7
+  },
+  {
+   "offset": 8715,
+   "after_step": 9
+  },
+  {
+   "offset": 9963,
+   "after_step": 11
+  },
+  {
+   "offset": 10392,
+   "after_step": 13
+  },
+  {
+   "offset": 11164,
+   "after_step": 15
+  },
+  {
+   "offset": 11272,
+   "after_step": 17
+  },
+  {
+   "offset": 11804,
+   "after_step": 19
+  },
+  {
+   "offset": 13669,
+   "after_step": 21
+  },
+  {
+   "offset": 14162,
+   "after_step": 23
+  },
+  {
+   "offset": 15476,
+   "after_step": 25
+  },
+  {
+   "offset": 15584,
+   "after_step": 27
+  },
+  {
+   "offset": 16032,
+   "after_step": 29
+  },
+  {
+   "offset": 16191,
+   "after_step": 31
+  },
+  {
+   "offset": 16684,
+   "after_step": 33
+  },
+  {
+   "offset": 18005,
+   "after_step": 35
+  },
+  {
+   "offset": 18147,
+   "after_step": 37
+  },
+  {
+   "offset": 18399,
+   "after_step": 39
+  },
+  {
+   "offset": 18950,
+   "after_step": 41
+  },
+  {
+   "offset": 19391,
+   "after_step": 43
+  },
+  {
+   "offset": 19475,
+   "after_step": 45
+  }
+ ],
+ "bytes": 19475,
+ "sha256": "ff9b65332400607271a8eb26395579f47834080e8dffd2761ed66287ebc5a097",
+ "exit_status": 0,
+ "duration_s": 12.0,
+ "recorded": "2026-10-11"
+}

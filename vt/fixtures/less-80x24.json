@@ -1,0 +1,194 @@
+{
+ "name": "less-80x24",
+ "description": "less on CPython's argparse.py (~2,800 lines): page, search, jump to end and back, toggle line numbers",
+ "program": "less",
+ "version": "less 668 (POSIX regular expressions)",
+ "argv": [
+  "/usr/bin/less",
+  "argparse.py"
+ ],
+ "rows": 24,
+ "cols": 80,
+ "env": {
+  "TERM": "xterm-256color",
+  "COLORTERM": "truecolor",
+  "LANG": "en_US.UTF-8",
+  "HOME": "<scratch>/home",
+  "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+  "SHELL": "/bin/sh",
+  "TMPDIR": "<scratch>/tmp",
+  "TMUX_TMPDIR": "<scratch>/tmux"
+ },
+ "inputs": {
+  "argparse.py": "CPython 3.14.4 Lib/argparse.py, 2786 lines, sha256 004c71bc1c56b62a"
+ },
+ "input": [
+  {
+   "wait_for": "[\\s\\S]",
+   "timeout": 15
+  },
+  {
+   "settle": 0.6
+  },
+  {
+   "keys": " "
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": " "
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "b"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "/add_argument\r"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "n"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "n"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "N"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "G"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "g"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "-N"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "j"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "keys": "q"
+  },
+  {
+   "settle": 0.3
+  },
+  {
+   "exit": 15
+  }
+ ],
+ "answers": {
+  "DA1": "\u001b[?62;22c",
+  "DA2": "\u001b[>1;10;0c",
+  "DSR 5": "\u001b[0n",
+  "CPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "DECXCPR": "ESC[<row>;<col>R from a roughly tracked cursor (approximate)",
+  "OSC 10": "\u001b]10;rgb:d0d0/d0d0/d0d0",
+  "OSC 11": "\u001b]11;rgb:1c1c/1c1c/1c1c",
+  "DECRQM": "ESC[<mode>;<1 set, 2 reset>$y from the stream's tracked mode state for ?1 4 ?6 ?7 ?12 20 ?25 ?47 ?1000 ?1002 ?1003 ?1004 ?1005 ?1006 ?1007 ?1015 ?1047 ?1048 ?1049 ?2004 ?2026; ESC[<mode>;0$y (not recognized) for any other mode",
+  "DECRQSS m": "DCS 1$r 0;<SGR parameters since the last reset> m ST (approximate)"
+ },
+ "queries": [],
+ "features": [
+  "alt-screen",
+  "alt-screen-1049",
+  "backspace",
+  "bold",
+  "decckm",
+  "ed",
+  "el",
+  "keypad-mode",
+  "linefeed-scroll",
+  "reverse",
+  "reverse-index",
+  "soft-wrap"
+ ],
+ "checkpoints": [
+  {
+   "offset": 909,
+   "after_step": 1
+  },
+  {
+   "offset": 2034,
+   "after_step": 3
+  },
+  {
+   "offset": 3208,
+   "after_step": 5
+  },
+  {
+   "offset": 4459,
+   "after_step": 7
+  },
+  {
+   "offset": 7753,
+   "after_step": 9
+  },
+  {
+   "offset": 8404,
+   "after_step": 11
+  },
+  {
+   "offset": 8498,
+   "after_step": 13
+  },
+  {
+   "offset": 8800,
+   "after_step": 15
+  },
+  {
+   "offset": 9626,
+   "after_step": 17
+  },
+  {
+   "offset": 10646,
+   "after_step": 19
+  },
+  {
+   "offset": 10711,
+   "after_step": 21
+  },
+  {
+   "offset": 12011,
+   "after_step": 23
+  },
+  {
+   "offset": 12030,
+   "after_step": 25
+  }
+ ],
+ "bytes": 12030,
+ "sha256": "213abe29912cddbcc931a43e2fb60d90152863a3ffd7473a05c97bc3d89fdb40",
+ "exit_status": 0,
+ "duration_s": 4.0,
+ "recorded": "2026-10-11"
+}

@@ -1,0 +1,10 @@
+[H[2Jmain screen line 1
+main screen line 2
+main screen line 3
+main screen line 4
+main screen line 5
+[3;30Hmain cursor at 3;30[?47h[1;1H[7malt screen via 47[0m
+content on alt 47[10;10Halt 47 row 10[?47l[6;1Hback on main after 47
+[?1047h[1;1H[7malt screen via 1047[0m
+content on alt 1047[10;10Halt 1047 row 10[?1047l[6;1Hback on main after 1047
+[8;5Hcursor saved here by 1049[?1049h[7malt screen via 1049 (cleared on entry)[0m[2;1Halt 1049 row 2[3;1Halt 1049 row 3[4;1Halt 1049 row 4[5;1Halt 1049 row 5[6;1Halt 1049 row 6[7;1Halt 1049 row 7[8;1Halt 1049 row 8[9;1Halt 1049 row 9[10;1Halt 1049 row 10[11;1Halt 1049 row 11[12;1Halt 1049 row 12[13;1Halt 1049 row 13[14;1Halt 1049 row 14[15;1Halt 1049 row 15[16;1Halt 1049 row 16[17;1Halt 1049 row 17[18;1Halt 1049 row 18[19;1Halt 1049 row 19[20;1Halt 1049 row 20[21;1Halt 1049 row 21[22;1Halt 1049 row 22[23;1Halt 1049 row 23[24;1Halt 1049 row 24[?1049h[5;40H1049h again while on alt[?1049l <- restored cursor after 1049l[?1048h[20;1H1048 saved, moved[?1048l <- restored by 1048[22;1Hend on main screen

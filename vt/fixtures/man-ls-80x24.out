@@ -1,0 +1,117 @@
+[?1049h[24;1H[?1h=LS(1)                       General Commands Manual                      LS(1)
+
+[1mNAME[0m
+     [1mls[0m – list directory contents
+
+[1mSYNOPSIS[0m
+     [1mls[0m [[1m-@ABCFGHILOPRSTUWabcdefghiklmnopqrstuvwxy1%,[0m] [[1m--color[0m=[4mwhen[24m]
+        [[1m-D[0m [4mformat[24m] [[4mfile[24m [4m...[24m]
+
+[1mDESCRIPTION[0m
+     For each operand that names a [4mfile[24m of a type other than directory, [1mls[0m
+     displays its name as well as any requested, associated information.  For
+     each operand that names a [4mfile[24m of type directory, [1mls[0m displays the names
+     of files contained within that directory, as well as any requested,
+     associated information.
+
+     If no operands are given, the contents of the current directory are
+     displayed.  If more than one operand is given, non-directory operands are
+     displayed first; directory and non-directory operands are sorted
+     separately and in lexicographical order.
+
+     The following options are available:
+
+:[K[K     [1m-@[0m      Display extended attribute keys and sizes in long ([1m-l[0m) output.
+
+     [1m-A[0m      Include directory entries whose names begin with a dot (‘[4m.[24m’)
+             except for [4m.[24m and [4m..[24m.  Automatically set for the super-user unless
+             [1m-I[0m is specified.
+
+     [1m-B[0m      Force printing of non-printable characters (as defined by
+             ctype(3) and current locale settings) in file names as \[4mxxx[24m,
+             where [4mxxx[24m is the numeric value of the character in octal.  This
+             option is not defined in IEEE Std 1003.1-2008 (“POSIX.1”).
+
+     [1m-C[0m      Force multi-column output; this is the default when output is to
+             a terminal.
+
+     [1m-D[0m [4mformat[24m
+             When printing in the long ([1m-l[0m) format, use [4mformat[24m to format the
+             date and time output.  The argument [4mformat[24m is a string used by
+             strftime(3).  Depending on the choice of format string, this may
+             result in a different number of columns in the output.  This
+             option overrides the [1m-T[0m option.  This option is not defined in
+             IEEE Std 1003.1-2008 (“POSIX.1”).
+
+     [1m-F[0m      Display a slash (‘/’) immediately after each pathname that is a
+:[K[K/[KRR[Kee[Kcc[Kuu[Krr[Kss[Kii[Kvv[Kee[Kll[Kyy[K[1;1H[K     [1m-@[0m      Display extended attribute keys and sizes in long ([1m-l[0m) output.
+[2;1H[K
+[3;1H[K     [1m-A[0m      Include directory entries whose names begin with a dot (‘[4m.[24m’)
+[4;1H[K             except for [4m.[24m and [4m..[24m.  Automatically set for the super-user unless
+[5;1H[K             [1m-I[0m is specified.
+[6;1H[K
+[7;1H[K     [1m-B[0m      Force printing of non-printable characters (as defined by
+[8;1H[K             ctype(3) and current locale settings) in file names as \[4mxxx[24m,
+[9;1H[K             where [4mxxx[24m is the numeric value of the character in octal.  This
+[10;1H[K             option is not defined in IEEE Std 1003.1-2008 (“POSIX.1”).
+[11;1H[K
+[12;1H[K     [1m-C[0m      Force multi-column output; this is the default when output is to
+[13;1H[K             a terminal.
+[14;1H[K
+[15;1H[K     [1m-D[0m [4mformat[24m
+[16;1H[K             When printing in the long ([1m-l[0m) format, use [4mformat[24m to format the
+[17;1H[K             date and time output.  The argument [4mformat[24m is a string used by
+[18;1H[K             strftime(3).  Depending on the choice of format string, this may
+[19;1H[K             result in a different number of columns in the output.  This
+[20;1H[K             option overrides the [1m-T[0m option.  This option is not defined in
+[21;1H[K             IEEE Std 1003.1-2008 (“POSIX.1”).
+[22;1H[K
+[23;1H[K     [1m-F[0m      Display a slash (‘/’) immediately after each pathname that is a
+[24;1H[1;1H[K     [1m-@[0m      Display extended attribute keys and sizes in long ([1m-l[0m) output.
+[2;1H[K
+[3;1H[K     [1m-A[0m      Include directory entries whose names begin with a dot (‘[4m.[24m’)
+[4;1H[K             except for [4m.[24m and [4m..[24m.  Automatically set for the super-user unless
+[5;1H[K             [1m-I[0m is specified.
+[6;1H[K
+[7;1H[K     [1m-B[0m      Force printing of non-printable characters (as defined by
+[8;1H[K             ctype(3) and current locale settings) in file names as \[4mxxx[24m,
+[9;1H[K             where [4mxxx[24m is the numeric value of the character in octal.  This
+[10;1H[K             option is not defined in IEEE Std 1003.1-2008 (“POSIX.1”).
+[11;1H[K
+[12;1H[K     [1m-C[0m      Force multi-column output; this is the default when output is to
+[13;1H[K             a terminal.
+[14;1H[K
+[15;1H[K     [1m-D[0m [4mformat[24m
+[16;1H[K             When printing in the long ([1m-l[0m) format, use [4mformat[24m to format the
+[17;1H[K             date and time output.  The argument [4mformat[24m is a string used by
+[18;1H[K             strftime(3).  Depending on the choice of format string, this may
+[19;1H[K             result in a different number of columns in the output.  This
+[20;1H[K             option overrides the [1m-T[0m option.  This option is not defined in
+[21;1H[K             IEEE Std 1003.1-2008 (“POSIX.1”).
+[22;1H[K
+[23;1H[K     [1m-F[0m      Display a slash (‘/’) immediately after each pathname that is a
+[24;1H...skipping...
+     [1m-R[0m      [7mRecursively[27m list subdirectories encountered.
+
+     [1m-S[0m      Sort by size (largest file first) before sorting the operands in
+             lexicographical order.
+
+     [1m-T[0m      When printing in the long ([1m-l[0m) format, display complete time
+             information for the file, including month, day, hour, minute,
+             second, and year.  The [1m-D[0m option gives even more control over the
+             output format.  This option is not defined in IEEE Std
+             1003.1-2008 (“POSIX.1”).
+
+     [1m-U[0m      Use time when file was created for sorting or printing.  This
+             option is not defined in IEEE Std 1003.1-2008 (“POSIX.1”).
+
+     [1m-W[0m      Display whiteouts when scanning directories.  This option is not
+             defined in IEEE Std 1003.1-2008 (“POSIX.1”).
+
+     [1m-X[0m      When listing recursively, do not descend into directories that
+             would cross file system boundaries.  More specifically, this
+             option will prevent descending into directories that have a
+             different device number.
+
+     [1m-a[0m      Include directory entries whose names begin with a dot (‘[4m.[24m’).
+:[K[K/[K[K[7mPattern not found  (press RETURN)[27m[24;1H[K[K[?1l>[?1049l

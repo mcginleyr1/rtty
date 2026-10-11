@@ -1,0 +1,9 @@
+[H[2J[7mOSC 8 hyperlinks[0m
+plain: ]8;;https://example.com/plain\a link]8;;\ after
+bel: ]8;;https://example.com/belterminated by BEL]8;;
+id: ]8;id=one;https://example.com/split\first half]8;;\ gap ]8;id=one;https://example.com/split\second half]8;;\
+wrapping: ]8;;https://example.com/long\long link text long link text long link text long link text long link text long link text long link text long link text ]8;;\
+styled: ]8;;https://example.com/s\[1;4;34m端末 link[0m]8;;\
+file: ]8;;file://fixture-host/home/fixture/notes.txt\notes.txt]8;;\
+switch: ]8;;https://example.com/a\a]8;;https://example.com/b\b]8;;\
+unterminated: ]8;;https://example.com/open\left open to the end

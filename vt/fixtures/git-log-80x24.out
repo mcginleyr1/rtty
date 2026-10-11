@@ -1,0 +1,29 @@
+[?1h=* [33ma5de98b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;33mtag: [m[1;33mv0.5.0[m[33m)[m release: prepare 0.5.0[m
+* [33mee49dba[m release: prepare 0.4.0[m
+* [33m4952567[m release: prepare 0.3.0[m
+* [33maeb36c9[m release: prepare 0.2.0[m
+* [33m66bed19[m release: prepare 0.1.0[m
+[31m|[m * [33m5d9d141[m[33m ([m[1;32mwip/render[m[33m)[m render: wip 3[m
+[31m|[m * [33m2c91c91[m render: wip 2[m
+[31m|[m * [33m5367ed8[m render: wip 1[m
+[31m|[m[31m/[m  [m
+*   [33m69f0d14[m Merge branch 'fix/unicode'[m
+[33m|[m[34m\[m  [m
+[33m|[m * [33m4a41600[m[33m ([m[1;32mfix/unicode[m[33m)[m unicode: treat VS16 as emoji presentation[m
+[33m|[m * [33m8e59143[m unicode: 端末 width table ✨[m
+* [34m|[m [33m3a36627[m A deliberately long commit subject that runs past the eighty column [m [34m[m[33m[medge of the terminal window[m
+[34m|[m[34m/[m  [m
+*   [33m5ddad41[m Merge branch 'feature/parser'[m
+[35m|[m[36m\[m  [m
+[35m|[m * [33m5dc8c85[m[33m ([m[1;32mfeature/parser[m[33m)[m parser: handle case 4[m
+[35m|[m * [33m68ffbce[m parser: handle case 3[m
+[35m|[m * [33m07e837c[m parser: handle case 2[m
+[35m|[m * [33m2e4bf48[m parser: handle case 1[m
+* [36m|[m [33m22b7398[m docs: describe the grid[m
+:[K[K[36m|[m[36m/[m  [m
+* [33m181a43e[m grid: step 4[m
+* [33ma9674c8[m grid: step 3[m
+* [33m6cf107a[m grid: step 2[m
+* [33m4ca03c1[m grid: step 1[m
+* [33mca844ff[m Initial commit[m
+[7m(END)[27m[K[K[K[7m(END)[27m[K[K[?1l>
