@@ -1,6 +1,7 @@
 use std::iter;
 use std::mem;
 use std::ops::Range;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
@@ -15,10 +16,10 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Font, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PaintQuad,
-    Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedLine, Size, StrikethroughStyle, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, canvas, div, fill, outline, point, prelude::*,
-    px, size,
+    FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun,
+    Size, StrikethroughStyle, TextRun, UTF16Selection, UnderlineStyle, Window, actions, canvas,
+    div, fill, outline, point, prelude::*, px, size,
 };
 
 use crate::keys;
@@ -56,15 +57,17 @@ struct Frame {
     layout_time: Duration,
 }
 
-/// Consecutive cells of a row that share a text style; wide and combining cells stand alone so
-/// every glyph of a multi-cell span can be pinned to its own cell. `cells` counts the merged
-/// single-width cells.
+/// Consecutive single-width cells of a row with the same colors and font style, shaped as one
+/// run so the font's ligatures can form. Wide and combining cells stand alone, and the cursor
+/// cell ends a run so the glyph under the cursor shows its own character. `cells` counts the
+/// merged single-width cells.
 struct TextSpan {
     line: usize,
     column: usize,
     cells: usize,
     text: String,
     fg: Rgb,
+    bg: Rgb,
     flags: Flags,
     single_width: bool,
 }
@@ -367,9 +370,13 @@ impl TerminalView {
             .filter(|span| !span.text.trim().is_empty() || span.flags.intersects(decorated))
             .map(|span| {
                 let run = self.text_run(span.text.len(), span.fg, span.flags);
-                let force_width = span.single_width.then_some(cell.width);
-                let line =
-                    text_system.shape_line(span.text.into(), self.font_size, &[run], force_width);
+                let mut line =
+                    text_system.shape_line(span.text.into(), self.font_size, &[run], None);
+                if span.single_width
+                    && let Some(snapped) = snap_to_cells(&line, &line.text, cell.width)
+                {
+                    *line = Arc::new(snapped);
+                }
                 (at(span.line, span.column), line)
             })
             .collect();
@@ -431,6 +438,11 @@ impl TerminalView {
                     || flags.contains(Flags::WIDE_CHAR_SPACER)
                         && GridPoint::new(point.line, point.column - 1) == cursor.point)
         };
+        let starts_run_at_cursor = |point: GridPoint| {
+            shape != CursorShape::Hidden
+                && point.line == cursor.point.line
+                && (point.column == cursor.point.column || point.column == cursor.point.column + 1)
+        };
         let mut backgrounds: Vec<BackgroundSpan> = Vec::new();
         let mut texts: Vec<TextSpan> = Vec::new();
         for indexed in content.display_iter {
@@ -479,8 +491,8 @@ impl TerminalView {
                         && span.single_width
                         && span.line == line
                         && span.column + span.cells == column
-                        && span.fg == fg
-                        && span.flags == flags =>
+                        && (span.fg, span.bg, span.flags) == (fg, bg, flags)
+                        && !starts_run_at_cursor(indexed.point) =>
                 {
                     span.text.push(cell.c);
                     span.cells += 1;
@@ -493,6 +505,7 @@ impl TerminalView {
                         .chain(cell.zerowidth().into_iter().flatten().copied())
                         .collect(),
                     fg,
+                    bg,
                     flags,
                     single_width,
                 }),
@@ -606,6 +619,57 @@ async fn yield_now() {
     .await
 }
 
+/// The shaped run of single-width cells with every glyph on the cell of the character it was
+/// shaped from, or `None` when the shaper already put them there.
+fn snap_to_cells(layout: &LineLayout, text: &str, cell_width: Pixels) -> Option<LineLayout> {
+    let glyphs = layout.runs.iter().flat_map(|run| &run.glyphs);
+    let shaped: Vec<_> = glyphs.map(|glyph| (glyph.index, glyph.position.x)).collect();
+    let mut snapped = grid_positions(text, &shaped, cell_width)?.into_iter();
+    Some(LineLayout {
+        font_size: layout.font_size,
+        width: cell_width * text.chars().count() as f32,
+        ascent: layout.ascent,
+        descent: layout.descent,
+        len: layout.len,
+        runs: layout
+            .runs
+            .iter()
+            .map(|run| ShapedRun {
+                font_id: run.font_id,
+                glyphs: run
+                    .glyphs
+                    .iter()
+                    .map(|glyph| ShapedGlyph {
+                        position: point(snapped.next().unwrap(), glyph.position.y),
+                        ..glyph.clone()
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+/// Glyphs come from the shaper as (byte index of the first character they draw, x). In a run
+/// with one cell per character, each belongs at its character's cell: a ligature over N cells
+/// starts on its first cell (the font draws it across all N) and the glyph after it starts N
+/// cells later, whatever advances the font or a fallback font reported. `None` when every glyph
+/// is already there.
+fn grid_positions(
+    text: &str,
+    glyphs: &[(usize, Pixels)],
+    cell_width: Pixels,
+) -> Option<Vec<Pixels>> {
+    let mut columns = vec![0; text.len()];
+    for (column, (byte, c)) in text.char_indices().enumerate() {
+        columns[byte..byte + c.len_utf8()].fill(column);
+    }
+    let snapped: Vec<Pixels> =
+        glyphs.iter().map(|&(index, _)| cell_width * columns[index] as f32).collect();
+    let on_grid =
+        glyphs.iter().zip(&snapped).all(|(&(_, x), &cell_x)| (x - cell_x).abs() < px(0.01));
+    (!on_grid).then_some(snapped)
+}
+
 fn hsla(rgb: Rgb) -> Hsla {
     let channel = |value: u8| f32::from(value) / 255.;
     Rgba { r: channel(rgb.r), g: channel(rgb.g), b: channel(rgb.b), a: 1. }.into()
@@ -713,5 +777,33 @@ impl EntityInputHandler for TerminalView {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ligature_keeps_the_glyphs_after_it_on_their_cells() {
+        // "->" shaped into one glyph advancing 1.5 cells: "b" belongs on cell 3, not at 2.5 where
+        // the advances put it, nor on cell 2 where snapping by glyph order would.
+        let shaped = [(0, px(0.)), (1, px(10.)), (3, px(25.))];
+        assert_eq!(grid_positions("a->b", &shaped, px(10.)), Some(vec![px(0.), px(10.), px(30.)]));
+    }
+
+    #[test]
+    fn glyphs_already_on_their_cells_are_left_alone() {
+        // Fira Code's way: "->" becomes a spacer glyph plus an arrow glyph, one per cell.
+        let shaped = [(0, px(0.)), (1, px(10.)), (2, px(20.)), (3, px(30.))];
+        assert_eq!(grid_positions("a->b", &shaped, px(10.)), None);
+    }
+
+    #[test]
+    fn multibyte_characters_take_one_cell_each() {
+        // "λ" is two bytes and "→" three; "=>" ligates; "→" came from a wider fallback font.
+        let shaped = [(0, px(0.)), (2, px(10.)), (5, px(21.)), (7, px(29.5))];
+        let expected = vec![px(0.), px(10.), px(20.), px(40.)];
+        assert_eq!(grid_positions("λ→=>x", &shaped, px(10.)), Some(expected));
     }
 }

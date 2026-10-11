@@ -13,6 +13,7 @@ SDK; the offline Metal compiler is **not** needed (see [the GPUI pin](#the-gpui-
 ```sh
 cargo run --release                     # your login shell
 cargo run --release -- --font "SF Mono" --size 13
+cargo run --release -- --font "FiraCode Nerd Font Mono" --ligatures off
 cargo run --release -- -e htop          # a program instead of the shell
 cargo run --release -- --smoke          # headless pipeline check, exits 0 or 1
 cargo run --release -- --bench          # headless pipeline throughput
@@ -23,6 +24,7 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | --- | --- |
 | `--font NAME` | font family (default Menlo); an unknown family is an error |
 | `--size PT` | font size in points (default 14) |
+| `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`; default on |
 | `-e PROGRAM [ARGS...]` | run the program instead of the login shell; the window closes when it exits |
 | `--stats` | once a second while frames are drawn, print frames, layout and paint ms/frame |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
@@ -58,10 +60,10 @@ A held key repeats instead of opening macOS's accent picker.
 - `view.rs` — the GPUI view. A foreground task drains the event channel in batches: `Wakeup`
   marks the view dirty, so however many arrive between two display refreshes, GPUI draws one frame
   (that is the coalescing). Each frame locks the term only to read the visible cells into spans,
-  then shapes outside the lock: per row, runs of same-style cells become one background quad and
-  one shaped text run, pinned to the cell grid (wide and combining cells are shaped alone).
-  Resizing the window recomputes rows/cols from the cell metrics and resizes the term and the
-  pty. The view is also GPUI's text input handler, for committed text and IME marked text.
+  then shapes outside the lock: per row, runs of same-background cells become one quad, and runs
+  of same-style cells become one shaped text run (see [Ligatures](#ligatures)). Resizing the
+  window recomputes rows/cols from the cell metrics and resizes the term and the pty. The view is
+  also GPUI's text input handler, for committed text and IME marked text.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes) and paste wrapping, unit tested.
 - `palette.rs` — the default 16/256 palette and named colors; programs can override any slot
   (OSC 4/10/11/12).
@@ -88,17 +90,43 @@ layout + 0.06 ms paint per frame (CPU time; GPU time is not measured); a steady 
 finishes as fast in the window (0.9 s) as headless. GPUI stops drawing while the window is
 occluded, so `--stats` prints nothing for a hidden window.
 
+## Ligatures
+
+Programming ligatures (`->`, `=>`, `!=`, `===`, `<=`, `|>`, …) render with fonts that have them
+(checked with Fira Code, JetBrains Mono, Iosevka and Victor Mono). `--ligatures off` turns off the
+font's `calt`, `liga` and `dlig` features.
+
+- Each run of single-width cells with the same foreground, background and font style goes
+  through CoreText as one string, so the font's contextual alternates can form.
+- The glyphs stay on the grid: every glyph is placed on the cell of the character it was shaped
+  from (the shaper reports each glyph's first character). A ligature over N cells starts on its
+  first cell, the font draws it across N cell widths (the cell width is the font's own advance),
+  and the glyph after it starts N cells later, whatever advances the font or a fallback font
+  reported. The run is shaped without GPUI's `force_width`, which gives every glyph one cell by
+  glyph order and so shifts everything after a glyph that stands for several characters; instead
+  the glyph positions in the shaped layout are rewritten to their cells, and GPUI paints each
+  glyph (`Window::paint_glyph`) at the run's origin plus that position. Most coding fonts keep one
+  glyph per cell (a spacer plus the ligature glyph), and their glyphs already sit on the grid;
+  the snapping matters for fonts whose ligatures replace N glyphs with one, and for fallback
+  glyphs with other advances.
+- The cell under a visible cursor is shaped on its own, so the cursor shows the plain character it
+  sits on (`-` or `>` of an `->`), as kitty, WezTerm and Ghostty do. A selection edge ends a run too, since
+  the selection changes the background.
+- No ligature forms across a change of color, background, bold/italic, underline or strikethrough;
+  across a wide (CJK, emoji) or combining-mark cell, which are shaped alone; or across a line
+  wrap.
+
 ## Status
 
 v0 works: one window running a shell or `-e` program with colors, attributes, wide chars,
-cursor shapes, selection and copy/paste, scrollback, resize, window title from OSC 0/2.
+ligatures, cursor shapes, selection and copy/paste, scrollback, resize, window title from
+OSC 0/2.
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; mouse clicks are not
-reported to programs (only the wheel is); no ligatures (disabled on purpose — a grid terminal pins
-each glyph to a cell); emoji and CJK rely on CoreText's font fallback and an emoji may overhang
-its two cells; no blinking cursor, bell, kitty keyboard protocol, URL detection, config file,
-tabs or splits; macOS only.
+reported to programs (only the wheel is); emoji and CJK rely on CoreText's font fallback and an
+emoji may overhang its two cells; no blinking cursor, bell, kitty keyboard protocol, URL
+detection, config file, tabs or splits; macOS only.
 
 ## The GPUI pin
 
@@ -118,7 +146,9 @@ Licensing: GPUI and alacritty_terminal are Apache-2.0. rtty takes nothing from Z
 
 1. **Attach to tutti.** Replace the local pty with a raw single-pane stream from tutti-server
    (being built now): the stream's bytes feed the same `Term` the pty reader feeds today, and key
-   bytes go back over the socket instead of into the pty. `Session` is the seam.
+   bytes go back over the socket instead of into the pty. `Session` is the seam. tutti-server
+   answers DA1/DA2/DSR/CPR itself and strips those queries from the raw stream, so rtty must not
+   answer them on an attached pane (today the `Term`'s replies go straight back into the pty).
 2. **Sidebar and agent panels** as GPUI views beside the terminal: tutti's project/agent tree with
    state dots, the waiting queue, the changed-files panel.
 3. **Layout on Cmd chords** (split, focus, zoom, tabs) so every Ctrl key stays with the panes.

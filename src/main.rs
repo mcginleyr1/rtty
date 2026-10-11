@@ -4,6 +4,7 @@ mod session;
 mod view;
 
 use std::process::{Command, ExitCode};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::Term;
@@ -20,7 +21,8 @@ use gpui::{
 use session::Session;
 use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, TerminalView};
 
-const USAGE: &str = "usage: rtty [--font NAME] [--size PT] [--stats] [-e PROGRAM [ARGS...]]
+const USAGE: &str =
+    "usage: rtty [--font NAME] [--size PT] [--ligatures on|off] [--stats] [-e PROGRAM [ARGS...]]
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
 
@@ -33,13 +35,20 @@ const BENCH_COMMAND: &str = "seq -f %.0f 1 2000000";
 struct Options {
     font: String,
     size: f32,
+    ligatures: bool,
     stats: bool,
     command: Option<Shell>,
 }
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let mut options = Options { font: "Menlo".to_owned(), size: 14., stats: false, command: None };
+    let mut options = Options {
+        font: "Menlo".to_owned(),
+        size: 14.,
+        ligatures: true,
+        stats: false,
+        command: None,
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--smoke" => return smoke(),
@@ -55,6 +64,11 @@ fn main() -> ExitCode {
             "--size" => match args.next().and_then(|points| points.parse().ok()) {
                 Some(points) if points > 0. => options.size = points,
                 _ => return usage_error("--size needs a positive number of points"),
+            },
+            "--ligatures" => match args.next().as_deref() {
+                Some("on") => options.ligatures = true,
+                Some("off") => options.ligatures = false,
+                _ => return usage_error("--ligatures needs on or off"),
             },
             "-e" => match args.next() {
                 Some(program) => {
@@ -96,7 +110,11 @@ fn run(options: Options) -> ExitCode {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| cx.quit()).detach();
         let mut font = font(options.font);
-        font.features = FontFeatures::disable_ligatures();
+        font.features = FontFeatures(Arc::new(if options.ligatures {
+            vec![("calt".into(), 1), ("liga".into(), 1)]
+        } else {
+            vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
+        }));
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
