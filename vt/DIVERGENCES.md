@@ -68,7 +68,14 @@ pushes one).
 - Synchronized updates (2026): alacritty buffers the input while one is open;
   rtty-vt applies it and reports the mode, leaving the frame to the renderer.
 - Replies and events: alacritty sends them through its event listener; the
-  query and event tests check rtty-vt's against the specs.
+  query and event tests check rtty-vt's against the specs and the recorded
+  programs. The identification replies differ:
+
+  | Query | rtty-vt | alacritty_terminal 0.26 |
+  |---|---|---|
+  | DA1 `CSI c` | `CSI ? 62 ; 22 c`: a VT220 with ANSI colour | `CSI ? 6 c`: a VT102 |
+  | DA2 `CSI > c` | `CSI > 1 ; 277 ; 0 c`: xterm patch level `XTERM_VERSION`, past the 242 emacs and the 277 vim turn xterm features on at | `CSI > 0 ; 2600 ; 1 c`: its crate version |
+  | XTVERSION `CSI > q` | `DCS > \| rtty-vt <crate version> ST` | no answer |
 - The scrollback while the alternate screen is up: alacritty's grid is then
   the alternate one; rtty-vt keeps the primary's scrollback in reach.
 - Tab characters: alacritty writes `\t` into the cell a tab starts from; the
