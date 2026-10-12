@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use rtty_vt::{ColorScheme, Event, Terminal};
+use rtty_vt::{ColorScheme, Event, MarkKind, Terminal};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::scheme::{SLOTS, Scheme};
@@ -225,6 +225,28 @@ impl Pane {
         self.scrolled = (top < term.screen_top()).then_some(top);
     }
 
+    /// Cmd+Up and Cmd+Down: puts the shell's previous (`up`) or next prompt (OSC 133;A) above or
+    /// below the view's top at the top of the view; a prompt on the screen goes back to following
+    /// the output. `false` when there is none that way.
+    pub fn jump_to_prompt(&mut self, up: bool) -> bool {
+        let term = self.lock();
+        let (top, screen_top) = (self.top(&term), term.screen_top());
+        let end = screen_top + u64::from(term.size().0);
+        let marks = term.marks(term.oldest_row(), end).into_iter();
+        let prompts: Vec<u64> =
+            marks.filter(|mark| mark.kind == MarkKind::PromptStart).map(|mark| mark.row).collect();
+        drop(term);
+        let target = if up {
+            prompts.iter().rev().find(|&&row| row < top)
+        } else {
+            // Following the output, the view is as far down as it goes.
+            prompts.iter().find(|&&row| row > top && top < screen_top)
+        };
+        let Some(&row) = target else { return false };
+        self.scrolled = (row < screen_top).then_some(row);
+        true
+    }
+
     /// Scrolls the view, `rows` tall, so absolute row `row` shows: left alone when it does, else
     /// with the row a third of the way down.
     pub fn reveal(&mut self, row: u64, rows: u16) {
@@ -388,6 +410,35 @@ mod tests {
         let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("E]11;rgb:2828/2c2c/3434B"), "{screen}");
+    }
+
+    /// Three prompts, the last on the screen of a 10-row pane: up goes from prompt to prompt, down
+    /// comes back and, at the prompt on the screen, follows the output again.
+    #[test]
+    fn prompt_jumps_go_from_mark_to_mark() {
+        let script = "for p in one two three; do printf '\\033]133;A\\007$ %s\\n' $p; seq 1 30; done; \
+                      printf '\\033]133;A\\007$ last'; sleep 5";
+        let (mut pane, _) = Pane::spawn(shell_command(script), 10, 20, None, None).unwrap();
+        wait_for(&pane, "$ last");
+        let (prompts, screen_top): (Vec<u64>, u64) = {
+            let term = pane.lock();
+            let marks = term.marks(0, term.screen_top() + 10);
+            (marks.iter().map(|mark| mark.row).collect(), term.screen_top())
+        };
+        assert_eq!(prompts.len(), 4);
+        assert!(prompts[3] >= screen_top && prompts[2] < screen_top);
+        let top = |pane: &Pane| pane.top(&pane.lock());
+        assert!(pane.jump_to_prompt(true));
+        assert_eq!(top(&pane), prompts[2]);
+        assert!(pane.jump_to_prompt(true) && pane.jump_to_prompt(true));
+        assert_eq!(top(&pane), prompts[0]);
+        assert!(!pane.jump_to_prompt(true), "no prompt above the first");
+        assert_eq!(top(&pane), prompts[0]);
+        assert!(pane.jump_to_prompt(false));
+        assert_eq!(top(&pane), prompts[1]);
+        assert!(pane.jump_to_prompt(false) && pane.jump_to_prompt(false));
+        assert_eq!(top(&pane), screen_top, "the last prompt is on the screen: follow the output");
+        assert!(!pane.jump_to_prompt(false));
     }
 
     /// No OSC 7: the shell `cd`s and execs a program, which then holds the foreground.

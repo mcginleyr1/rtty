@@ -33,7 +33,7 @@ use crate::search::{self, Match, Query};
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::window::{MoveFocus, ResizePane};
 
-actions!(rtty, [Copy, Paste, Find]);
+actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
@@ -1218,6 +1218,14 @@ impl Render for PaneView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::find))
+            .on_action(cx.listener(|view, _: &PreviousPrompt, _, cx| {
+                view.pane.jump_to_prompt(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &NextPrompt, _, cx| {
+                view.pane.jump_to_prompt(false);
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, action: &MoveFocus, _, cx| {
                 view.claimed_chord(&action.keystroke, cx)
             }))

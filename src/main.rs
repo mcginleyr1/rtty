@@ -27,7 +27,7 @@ use control::Response;
 use futures::StreamExt;
 use layout::Direction;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
-use view::{Copy, Find, Paste, Settings};
+use view::{Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
     ClosePane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, ToggleZoom,
@@ -181,6 +181,8 @@ fn run(options: Options) -> Result<(), String> {
             KeyBinding::new("cmd-c", Copy, Some("Terminal")),
             KeyBinding::new("cmd-v", Paste, Some("Terminal")),
             KeyBinding::new("cmd-f", Find, Some("Terminal")),
+            KeyBinding::new("cmd-up", PreviousPrompt, Some("Terminal")),
+            KeyBinding::new("cmd-down", NextPrompt, Some("Terminal")),
             KeyBinding::new("cmd-=", IncreaseFontSize, None),
             KeyBinding::new("cmd--", DecreaseFontSize, None),
             KeyBinding::new("cmd-n", NewWindow, None),
