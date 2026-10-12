@@ -37,7 +37,8 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `-e PROGRAM [ARGS...]` | run the program instead of the login shell; the window closes when it exits |
 | `--stats` | once a second while frames are drawn, print frames, layout and paint ms/frame |
 | `--trace FILE` | write every read from the pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, focus in and out, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs` |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, focus in and out, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 

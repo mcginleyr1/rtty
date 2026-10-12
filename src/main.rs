@@ -27,7 +27,7 @@ use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, Settings};
 use window::TerminalWindow;
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
-                     [--stats] [--trace FILE] [--script FILE] [-e PROGRAM [ARGS...]]
+                     [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
 
@@ -47,6 +47,9 @@ struct Options {
     stats: bool,
     trace: Option<PathBuf>,
     script: Option<PathBuf>,
+    /// A scripted window takes the keyboard only when asked to: the person at the machine may be
+    /// typing elsewhere.
+    activate: bool,
     command: Option<Vec<String>>,
 }
 
@@ -69,6 +72,7 @@ fn main() -> ExitCode {
                 Some(path) => options.script = Some(path.into()),
                 None => return usage_error("--script needs a file"),
             },
+            "--activate" => options.activate = true,
             "--config" => match args.next() {
                 Some(path) => options.config = Some(path.into()),
                 None => return usage_error("--config needs a file"),
@@ -145,6 +149,10 @@ fn run(options: Options) -> Result<(), String> {
     let script =
         options.script.as_ref().map(read).transpose()?.map(|source| script::parse(&source));
     let script = script.transpose()?;
+    if options.activate && script.is_none() {
+        return Err("--activate goes with --script".into());
+    }
+    let activate = script.is_none() || options.activate;
     let trace = options
         .trace
         .as_ref()
@@ -198,7 +206,9 @@ fn run(options: Options) -> Result<(), String> {
                 .update(cx, |_, window, cx| script::run(steps, window, cx))
                 .expect("the window just opened");
         }
-        cx.activate(true);
+        if activate {
+            cx.activate(true);
+        }
     });
     Ok(())
 }
