@@ -85,6 +85,13 @@ impl Pane {
         let pty = native_pty_system().openpty(size).map_err(io::Error::other)?;
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        // The program runs in rtty, not in the terminal or multiplexer rtty was started from;
+        // programs pick features by these (nvim does not probe for undercurl inside tmux).
+        command.env("TERM_PROGRAM", "rtty");
+        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        for outer in ["TMUX", "TMUX_PANE", "STY", "ZELLIJ", "TUTTI_PANE", "TUTTI_SESSION"] {
+            command.env_remove(outer);
+        }
         let mut child = pty.slave.spawn_command(command).map_err(io::Error::other)?;
         // The child holds the only other end, so reads end when it and its children are gone.
         drop(pty.slave);
@@ -302,6 +309,14 @@ mod tests {
         let (pane, _) =
             Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None, None).unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
+    }
+
+    #[test]
+    fn the_program_hears_it_runs_in_rtty_and_in_no_multiplexer() {
+        let mut command = shell_command("printf '%s:%s' \"$TERM_PROGRAM\" \"${TMUX-none}\"");
+        command.env("TMUX", "/tmp/outer,1,0");
+        let (pane, _) = Pane::spawn(command, 24, 80, None, None).unwrap();
+        assert_eq!(finish(pane).0, "rtty:none");
     }
 
     /// The engine answers a query and the reply reaches the program, which shows it with `od`.

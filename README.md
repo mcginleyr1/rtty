@@ -35,7 +35,10 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 
 `--font`, `--size` and `--ligatures` override the config file. `TERM` is `xterm-256color`,
-`COLORTERM` is `truecolor`.
+`COLORTERM` is `truecolor`, `TERM_PROGRAM` is `rtty` (with `TERM_PROGRAM_VERSION`), and the
+variables that would tell a program it runs inside a multiplexer rtty was started from (`TMUX`,
+`TMUX_PANE`, `STY`, `ZELLIJ`, `TUTTI_PANE`, `TUTTI_SESSION`) are removed: Neovim, for one, skips
+its undercurl probe inside tmux.
 
 ## Configuration
 
