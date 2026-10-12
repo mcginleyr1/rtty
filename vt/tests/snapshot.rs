@@ -397,6 +397,31 @@ fn a_redraw_keeps_the_early_wraps_of_wide_characters() {
     }
 }
 
+/// Found by the snapshot campaign: a single shift (SS2) held by the
+/// primary's saved cursor. The copy puts it in that slot and must then spend
+/// it: left pending, it is saved again with the alternate screen's cursor,
+/// or taken by the next character the program prints.
+#[test]
+fn a_saved_single_shift_stays_in_its_slot() {
+    use Token::*;
+    let tokens = [
+        Quiet("\x1b*0\x1bn"),
+        Ctrl(14),
+        Quiet("\x1bN"),
+        Mode(true, 1049, true),
+        Text("a".into()),
+        Mode(true, 1048, true),
+    ];
+    if let Err(failure) = check(11, 14, &tokens) {
+        panic!("{failure}");
+    }
+    // On the primary screen, a blank the shift was spent on draws nothing.
+    let tokens = [Quiet("\x1b*0"), Quiet("\x1bN"), Esc("7"), Text(" ".into())];
+    if let Err(failure) = check(5, 10, &tokens) {
+        panic!("{failure}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 500, failure_persistence: None, ..ProptestConfig::default() })]
 

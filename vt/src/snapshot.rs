@@ -288,14 +288,19 @@ fn charsets(out: &mut String, charsets: &Charsets) {
 }
 
 /// Back to the plain state drawing goes on in, after a saved one: origin
-/// mode off, no rendition or link, ASCII.
-fn plain(e: &mut Encoder, origin: bool) {
+/// mode off, no rendition or link, ASCII, and no single shift pending.
+/// Only a printed character spends a `shifted` one: a blank, printed and
+/// erased on a screen not drawn yet.
+fn plain(e: &mut Encoder, origin: bool, shifted: bool) {
     if origin {
         e.out.push_str("\x1b[?6l");
     }
     e.out.push_str("\x1b[0m\x1b]8;;\x1b\\");
     e.pen = Pen::default();
     charsets(&mut e.out, &Charsets::default());
+    if shifted {
+        e.out.push_str("\x1b[H \x1b[H\x1b[X");
+    }
 }
 
 fn rgb(Rgb(r, g, b): Rgb) -> String {
@@ -337,7 +342,7 @@ impl Terminal {
             match &self.saved[PRIMARY] {
                 Some(saved) => {
                     e.out.push_str("\x1b8\x1b[?1049h");
-                    plain(&mut e, saved.origin);
+                    plain(&mut e, saved.origin, saved.cursor.charsets.single_shift.is_some());
                 }
                 None => e.out.push_str("\x1b[?1047h"),
             }
@@ -410,7 +415,7 @@ impl Terminal {
         charsets(&mut e.out, &Charsets::default());
         e.out.push_str("\x1b[H\x1b[2J");
         e.screen(rows, |r| lines[usize::from(r)], None);
-        plain(&mut e, false);
+        plain(&mut e, false, false);
         e.out.into_bytes()
     }
 
@@ -493,7 +498,7 @@ impl Terminal {
         let cursor = &saved.cursor;
         e.cursor(cursor, line(cursor.row.min(self.grid.rows - 1)), None);
         e.out.push_str("\x1b7");
-        plain(e, saved.origin);
+        plain(e, saved.origin, cursor.charsets.single_shift.is_some());
     }
 
     fn kitty_stack(&self, e: &mut Encoder, screen: usize) {
