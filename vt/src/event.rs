@@ -13,7 +13,8 @@ pub enum Event {
     Title(String),
     /// OSC 0 or 1.
     IconName(String),
-    /// OSC 9 (a body) or OSC 777 `notify` (a title and/or a body).
+    /// OSC 9 (a body), OSC 777 `notify` or kitty's OSC 99 (a title and/or a
+    /// body).
     Notification {
         title: Option<String>,
         body: Option<String>,

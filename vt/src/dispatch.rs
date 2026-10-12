@@ -546,6 +546,7 @@ fn osc(term: &mut Terminal, params: &[&[u8]], terminator: &str) {
             term.set_hyperlink((!uri.is_empty()).then_some(Hyperlink { id, uri }));
         }
         b"9" => notification(term, &joined()),
+        b"99" => kitty_notification(term, args),
         b"10" | b"11" | b"12" => {
             let first = usize::from(command[1] - b'0');
             for (offset, spec) in args.iter().enumerate().take(3 - first) {
@@ -617,6 +618,47 @@ fn osc(term: &mut Terminal, params: &[&[u8]], terminator: &str) {
         }
         b"7501" => term.push_event(Event::ProgramStatus(joined())),
         _ => {}
+    }
+}
+
+/// OSC 99, kitty's notifications: `99 ; key=value:key=value ; payload`.
+/// The payload is the title (`p=title`, the default) or the body (`p=body`),
+/// base64 with `e=1`. Chunks with one `i` and `d=0` add up until one without
+/// `d=0` ends the notification. Other payloads (closing, queries, icons,
+/// buttons) and other keys are not read.
+fn kitty_notification(term: &mut Terminal, args: &[&[u8]]) {
+    let metadata = String::from_utf8_lossy(args.first().copied().unwrap_or_default());
+    let raw = args.get(1..).map(|rest| rest.join(&b';')).unwrap_or_default();
+    let (mut id, mut done, mut kind, mut encoded) = (String::new(), true, "title", false);
+    for (key, value) in metadata.split(':').filter_map(|pair| pair.split_once('=')) {
+        match key {
+            "i" => id = value.to_string(),
+            "d" => done = value != "0",
+            "p" => kind = value,
+            "e" => encoded = value == "1",
+            _ => {}
+        }
+    }
+    let payload = if encoded { base64(&raw) } else { Some(raw) };
+    let payload = payload.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let (title, body) = match term.kitty_notification.take() {
+        Some((pending, title, body)) if pending == id => (title, body),
+        _ => (None, None),
+    };
+    let add = |part: Option<String>| match (part, &payload) {
+        (Some(part), Some(more)) => Some(part + more),
+        (part, more) => part.or(more.clone()),
+    };
+    let (title, body) = match kind {
+        "title" => (add(title), body),
+        "body" => (title, add(body)),
+        _ => return,
+    };
+    let (title, body) = (title.filter(|t| !t.is_empty()), body.filter(|b| !b.is_empty()));
+    if !done {
+        term.kitty_notification = Some((id, title, body));
+    } else if title.is_some() || body.is_some() {
+        term.push_event(Event::Notification { title, body });
     }
 }
 

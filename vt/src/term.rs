@@ -159,6 +159,9 @@ pub struct Terminal {
     pub(crate) joinable: bool,
     /// A DCS string being collected: its kind and bytes.
     pub(crate) dcs: Option<(crate::dispatch::DcsKind, Vec<u8>)>,
+    /// An OSC 99 notification still arriving in chunks: its id, title and
+    /// body so far.
+    pub(crate) kitty_notification: Option<(String, Option<String>, Option<String>)>,
 }
 
 impl Terminal {
@@ -192,6 +195,7 @@ impl Terminal {
             last_printed: None,
             joinable: false,
             dcs: None,
+            kitty_notification: None,
         }
     }
 

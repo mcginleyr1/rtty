@@ -92,6 +92,20 @@ fn notifications_and_progress() {
     );
     assert_eq!(events("\x1b]777;notify;;Body\x07"), [note(None, Some("Body"))]);
     assert!(events("\x1b]777;notify;;\x07\x1b]777;other;x\x07\x1b]9;\x07").is_empty());
+    // kitty's OSC 99: a title by default, a body by `p=body`, base64 by
+    // `e=1`, and chunks with one `i` and `d=0` adding up to the last.
+    assert_eq!(events("\x1b]99;;Hello world\x1b\\"), [note(Some("Hello world"), None)]);
+    assert_eq!(events("\x1b]99;p=body;just a body\x07"), [note(None, Some("just a body"))]);
+    assert_eq!(
+        events(
+            "\x1b]99;i=1:d=0;Build\x1b\\\x1b]99;i=1:d=0; done\x1b\\\x1b]99;i=1:p=body;all green\x1b\\"
+        ),
+        [note(Some("Build done"), Some("all green"))]
+    );
+    assert_eq!(events("\x1b]99;e=1;SGk7dGhlcmU=\x07"), [note(Some("Hi;there"), None)]);
+    // Another id starts over; closes, queries and empty payloads say nothing.
+    assert_eq!(events("\x1b]99;i=1:d=0;lost\x07\x1b]99;i=2;kept\x07"), [note(Some("kept"), None)]);
+    assert!(events("\x1b]99;i=1:p=close;\x07\x1b]99;i=1:p=?;\x07\x1b]99;;\x07").is_empty());
     // ConEmu's numbered subcommands are never notifications; 4 is progress.
     assert_eq!(events("\x1b]9;4;1;50\x07"), [Event::Progress { state: 1, percent: Some(50) }]);
     assert_eq!(events("\x1b]9;4;0\x07"), [Event::Progress { state: 0, percent: None }]);
