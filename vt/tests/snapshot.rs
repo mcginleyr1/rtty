@@ -371,6 +371,32 @@ fn a_redraw_keeps_a_soft_wrap_under_inserted_lines() {
     }
 }
 
+/// Found by the redraw campaign: wide characters wrapping early at a narrow
+/// screen's margin, the redraw reaching below them.
+#[test]
+fn a_redraw_keeps_the_early_wraps_of_wide_characters() {
+    use Token::*;
+    let cases: [(u16, u16, Vec<Token>, Vec<Token>); 2] = [
+        (
+            5,
+            2,
+            vec![Resize(8, 3), Text("日aaa日aaaaaaaa日a".into()), Move('B', 0)],
+            vec![Cup(5, 0), Ctrl(13), Text("a".into())],
+        ),
+        (
+            4,
+            2,
+            vec![Resize(7, 3), Text("a".into()), Text("a日日日日aa日a".into())],
+            vec![Cup(0, 0), Stbm(0, 5), Esc("7"), Text("aaaaa".into()), Edit('T', 0)],
+        ),
+    ];
+    for (rows, cols, before, after) in cases {
+        if let Err(failure) = check_redraw(rows, cols, &before, &after) {
+            panic!("{before:?} then {after:?}: {failure}");
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 500, failure_persistence: None, ..ProptestConfig::default() })]
 
