@@ -194,14 +194,19 @@ font's `calt`, `liga` and `dlig` features.
 ## Status
 
 Works: one window running a shell or `-e` program with colors, attributes, wide chars,
-ligatures, cursor shapes, selection and copy/paste, scrollback, resize with reflow, mouse
-reports, window title from OSC 0/2, OSC 52 copy, synchronized updates, a config file, and
-WezTerm-format color schemes that follow the macOS appearance live (with DEC mode 2031 reports).
+ligatures, selection and copy/paste, scrollback, resize with reflow, mouse reports, window title
+from OSC 0/2, OSC 52 copy, synchronized updates, a config file, and WezTerm-format color schemes
+that follow the macOS appearance live (with DEC mode 2031 reports).
+
+The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
+insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
+DECSCUSR asks for blinking, or, while DECSCUSR is at its default, when ATT610 (`CSI ? 12 h`) does;
+it stops blinking and stays on after 10 s without a key, so an idle window draws nothing.
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback and an emoji may overhang its two cells; no blinking cursor, bell, kitty
-keyboard protocol, URL detection, tabs or splits; macOS only.
+CoreText's font fallback and an emoji may overhang its two cells; no bell, kitty keyboard
+protocol, URL detection, tabs or splits; macOS only.
 
 ## The GPUI pin
 

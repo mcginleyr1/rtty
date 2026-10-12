@@ -248,6 +248,11 @@ impl Style {
     }
 }
 
+/// Whether the cursor blinks: as DECSCUSR last set it, else as ATT610 (`CSI ? 12 h`) has it.
+pub fn blinks(term: &Terminal) -> bool {
+    term.cursor_style().map_or(term.modes().cursor_blink, |style| style.blinking)
+}
+
 /// Every row of the view `top..top + rows`, and the cursor: what a frame draws.
 #[cfg(test)]
 pub fn frame(
@@ -382,6 +387,23 @@ mod tests {
         assert_eq!(unfocused.unwrap().shape, CursorShape::Hollow);
         term.advance(b"\x1b[?25l");
         assert_eq!(draw(&term).1, None);
+    }
+
+    #[test]
+    fn decscusr_and_att610_say_whether_the_cursor_blinks() {
+        let mut term = term(b"");
+        assert!(!blinks(&term));
+        // nvim's insert mode, then normal mode: a steady bar, a steady block.
+        term.advance(b"\x1b[6 q");
+        assert!(!blinks(&term));
+        term.advance(b"\x1b[5 q");
+        assert!(blinks(&term));
+        term.advance(b"\x1b[2 q\x1b[?12h");
+        assert!(!blinks(&term), "DECSCUSR's steady block wins over ATT610");
+        term.advance(b"\x1b[0 q");
+        assert!(blinks(&term), "the host's default, then ATT610");
+        term.advance(b"\x1b[?12l");
+        assert!(!blinks(&term));
     }
 
     #[test]

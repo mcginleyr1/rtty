@@ -14,7 +14,7 @@ use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent,
-    ShapedGlyph, ShapedLine, ShapedRun, Size, StrikethroughStyle, TextRun, UTF16Selection,
+    ShapedGlyph, ShapedLine, ShapedRun, Size, StrikethroughStyle, Task, TextRun, UTF16Selection,
     UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
     outline, point, prelude::*, px, size,
 };
@@ -24,7 +24,7 @@ use crate::config::Theme;
 use crate::keys;
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane};
-use crate::render::{CursorShape, Line, Palette, Run, Scene};
+use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 
@@ -32,6 +32,11 @@ actions!(rtty, [Quit, Copy, Paste, IncreaseFontSize, DecreaseFontSize]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// A blinking cursor is on for this long, then off for as long; it holds still once the
+/// keyboard has been idle for `BLINK_FOR`, so an idle window draws nothing.
+const BLINK_MS: u128 = 500;
+const BLINK_FOR: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct Settings {
@@ -59,6 +64,10 @@ pub struct PaneView {
     mouse_cell: Option<(u16, u16)>,
     /// When the synchronized update now holding the screen began.
     sync_since: Option<Instant>,
+    /// When the cursor began blinking, counted again from each key.
+    blink_since: Option<Instant>,
+    /// The frame that shows the blinking cursor's next phase.
+    blink_wake: Option<Task<()>>,
     stats: Option<FrameStats>,
 }
 
@@ -178,6 +187,8 @@ impl PaneView {
             scroll_remainder: px(0.),
             mouse_cell: None,
             sync_since: None,
+            blink_since: None,
+            blink_wake: None,
             stats: settings.stats.then(FrameStats::default),
         }
     }
@@ -215,6 +226,8 @@ impl PaneView {
 
     fn input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         self.pane.input(bytes);
+        // Typing shows the cursor and starts its blinking over.
+        self.blink_since = None;
         cx.notify();
     }
 
@@ -268,6 +281,11 @@ impl PaneView {
         Some(((row, col), side))
     }
 
+    /// How long the cursor has been blinking, while it still blinks.
+    fn blinking(&self) -> Option<Duration> {
+        self.blink_since.map(|since| since.elapsed()).filter(|&elapsed| elapsed < BLINK_FOR)
+    }
+
     /// The middle of the cell at (row in view, column), where the last frame put it.
     pub fn cell_center(&self, row: u16, col: u16) -> Option<Point<Pixels>> {
         let grid = self.geometry?;
@@ -319,6 +337,10 @@ impl PaneView {
                 cursor.shape,
                 hex(cursor.color)
             );
+        }
+        if let Some(blinking) = self.blinking() {
+            let phase = if blinked_off(blinking) { "off" } else { "on" };
+            let _ = writeln!(out, "cursor blinking for {} ms, {phase}", blinking.as_millis());
         }
         for (index, row) in term.rows(top, top + u64::from(rows)) {
             let line = scene.line(row, index);
@@ -535,7 +557,20 @@ impl PaneView {
         let palette = Palette::new(&term, &self.scheme);
         let top = self.pane.top(&term);
         let selection = self.pane.selection.and_then(|selection| selection.range(&term));
-        let scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        self.blink_since = (focused && render::blinks(&term))
+            .then(|| self.blink_since.unwrap_or_else(Instant::now));
+        let blinking = self.blinking();
+        if blinking.is_some_and(blinked_off) {
+            scene.cursor = None;
+        }
+        self.blink_wake = blinking.map(|elapsed| {
+            let next = Duration::from_millis((BLINK_MS - elapsed.as_millis() % BLINK_MS) as u64);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(next).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+        });
         let screen_top = term.screen_top();
         let (cursor_row, cursor_col) = term.cursor_position();
         let cache = &mut self.cache;
@@ -697,6 +732,10 @@ impl PaneView {
             stats.record(frame.layout_time, started.elapsed());
         }
     }
+}
+
+fn blinked_off(blinking: Duration) -> bool {
+    blinking.as_millis() / BLINK_MS % 2 == 1
 }
 
 fn mouse_button(button: MouseButton) -> Button {
