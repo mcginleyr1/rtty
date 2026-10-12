@@ -344,6 +344,33 @@ fn fixtures_round_trip() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
+/// Found by the redraw campaign: a soft-wrapped row the redraw draws below a
+/// damaged one, with a scroll region and inserted lines between.
+#[test]
+fn a_redraw_keeps_a_soft_wrap_under_inserted_lines() {
+    use Token::*;
+    let before = [Resize(5, 3), Text("aaaaaaa日a日a".into()), Stbm(0, 2)];
+    let after = [
+        Text("az🏽x日\u{301}日\u{7f}".into()),
+        Ctrl(15),
+        Text("❤👩│  €👩€ß".into()),
+        Text("q本🇺j😀\u{200d}❤-x#\u{301}".into()),
+        Text("l\u{200d}".into()),
+        Edit('L', 5),
+        Mode(true, 1, false),
+        Text("│.by\u{301}ß 🇺".into()),
+        Quiet("\x1bN"),
+        Text("€€#🎉✓👨\u{fe0f}".into()),
+        Sgr("43;48:2::150:62:116".into()),
+        Ctrl(14),
+        Stbm(3, 0),
+        Text("b 0🇸jq🇸".into()),
+    ];
+    if let Err(failure) = check_redraw(2, 3, &before, &after) {
+        panic!("{failure}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 500, failure_persistence: None, ..ProptestConfig::default() })]
 

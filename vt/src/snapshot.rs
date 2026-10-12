@@ -101,6 +101,7 @@ impl Encoder {
     /// rows over what the terminal shows.
     fn screen<'a>(&mut self, rows: u16, line: impl Fn(u16) -> &'a Row, only: Option<&[u16]>) {
         let mut flowing = false;
+        let mut bottom = only.is_none_or(|only| only.contains(&(rows - 1)));
         // The cluster printed last: an emoji sequence's next character
         // printed straight after it would join it.
         let mut last = String::new();
@@ -108,6 +109,7 @@ impl Encoder {
             let row = line(r);
             let len = row.cells.len();
             if only.is_some_and(|only| !only.contains(&r)) {
+                let mut filled = false;
                 if flowing {
                     // A row above wrapped into this one, unchanged: its first
                     // two columns land the wrap (and mend a stand-in's).
@@ -118,9 +120,13 @@ impl Encoder {
                         self.cell(row, col);
                         last.clear();
                         row.push_grapheme(col, &mut last);
+                        filled |= col + usize::from(row.cells[col].width()) >= len;
                     }
                 }
-                flowing = false;
+                // On a row that narrow, they reached its last column, which
+                // ends its own soft wrap: that wrap is landed in turn.
+                flowing = filled && row.wrapped && r + 1 < rows;
+                bottom |= filled && r + 1 == rows;
                 continue;
             }
             let flows = row.wrapped && r + 1 < rows;
@@ -180,7 +186,7 @@ impl Encoder {
             }
             flowing = flows;
         }
-        if only.is_none_or(|only| only.contains(&(rows - 1))) {
+        if bottom {
             self.wrap_bottom(rows, line(rows - 1));
         }
     }
