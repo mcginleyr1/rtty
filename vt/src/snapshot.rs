@@ -296,6 +296,9 @@ fn rgb(Rgb(r, g, b): Rgb) -> String {
     format!("rgb:{r:02x}/{g:02x}/{b:02x}")
 }
 
+/// A fresh terminal's plain state, its screen cleared, the cursor hidden.
+const CLEAR: &str = "\x1b[?25l\x1b[?1049l\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[0m\x1b]8;;\x1b\\";
+
 impl Terminal {
     /// Escape sequences that bring a fresh terminal of the same size to this
     /// one's visible state: both screens when the alternate one is up (the
@@ -307,8 +310,7 @@ impl Terminal {
     /// title. The scrollback is not carried.
     pub fn snapshot(&self) -> Vec<u8> {
         let (rows, cols) = self.size();
-        let mut e = Encoder { out: String::new(), pen: Pen::default() };
-        e.out.push_str("\x1b[?25l\x1b[?1049l\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[0m\x1b]8;;\x1b\\");
+        let mut e = Encoder { out: String::from(CLEAR), pen: Pen::default() };
         charsets(&mut e.out, &Charsets::default());
         e.out.push_str("\x1b[H\x1b[2J");
 
@@ -383,6 +385,26 @@ impl Terminal {
             e.screen(self.grid.rows, |r| self.grid.line(r), Some(rows));
         }
         self.state(&mut e, true);
+        e.out.into_bytes()
+    }
+
+    /// Escape sequences that bring a fresh terminal of the same size to a
+    /// view `offset` rows back into the scrollback: the rows from
+    /// `screen_top() - offset` on — from `oldest_row()` when that is further
+    /// back than is held — drawn with the cursor hidden. A picture to
+    /// browse, not a state to go on from: no modes, saved cursors or title.
+    /// While the alternate screen is up, the primary's scrollback leads into
+    /// it.
+    pub fn scrolled_snapshot(&self, offset: u64) -> Vec<u8> {
+        let (rows, _) = self.size();
+        let first = self.screen_top().saturating_sub(offset).max(self.oldest_row());
+        let lines: Vec<&Row> =
+            self.rows(first, first + u64::from(rows)).map(|(_, row)| row).collect();
+        let mut e = Encoder { out: String::from(CLEAR), pen: Pen::default() };
+        charsets(&mut e.out, &Charsets::default());
+        e.out.push_str("\x1b[H\x1b[2J");
+        e.screen(rows, |r| lines[usize::from(r)], None);
+        plain(&mut e, false);
         e.out.into_bytes()
     }
 

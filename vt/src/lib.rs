@@ -28,7 +28,8 @@
 //! size to this one's visible state, both screens included; after it,
 //! `redraw(&take_damage())` brings that follower level again with only the
 //! rows that changed. A switch of screens or a resize calls for a new
-//! snapshot.
+//! snapshot. `scrolled_snapshot(offset)` draws the view `offset` rows back
+//! into the scrollback, for a follower to browse.
 //!
 //! # Unicode
 //!

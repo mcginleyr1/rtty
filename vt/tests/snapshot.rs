@@ -6,7 +6,7 @@ mod common;
 
 use common::{Profile, Token, build, stream};
 use proptest::prelude::*;
-use rtty_vt::{Cell, Terminal};
+use rtty_vt::{Cell, Row, Terminal};
 
 /// One visible cell, everything a renderer or a copy reads.
 #[derive(Debug, PartialEq)]
@@ -62,31 +62,36 @@ fn unreachable_cursor(term: &Terminal) -> bool {
     term.modes().origin && !(top..=bottom).contains(&row)
 }
 
+/// A row's cells and soft wrap, but for what a snapshot leaves out: the wrap
+/// and pad of a bottom row on a `tiny` screen, and of a row with a pending
+/// wrap.
+fn seen_row(row: &Row, bottom: bool, pending_here: bool) -> (Vec<Seen>, bool) {
+    let last = row.cells().len() - 1;
+    let cells = (0..row.cells().len())
+        .map(|col| {
+            let mut text = String::new();
+            row.push_grapheme(col, &mut text);
+            let mut seen = Seen {
+                underline: row.underline_color(col),
+                link: row.hyperlink(col).map(|link| (**link).clone()),
+                ..seen(&row.cells()[col], text)
+            };
+            seen.layout.1 &= !bottom && !(pending_here && col == last);
+            seen
+        })
+        .collect();
+    (cells, row.wrapped() && !bottom && !pending_here)
+}
+
 fn visible(term: &Terminal) -> Visible {
     let (rows, _) = term.size();
     Visible {
         rows: (0..rows)
             .map(|r| {
-                let row = term.screen_row(r);
-                let bottom = r + 1 == rows && tiny(term);
                 // A pending wrap is made by reprinting the cursor's cell,
                 // which ends its row's soft wrap and pad.
                 let pending_here = term.wrap_pending() && term.cursor_position().0 == r;
-                let last = row.cells().len() - 1;
-                let cells = (0..row.cells().len())
-                    .map(|col| {
-                        let mut text = String::new();
-                        row.push_grapheme(col, &mut text);
-                        let mut seen = Seen {
-                            underline: row.underline_color(col),
-                            link: row.hyperlink(col).map(|link| (**link).clone()),
-                            ..seen(&row.cells()[col], text)
-                        };
-                        seen.layout.1 &= !bottom && !(pending_here && col == last);
-                        seen
-                    })
-                    .collect();
-                (cells, row.wrapped() && !bottom && !pending_here)
+                seen_row(term.screen_row(r), r + 1 == rows && tiny(term), pending_here)
             })
             .collect(),
         cursor: term.cursor_position(),
@@ -220,6 +225,79 @@ fn check_redraw(
     Ok(())
 }
 
+/// A fresh terminal fed `term.scrolled_snapshot(offset)` shows the rows
+/// from `offset` back from the screen top, the oldest held at most, with the
+/// cursor hidden.
+fn scrolled_difference(term: &Terminal, offset: u64) -> Option<String> {
+    let (rows, cols) = term.size();
+    let first = term.screen_top().saturating_sub(offset).max(term.oldest_row());
+    let snapshot = term.scrolled_snapshot(offset);
+    let mut copy = Terminal::new(rows, cols, 0);
+    copy.advance(&snapshot);
+    if copy.modes().cursor_visible {
+        return Some("the cursor shows".into());
+    }
+    (0..rows).find_map(|r| {
+        let bottom = r + 1 == rows && tiny(term);
+        let want = seen_row(term.row(first + u64::from(r)).expect("a held row"), bottom, false);
+        let got = seen_row(copy.screen_row(r), bottom, false);
+        (want != got).then(|| {
+            format!(
+                "offset {offset}, row {r}:\n want {want:?}\n got  {got:?}\nsnapshot {:?}",
+                String::from_utf8_lossy(&snapshot)
+            )
+        })
+    })
+}
+
+#[test]
+fn a_scrolled_snapshot_shows_the_rows_back_from_the_screen() {
+    let mut term = Terminal::new(4, 12, 20);
+    term.advance(
+        (0..30).map(|i| format!("\x1b[3{}mL{i}\r\n", i % 8)).collect::<String>().as_bytes(),
+    );
+    term.advance(b"\x1b[1;31mthe cursor row, wrapped");
+    let screen = |bytes: &[u8]| {
+        let mut copy = Terminal::new(4, 12, 0);
+        copy.advance(bytes);
+        (0..4).map(|r| copy.screen_row(r).text()).collect::<Vec<_>>()
+    };
+    assert_eq!((term.oldest_row(), term.screen_top()), (8, 28));
+    assert_eq!(screen(&term.scrolled_snapshot(0)), ["L28", "L29", "the cursor r", "ow, wrapped"]);
+    assert_eq!(screen(&term.scrolled_snapshot(3)), ["L25", "L26", "L27", "L28"]);
+    assert_eq!(screen(&term.scrolled_snapshot(1000)), ["L8", "L9", "L10", "L11"]);
+    for offset in [0, 1, 3, 20, 21, 1000] {
+        assert_eq!(scrolled_difference(&term, offset), None);
+    }
+    // Under the alternate screen the primary's scrollback leads into it.
+    term.advance(b"\x1b[?1049h\x1b[Hfull screen");
+    assert_eq!(screen(&term.scrolled_snapshot(2)), ["L26", "L27", "full screen", ""]);
+    assert_eq!(scrolled_difference(&term, 2), None);
+}
+
+/// Every recorded program in `fixtures/`, at each checkpoint, scrolled back
+/// a row, half a screen and further than is held.
+#[test]
+fn fixtures_scroll_back() {
+    let mut failures = Vec::new();
+    for common::Fixture { name, output, rows, cols, stops, .. } in common::fixtures() {
+        let mut term = Terminal::new(rows, cols, 1_000);
+        let mut fed = 0;
+        for stop in stops {
+            term.advance(&output[fed..stop]);
+            fed = stop;
+            let offsets = [1, u64::from(rows / 2), 5_000];
+            if let Some(detail) =
+                offsets.iter().find_map(|&offset| scrolled_difference(&term, offset))
+            {
+                failures.push(format!("{name} at byte {stop}: {detail}"));
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
 /// Every recorded program in `fixtures/`, at each checkpoint: a snapshot
 /// reproduces the visible state, and a follower fed `redraw` of the damage
 /// since the last checkpoint — a snapshot after a switch of screens — stays
@@ -272,6 +350,17 @@ proptest! {
     #[test]
     fn a_snapshot_reproduces_the_visible_state((rows, cols, tokens) in stream(Profile::Full)) {
         check(rows, cols, &tokens)?;
+    }
+
+    #[test]
+    fn a_scrolled_snapshot_draws_the_rows_it_names(
+        (rows, cols, tokens) in stream(Profile::Full),
+        offset in prop_oneof![0u64..12, 0u64..150],
+    ) {
+        let (_, term) = build(rows, cols, &tokens, false);
+        if let Some(detail) = scrolled_difference(&term, offset) {
+            return Err(TestCaseError::fail(detail));
+        }
     }
 
     #[test]
