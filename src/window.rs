@@ -5,7 +5,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{Context, Entity, Render, Window, div, prelude::*};
 
 use crate::pane::{Notice, Pane};
-use crate::view::{PaneEvent, PaneView, Settings};
+use crate::view::{PaneEvent, PaneView};
 
 pub struct TerminalWindow {
     panes: Vec<Entity<PaneView>>,
@@ -16,11 +16,10 @@ impl TerminalWindow {
     pub fn new(
         pane: Pane,
         notices: UnboundedReceiver<Notice>,
-        settings: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let view = cx.new(|cx| PaneView::new(pane, notices, settings, window, cx));
+        let view = cx.new(|cx| PaneView::new(pane, notices, window, cx));
         cx.subscribe_in(&view, window, Self::pane_event).detach();
         TerminalWindow { panes: vec![view], active: 0 }
     }

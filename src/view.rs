@@ -12,11 +12,11 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, KeyUpEvent, LineLayout, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba,
-    ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
-    outline, point, prelude::*, px, size,
+    EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, LineLayout,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
+    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
+    div, fill, outline, point, prelude::*, px, size,
 };
 use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 
@@ -28,7 +28,7 @@ use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 
-actions!(rtty, [Quit, Copy, Paste, IncreaseFontSize, DecreaseFontSize]);
+actions!(rtty, [Copy, Paste]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
@@ -38,7 +38,8 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 const BLINK_MS: u128 = 500;
 const BLINK_FOR: Duration = Duration::from_secs(10);
 
-#[derive(Clone)]
+/// What every window and pane shares: the font and its size (Cmd+= and Cmd+- change it for all of
+/// them) and the color theme.
 pub struct Settings {
     pub font: Font,
     pub font_size: Pixels,
@@ -46,14 +47,13 @@ pub struct Settings {
     pub stats: bool,
 }
 
-/// A pane as the window shows it: the pane itself, its keyboard focus, its font, and what its
-/// last frame put where.
+impl Global for Settings {}
+
+/// A pane as the window shows it: the pane itself, its keyboard focus, and what its last frame
+/// put where.
 pub struct PaneView {
     pane: Pane,
     focus: FocusHandle,
-    font: Font,
-    font_size: Pixels,
-    theme: Theme,
     /// The theme's scheme for the window's current appearance.
     scheme: Arc<Scheme>,
     geometry: Option<Geometry>,
@@ -149,7 +149,6 @@ impl PaneView {
     pub fn new(
         pane: Pane,
         mut notices: UnboundedReceiver<Notice>,
-        settings: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -162,7 +161,10 @@ impl PaneView {
             view.follow_appearance(window.appearance(), cx)
         })
         .detach();
+        cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
+        let settings = cx.global::<Settings>();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
+        let stats = settings.stats.then(FrameStats::default);
         pane.set_scheme(&scheme);
         cx.spawn_in(window, async move |this, cx| {
             while let Some(notice) = notices.next().await {
@@ -183,9 +185,6 @@ impl PaneView {
         Self {
             pane,
             focus,
-            font: settings.font,
-            font_size: settings.font_size,
-            theme: settings.theme,
             scheme,
             geometry: None,
             cache: Cache::default(),
@@ -196,7 +195,7 @@ impl PaneView {
             sync_since: None,
             blink_since: None,
             blink_wake: None,
-            stats: settings.stats.then(FrameStats::default),
+            stats,
         }
     }
 
@@ -222,7 +221,7 @@ impl PaneView {
     /// with it and tells programs that asked (mode 2031). Colors a program set itself with
     /// OSC 4/10/11/12 are the program's, not the scheme's, and stay.
     pub fn follow_appearance(&mut self, appearance: WindowAppearance, cx: &mut Context<Self>) {
-        let scheme = self.theme.for_appearance(appearance);
+        let scheme = cx.global::<Settings>().theme.for_appearance(appearance);
         if Arc::ptr_eq(scheme, &self.scheme) {
             return;
         }
@@ -301,16 +300,6 @@ impl PaneView {
         };
         let bracketed = self.pane.lock().modes().bracketed_paste;
         self.input(keys::paste(&text, bracketed), cx);
-    }
-
-    fn increase_font_size(&mut self, _: &IncreaseFontSize, _: &mut Window, cx: &mut Context<Self>) {
-        self.font_size = (self.font_size + px(1.)).min(px(72.));
-        cx.notify();
-    }
-
-    fn decrease_font_size(&mut self, _: &DecreaseFontSize, _: &mut Window, cx: &mut Context<Self>) {
-        self.font_size = (self.font_size - px(1.)).max(px(6.));
-        cx.notify();
     }
 
     /// The cell under `position` as (row in view, column), and which half of it.
@@ -581,17 +570,14 @@ impl PaneView {
     ) -> Frame {
         let started = Instant::now();
         self.pane.drawing();
+        let settings = cx.global::<Settings>();
+        let (font, font_size) = (settings.font.clone(), settings.font_size);
         let text_system = window.text_system().clone();
-        let font_id = text_system.resolve_font(&self.font);
-        let cell_width = text_system
-            .advance(font_id, self.font_size, 'm')
-            .expect("the terminal font has an 'm'")
-            .width;
-        let ascent = text_system.ascent(font_id, self.font_size);
-        let descent = text_system.descent(font_id, self.font_size).abs();
-        let cell = size(cell_width, (ascent + descent).ceil());
-        let cols = ((bounds.size.width / cell.width) as u16).max(2);
-        let rows = ((bounds.size.height / cell.height) as u16).max(1);
+        let Metrics { cell, ascent, descent } = metrics(&text_system, &font, font_size);
+        // Laid out a whole number of cells wide, a pane gets that many whatever the rounding.
+        let fit = |pixels: Pixels, cell: Pixels| ((pixels + px(0.5)) / cell) as u16;
+        let cols = fit(bounds.size.width, cell.width).max(2);
+        let rows = fit(bounds.size.height, cell.height).max(1);
         if self.geometry.is_none_or(|grid| (grid.rows, grid.cols) != (rows, cols)) {
             let pixels = (f32::from(cell.width) as u16, f32::from(cell.height) as u16);
             self.pane.resize(rows, cols, pixels);
@@ -642,7 +628,7 @@ impl PaneView {
             selection,
             focused,
             size: (rows, cols),
-            font_size: self.font_size,
+            font_size,
         };
         if cache.key.as_ref() != Some(&key) {
             cache.rows.clear();
@@ -668,7 +654,7 @@ impl PaneView {
             let shaped = line
                 .runs
                 .iter()
-                .map(|run| shape(&text_system, &self.font, self.font_size, cell.width, run))
+                .map(|run| shape(&text_system, &font, font_size, cell.width, run))
                 .collect();
             cache.rows.insert(index, Rc::new(ShapedRow { line, shaped }));
         }
@@ -710,9 +696,9 @@ impl PaneView {
             let underline = UnderlineStyle { color: Some(fg), thickness: px(1.), wavy: false };
             let run = TextRun {
                 underline: Some(underline),
-                ..text_run(&self.font, text.len(), palette.color(FOREGROUND), false, false)
+                ..text_run(&font, text.len(), palette.color(FOREGROUND), false, false)
             };
-            let line = text_system.shape_line(text.into(), self.font_size, &[run], None);
+            let line = text_system.shape_line(text.into(), font_size, &[run], None);
             let backdrop = fill(
                 Bounds::new(cursor_bounds.origin, size(line.width, cell.height)),
                 hsla(scene.bg),
@@ -726,7 +712,7 @@ impl PaneView {
             cell,
             underline: baseline + descent * 0.618,
             strike: (ascent * 0.5 + baseline) * 0.5,
-            thickness: px((f32::from(self.font_size) / 14.).round().max(1.)),
+            thickness: px((f32::from(font_size) / 14.).round().max(1.)),
             background: hsla(scene.bg),
             rows: (0..rows)
                 .filter_map(|row| Some((row, cache.rows.get(&(top + u64::from(row)))?.clone())))
@@ -848,6 +834,23 @@ fn mouse_button(button: MouseButton) -> Button {
         MouseButton::Right => Button::Right,
         _ => Button::Left,
     }
+}
+
+/// A cell of the font, and where its glyphs sit in it.
+pub struct Metrics {
+    pub cell: Size<Pixels>,
+    pub ascent: Pixels,
+    pub descent: Pixels,
+}
+
+/// The cell is the font's advance of `m` wide and its ascent plus descent tall, whole pixels.
+pub fn metrics(text_system: &WindowTextSystem, font: &Font, font_size: Pixels) -> Metrics {
+    let font_id = text_system.resolve_font(font);
+    let width =
+        text_system.advance(font_id, font_size, 'm').expect("the terminal font has an 'm'").width;
+    let ascent = text_system.ascent(font_id, font_size);
+    let descent = text_system.descent(font_id, font_size).abs();
+    Metrics { cell: size(width, (ascent + descent).ceil()), ascent, descent }
 }
 
 /// The run shaped as one string, every glyph on its cell.
@@ -992,8 +995,6 @@ impl Render for PaneView {
             .key_context("Terminal")
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::increase_font_size))
-            .on_action(cx.listener(Self::decrease_font_size))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))

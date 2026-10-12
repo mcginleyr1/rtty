@@ -15,16 +15,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext, Application, Bounds, FontFeatures, KeyBinding, TitlebarOptions, WindowBounds,
-    WindowOptions, font, px, size,
+    App, AppContext, Application, BorrowAppContext, Bounds, FontFeatures, KeyBinding,
+    TitlebarOptions, WindowBounds, WindowOptions, actions, font, px, size,
 };
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
 use config::Config;
 use pane::{Pane, SCROLLBACK, Trace, shell_command};
-use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, Settings};
+use view::{Copy, Paste, Settings};
 use window::TerminalWindow;
+
+actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize]);
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
@@ -175,10 +177,26 @@ fn run(options: Options) -> Result<(), String> {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-c", Copy, Some("Terminal")),
             KeyBinding::new("cmd-v", Paste, Some("Terminal")),
-            KeyBinding::new("cmd-=", IncreaseFontSize, Some("Terminal")),
-            KeyBinding::new("cmd--", DecreaseFontSize, Some("Terminal")),
+            KeyBinding::new("cmd-=", IncreaseFontSize, None),
+            KeyBinding::new("cmd--", DecreaseFontSize, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // Every pane in every window follows the one size, and reflows when it changes.
+        let resize = |step: f32| {
+            move |cx: &mut App| {
+                cx.update_global::<Settings, _>(|settings, _| {
+                    settings.font_size = (settings.font_size + px(step)).clamp(px(6.), px(72.))
+                })
+            }
+        };
+        cx.on_action({
+            let grow = resize(1.);
+            move |_: &IncreaseFontSize, cx| grow(cx)
+        });
+        cx.on_action({
+            let shrink = resize(-1.);
+            move |_: &DecreaseFontSize, cx| shrink(cx)
+        });
         cx.on_window_closed(|cx| cx.quit()).detach();
         let mut font = font(family);
         font.features = FontFeatures(Arc::new(if ligatures {
@@ -195,10 +213,10 @@ fn run(options: Options) -> Result<(), String> {
             titlebar: Some(TitlebarOptions { title: Some("rtty".into()), ..Default::default() }),
             ..Default::default()
         };
-        let settings = Settings { font, font_size: px(font_size), theme, stats: options.stats };
+        cx.set_global(Settings { font, font_size: px(font_size), theme, stats: options.stats });
         let window = cx
             .open_window(window_options, |window, cx| {
-                cx.new(|cx| TerminalWindow::new(pane, notices, settings, window, cx))
+                cx.new(|cx| TerminalWindow::new(pane, notices, window, cx))
             })
             .expect("open the terminal window");
         if let Some(steps) = script {
