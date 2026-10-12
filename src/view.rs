@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::iter;
 use std::mem;
 use std::ops::Range;
@@ -14,8 +15,8 @@ use gpui::{
     EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent,
     ShapedGlyph, ShapedLine, ShapedRun, Size, StrikethroughStyle, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WindowTextSystem, actions, canvas, div, fill, outline, point,
-    prelude::*, px, size,
+    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
+    outline, point, prelude::*, px, size,
 };
 use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 
@@ -142,8 +143,10 @@ impl PaneView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
-        cx.observe_window_appearance(window, |view, window, cx| view.follow_appearance(window, cx))
-            .detach();
+        cx.observe_window_appearance(window, |view, window, cx| {
+            view.follow_appearance(window.appearance(), cx)
+        })
+        .detach();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
         pane.set_scheme(&scheme);
         cx.spawn_in(window, async move |this, cx| {
@@ -183,8 +186,8 @@ impl PaneView {
     /// indices, so what is on screen recolors) and tell the terminal, which answers color queries
     /// with it and tells programs that asked (mode 2031). Colors a program set itself with
     /// OSC 4/10/11/12 are the program's, not the scheme's, and stay.
-    fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let scheme = self.theme.for_appearance(window.appearance());
+    pub fn follow_appearance(&mut self, appearance: WindowAppearance, cx: &mut Context<Self>) {
+        let scheme = self.theme.for_appearance(appearance);
         if Arc::ptr_eq(scheme, &self.scheme) {
             return;
         }
@@ -265,6 +268,94 @@ impl PaneView {
         Some(((row, col), side))
     }
 
+    /// The middle of the cell at (row in view, column), where the last frame put it.
+    pub fn cell_center(&self, row: u16, col: u16) -> Option<Point<Pixels>> {
+        let grid = self.geometry?;
+        let cell = grid.cell;
+        Some(
+            grid.origin
+                + point(cell.width * (f32::from(col) + 0.5), cell.height * (f32::from(row) + 0.5)),
+        )
+    }
+
+    /// The window size that fits `rows`×`cols` cells, once a frame has measured them.
+    pub fn size_for(&self, rows: u16, cols: u16) -> Option<Size<Pixels>> {
+        let cell = self.geometry?.cell;
+        Some(size(cell.width * (f32::from(cols) + 0.5), cell.height * (f32::from(rows) + 0.5)))
+    }
+
+    pub fn screen_text(&self) -> String {
+        self.pane.lock().contents()
+    }
+
+    /// What the next frame draws, as text, with the state it is drawn from: `--script`'s `dump`.
+    pub fn dump(&self, window: &Window) -> String {
+        let term = self.pane.lock();
+        let palette = Palette::new(&term, &self.scheme);
+        let (rows, cols) = term.size();
+        let top = self.pane.top(&term);
+        let selection = self.pane.selection.and_then(|selection| selection.range(&term));
+        let focused = self.focus.is_focused(window) && window.is_window_active();
+        let scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
+        let mut out = String::new();
+        let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
+        let _ = writeln!(
+            out,
+            "scheme {:?} focused {focused} title {:?}",
+            self.scheme.name,
+            term.title()
+        );
+        let _ =
+            writeln!(out, "cursor {:?} style {:?}", term.cursor_position(), term.cursor_style());
+        let _ = writeln!(out, "kitty_keyboard {} {:?}", term.kitty_keyboard(), term.modes());
+        let _ = writeln!(out, "default fg {} bg {}", hex(scene.fg), hex(scene.bg));
+        if let Some(cursor) = scene.cursor {
+            let row = cursor.row - top;
+            let _ = writeln!(
+                out,
+                "drawn cursor {row},{} {:?} {}",
+                cursor.col,
+                cursor.shape,
+                hex(cursor.color)
+            );
+        }
+        for (index, row) in term.rows(top, top + u64::from(rows)) {
+            let line = scene.line(row, index);
+            if line.backgrounds.is_empty() && line.runs.is_empty() {
+                continue;
+            }
+            let _ = writeln!(out, "row {} {:?}", index - top, row.text());
+            for span in &line.backgrounds {
+                let _ = writeln!(out, "  bg {}+{} {}", span.col, span.cells, hex(span.color));
+            }
+            for run in &line.runs {
+                let style = run.style;
+                let _ = write!(
+                    out,
+                    "  run {}+{} {:?} fg {} bg {}",
+                    run.col,
+                    run.cells,
+                    run.text,
+                    hex(style.fg),
+                    hex(style.bg)
+                );
+                for (on, name) in
+                    [(style.bold, "bold"), (style.italic, "italic"), (style.strike, "strike")]
+                {
+                    if on {
+                        let _ = write!(out, " {name}");
+                    }
+                }
+                if style.underline != Underline::None {
+                    let _ = write!(out, " underline {:?}", style.underline);
+                }
+                let _ = writeln!(out);
+            }
+        }
+        out
+    }
+
     /// The cell under `position` by absolute row.
     fn grid_point(&self, position: Point<Pixels>) -> Option<(GridPoint, Side)> {
         let ((row, col), side) = self.cell_at(position)?;
@@ -314,7 +405,12 @@ impl PaneView {
         true
     }
 
-    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus);
         let button = mouse_button(event.button);
         if self.report_mouse(button, Action::Press, event.position, event.modifiers)
@@ -334,12 +430,12 @@ impl PaneView {
         cx.notify();
     }
 
-    fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         let button = mouse_button(event.button);
         self.report_mouse(button, Action::Release, event.position, event.modifiers);
     }
 
-    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let button = event.pressed_button.map_or(Button::None, mouse_button);
         if self.report_mouse(button, Action::Motion, event.position, event.modifiers)
             || event.pressed_button != Some(MouseButton::Left)
@@ -357,7 +453,12 @@ impl PaneView {
 
     /// The wheel scrolls the scrollback, unless a full-screen program owns it: one that asked for
     /// mouse reports gets wheel buttons, any other gets arrow keys (alternate scroll, mode 1007).
-    fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(grid) = self.geometry else { return };
         self.scroll_remainder += event.delta.pixel_delta(grid.cell.height).y;
         let lines = (self.scroll_remainder / grid.cell.height) as i32;

@@ -7,10 +7,14 @@
 //! input side, so a program that stops reading stalls neither the reader nor the window. The
 //! waiter reports the child's exit.
 
+use std::ascii;
+use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -30,6 +34,26 @@ pub enum Notice {
     Event(Event),
     /// The child exited.
     Exit,
+}
+
+/// `--trace`: every read from the pty (`<`) and write to it (`>`), one line each, escaped, after
+/// the milliseconds since the trace began.
+#[derive(Clone)]
+pub struct Trace(Arc<Mutex<(Instant, File)>>);
+
+impl Trace {
+    pub fn create(path: &Path) -> io::Result<Trace> {
+        Ok(Trace(Arc::new(Mutex::new((Instant::now(), File::create(path)?)))))
+    }
+
+    fn log(&self, direction: char, bytes: &[u8]) {
+        let mut trace = self.0.lock().expect("a pty thread panicked");
+        let (started, file) = &mut *trace;
+        let escaped: String =
+            bytes.iter().flat_map(|&byte| ascii::escape_default(byte)).map(char::from).collect();
+        let millis = started.elapsed().as_secs_f64() * 1000.;
+        let _ = writeln!(file, "{millis:10.3} {direction} {escaped}");
+    }
 }
 
 pub struct Pane {
@@ -52,6 +76,7 @@ impl Pane {
         mut command: CommandBuilder,
         rows: u16,
         cols: u16,
+        trace: Option<Trace>,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
         let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
         let pty = native_pty_system().openpty(size).map_err(io::Error::other)?;
@@ -73,8 +98,12 @@ impl Pane {
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let output_pending = Arc::new(AtomicBool::new(false));
 
+        let writer_trace = trace.clone();
         thread::Builder::new().name("pty writer".into()).spawn(move || {
             for bytes in inputs {
+                if let Some(trace) = &writer_trace {
+                    trace.log('>', &bytes);
+                }
                 if writer.write_all(&bytes).is_err() {
                     break;
                 }
@@ -83,7 +112,7 @@ impl Pane {
         let reader = thread::Builder::new().name("pty reader".into()).spawn({
             let (term, replies) = (term.clone(), input.clone());
             let (notices, pending) = (notices.clone(), output_pending.clone());
-            move || read(output, &term, &replies, &notices, &pending)
+            move || read(output, &term, &replies, &notices, &pending, trace)
         })?;
         let waiter = thread::Builder::new().name("child waiter".into()).spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code());
@@ -196,6 +225,7 @@ fn read(
     replies: &mpsc::Sender<Vec<u8>>,
     notices: &UnboundedSender<Notice>,
     pending: &AtomicBool,
+    trace: Option<Trace>,
 ) {
     let mut buffer = vec![0; 1 << 16];
     loop {
@@ -206,6 +236,9 @@ fn read(
             // EIO once the child's side is closed.
             Err(_) => return,
         };
+        if let Some(trace) = &trace {
+            trace.log('<', &buffer[..read]);
+        }
         let mut term = term.lock().expect("the window panicked");
         term.advance(&buffer[..read]);
         let events = term.take_events();
@@ -256,7 +289,8 @@ mod tests {
 
     #[test]
     fn output_reaches_the_terminal_and_the_exit_code_the_waiter() {
-        let (pane, _) = Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None).unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
     }
 
@@ -265,7 +299,7 @@ mod tests {
     fn replies_go_back_to_the_program() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[6n'; \
                       dd bs=1 count=6 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80).unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   1   ;   1   R"), "{screen}");
     }
@@ -276,7 +310,7 @@ mod tests {
     fn a_scheme_change_reaches_a_program_that_asked() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[?2031hready\\n'; \
                       dd bs=1 count=9 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80).unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None).unwrap();
         let schemes = load(&[]).unwrap();
         pane.set_scheme(&find(&schemes, "OneDark Pro").unwrap());
         wait_for(&pane, "ready");
@@ -288,7 +322,7 @@ mod tests {
     #[test]
     fn the_view_scrolls_within_the_scrollback_and_stays_put_under_output() {
         let (mut pane, _) =
-            Pane::spawn(shell_command("seq 1 40; printf done; sleep 1; seq 41 45"), 10, 20)
+            Pane::spawn(shell_command("seq 1 40; printf done; sleep 1; seq 41 45"), 10, 20, None)
                 .unwrap();
         wait_for(&pane, "done");
         let bottom = pane.lock().screen_top();

@@ -4,6 +4,7 @@ mod mouse;
 mod pane;
 mod render;
 mod scheme;
+mod script;
 mod selection;
 mod view;
 mod window;
@@ -21,12 +22,12 @@ use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
 use config::Config;
-use pane::{Pane, SCROLLBACK, shell_command};
+use pane::{Pane, SCROLLBACK, Trace, shell_command};
 use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, Settings};
 use window::TerminalWindow;
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
-                     [--stats] [-e PROGRAM [ARGS...]]
+                     [--stats] [--trace FILE] [--script FILE] [-e PROGRAM [ARGS...]]
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
 
@@ -44,6 +45,8 @@ struct Options {
     size: Option<f32>,
     ligatures: Option<bool>,
     stats: bool,
+    trace: Option<PathBuf>,
+    script: Option<PathBuf>,
     command: Option<Vec<String>>,
 }
 
@@ -58,6 +61,14 @@ fn main() -> ExitCode {
                 return bench(if command.is_empty() { BENCH_COMMAND } else { &command });
             }
             "--stats" => options.stats = true,
+            "--trace" => match args.next() {
+                Some(path) => options.trace = Some(path.into()),
+                None => return usage_error("--trace needs a file"),
+            },
+            "--script" => match args.next() {
+                Some(path) => options.script = Some(path.into()),
+                None => return usage_error("--script needs a file"),
+            },
             "--config" => match args.next() {
                 Some(path) => options.config = Some(path.into()),
                 None => return usage_error("--config needs a file"),
@@ -128,14 +139,25 @@ fn run(options: Options) -> Result<(), String> {
     if font_size <= 0. || !font_size.is_finite() {
         return Err(format!("font size {font_size} is not a positive number of points"));
     }
+    let read = |path: &PathBuf| {
+        std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))
+    };
+    let script =
+        options.script.as_ref().map(read).transpose()?.map(|source| script::parse(&source));
+    let script = script.transpose()?;
+    let trace = options
+        .trace
+        .as_ref()
+        .map(|path| Trace::create(path).map_err(|err| format!("{}: {err}", path.display())));
+    let trace = trace.transpose()?;
     Application::new().run(move |cx: &mut App| {
         if !cx.text_system().all_font_names().contains(&family) {
             eprintln!("rtty: no font family named {family:?}");
             std::process::exit(2);
         }
         let (rows, cols) = START_SIZE;
-        let (pane, notices) =
-            Pane::spawn(command(options.command), rows, cols).unwrap_or_else(|err| {
+        let (pane, notices) = Pane::spawn(command(options.command), rows, cols, trace)
+            .unwrap_or_else(|err| {
                 eprintln!("rtty: cannot start the shell: {err}");
                 std::process::exit(1);
             });
@@ -164,10 +186,16 @@ fn run(options: Options) -> Result<(), String> {
             ..Default::default()
         };
         let settings = Settings { font, font_size: px(font_size), theme, stats: options.stats };
-        cx.open_window(window_options, |window, cx| {
-            cx.new(|cx| TerminalWindow::new(pane, notices, settings, window, cx))
-        })
-        .expect("open the terminal window");
+        let window = cx
+            .open_window(window_options, |window, cx| {
+                cx.new(|cx| TerminalWindow::new(pane, notices, settings, window, cx))
+            })
+            .expect("open the terminal window");
+        if let Some(steps) = script {
+            window
+                .update(cx, |_, window, cx| script::run(steps, window, cx))
+                .expect("the window just opened");
+        }
         cx.activate(true);
     });
     Ok(())
@@ -182,7 +210,8 @@ fn finish(pane: &mut Pane) -> Option<u32> {
 fn smoke() -> ExitCode {
     let (rows, cols) = START_SIZE;
     let (mut pane, _notices) =
-        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols).expect("spawn /bin/sh");
+        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None)
+            .expect("spawn /bin/sh");
     let exit_code = finish(&mut pane);
     let screen = pane.lock().contents();
     let passed = screen.contains("hello-rtty") && exit_code == Some(7);
@@ -210,7 +239,7 @@ fn bench(command: &str) -> ExitCode {
 
     let started = Instant::now();
     let (mut pane, _notices) =
-        Pane::spawn(shell_command(command), rows, cols).expect("spawn /bin/sh");
+        Pane::spawn(shell_command(command), rows, cols, None).expect("spawn /bin/sh");
     finish(&mut pane);
     let pipeline = started.elapsed();
 

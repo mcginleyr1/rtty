@@ -25,6 +25,10 @@ impl TerminalWindow {
         TerminalWindow { panes: vec![view], active: 0 }
     }
 
+    pub fn active(&self) -> Option<Entity<PaneView>> {
+        self.panes.get(self.active).cloned()
+    }
+
     /// The active pane names the window; a pane whose program exited goes, and the last one
     /// takes the app with it.
     fn pane_event(

@@ -29,6 +29,8 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`; default on |
 | `-e PROGRAM [ARGS...]` | run the program instead of the login shell; the window closes when it exits |
 | `--stats` | once a second while frames are drawn, print frames, layout and paint ms/frame |
+| `--trace FILE` | write every read from the pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start: what a program asks and what it was told |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs` |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 
