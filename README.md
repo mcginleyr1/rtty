@@ -25,6 +25,7 @@ cargo run --release -- -e htop          # a program instead of the shell
 cargo run --release -- --smoke          # headless pipeline check, exits 0 or 1
 cargo run --release -- --bench          # headless pipeline throughput
 cargo run --release -- --stats          # print frame timings to stderr while drawing
+rtty cli list                           # from inside a pane: the windows, tabs and panes
 ```
 
 | Flag | Meaning |
@@ -45,7 +46,8 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 `COLORTERM` is `truecolor`, `TERM_PROGRAM` is `rtty` (with `TERM_PROGRAM_VERSION`), and the
 variables that would tell a program it runs inside a multiplexer rtty was started from (`TMUX`,
 `TMUX_PANE`, `STY`, `ZELLIJ`, `TUTTI_PANE`, `TUTTI_SESSION`) are removed: Neovim, for one, skips
-its undercurl probe inside tmux.
+its undercurl probe inside tmux. `RTTY_PANE` and `RTTY_SOCKET` tell a pane's program which pane it
+is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 
 ## Configuration
 
@@ -60,6 +62,7 @@ ligatures = true
 scheme_dark = "OneDark Pro"       # the default
 scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
+keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
 ```
 
 ## Color schemes
@@ -116,7 +119,8 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | `Cmd+D` / `Cmd+Shift+D` | split the pane right / down |
 | `Cmd+W` | close the pane; the last pane closes its tab, the last tab its window, the last window quits |
 | `Cmd+Opt+arrows` | focus the nearest pane that way |
-| `Cmd+Ctrl+arrows` | move the pane's nearest divider that way, 2 cells a press |
+| `Cmd+Ctrl+arrows` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
+| `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | with `keys = "tutti"` only: focus and resize, as in tutti |
 | `Cmd+Shift+Enter` | zoom the pane to fill its tab, or back |
 | `Cmd+C` | copy the selection |
 | `Cmd+V` | paste (bracketed when the program asked for it) |
@@ -127,11 +131,17 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | tab click | show that tab |
 | wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
-New panes, tabs and windows run the login shell in the focused pane's working directory, as its
-shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else in your home directory.
-macOS's zsh and bash send OSC 7 only from `/etc/zshrc_$TERM_PROGRAM`, which exists for
-Terminal.app alone, so have your prompt send it. A pane closes when its program exits, with the
-same cascade as `Cmd+W`.
+New panes, tabs and windows run the login shell in the focused pane's working directory: as its
+shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else the directory of the
+pane's foreground process (the pty's process group leader: the shell at a prompt, or the program
+it runs), else your home directory. macOS's zsh and bash send OSC 7 only from
+`/etc/zshrc_$TERM_PROGRAM`, which exists for Terminal.app alone, so the foreground process is what
+usually answers. A pane closes when its program exits, with the same cascade as `Cmd+W`.
+
+The focus and resize keys are rtty's unless the pane's program claims them (below, and
+[Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
+too, as tutti's direct keys are, at the cost of those keys in programs that do not claim them; by
+default every Ctrl key stays with the programs.
 Focus by direction picks, among the panes beyond the focused one's edge that overlap it across,
 the nearest; then the one focused last; then the one overlapping it most, as tmux and WezTerm do.
 
@@ -162,6 +172,43 @@ Programs that ask for more get it:
 
 GPUI does not report keypad keys apart from the main keys, so application keypad mode (DECKPAM)
 has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1`).
+
+## rtty cli and editors
+
+`rtty cli` is the same binary in another role: it asks the rtty a pane runs in, through a Unix
+socket (`RTTY_SOCKET`, in `$TMPDIR/rtty-<uid>/`, a directory rtty creates `0700` and refuses to use
+when it is anyone else's or open to anyone else), and never opens a window. The commands, their
+output and their exit codes follow `tutti pane …`, so an editor plugin speaks to either the same
+way:
+
+| Command | Does |
+| --- | --- |
+| `rtty cli pane focus --direction <left\|right\|up\|down> [--from <pane>] [--wrap]` | focuses the pane that way and prints its id; at an edge it says `no pane <direction> of <pane>` and exits 1; `--wrap` goes round to the farthest pane on the other side |
+| `rtty cli pane resize --direction <…> [--amount <ratio> \| --cells <n>] [--from <pane>]` | moves the nearest split border that way, by 0.05 of the split unless told otherwise |
+| `rtty cli pane focus <pane>` | shows the pane's tab and gives it the keyboard |
+| `rtty cli pane split <pane> <right\|down\|left\|up>` | opens a pane there in its working directory and prints its id |
+| `rtty cli pane zoom [<pane>]` | zooms the pane, or back |
+| `rtty cli list` | every window, tab and pane as one line of JSON: ids, focus, zoom, titles, working directories, sizes, and which panes claim the keys |
+
+`--from` is `$RTTY_PANE` by default, else the focused pane of the active window. An error says
+`error: …` and exits 1; a malformed command prints the usage and exits 2.
+
+**Keys a pane can claim.** A program that sets the OSC 1337 user var `RTTY_KEYS` to `pane`
+(`ESC ] 1337 ; SetUserVar=RTTY_KEYS=cGFuZQ== BEL`, the value base64) gets rtty's focus and resize
+chords instead of rtty acting on them: `Cmd+Opt+arrows`, `Cmd+Ctrl+arrows`, and with
+`keys = "tutti"`, `Ctrl+h/j/k/l` and `Alt+h/j/k/l`. The claim ends when the var is set empty, when
+a shell in the pane draws its next prompt (OSC 133;A), and with the program. The chords are encoded
+as the program asked for keys, Cmd as the kitty protocol's super modifier: Neovim (kitty flags 3)
+reads `Cmd+Opt+Left` as `<D-M-Left>` and `Cmd+Ctrl+Left` as `<D-C-Left>`. No xterm encoding says
+Cmd in a way Emacs decodes (it reads `CSI 1 ; 11 D` as an undefined `M-[ 1 ; 1`), so a Cmd chord
+reaches only a program speaking the kitty protocol; for any other program rtty keeps acting on it,
+claim or not, and Emacs moves with the tutti-style keys instead.
+
+**Editors.** [`editors/`](editors/README.md) has a Neovim plugin (with a smart-splits.nvim backend)
+and an Emacs package. Each claims the keys while the editor runs, moves between the editor's own
+windows, and past its last window calls `rtty cli pane focus --from $RTTY_PANE`, so one set of
+keys moves through editor windows and rtty panes alike. Both do nothing outside rtty, and inside
+tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 
 ## How it works
 
@@ -196,10 +243,13 @@ has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1
   chords as GPUI actions. It shares the window's cells out with `layout`, and every pane's grid
   and pty, shown or not, follow its cells on every resize. Each pane draws as a cached GPUI view,
   so output in one pane redraws that pane alone. `focus_toward` is the one call for moving focus
-  by direction, for whatever navigates next (an editor's own splits, say).
+  by direction: the keys, `rtty cli` and so the editors all go through it. `answer` handles
+  `rtty cli`'s requests on the main thread.
+- `control.rs` and `cli.rs` — the socket (one JSON line each way, served on a thread of its own
+  and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
 - `scheme.rs` and `config.rs` — color schemes and the config file.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
-  protocol) and paste wrapping, unit tested.
+  protocol, and a claimed chord's Cmd as kitty's super) and paste wrapping, unit tested.
 - `script.rs` — `--script`, which drives the real window the way a person would and dumps what it
   draws; how rtty is checked against Neovim, Emacs and the rest without a screenshot.
 
@@ -276,7 +326,8 @@ keyboard protocols above, a config file, and WezTerm-format color schemes that f
 appearance live in every pane (with DEC mode 2031 reports). Checked with `--script` against
 Neovim in two side-by-side panes (each redraws at its own size through divider moves and window
 resizes; clicks reach the pane under them at its own cells; a light/dark flip reaches both) and
-Emacs `-nw` in a stacked split.
+Emacs `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one
+key walks through Neovim's windows on to Emacs and back.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
@@ -298,13 +349,12 @@ Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
 machine that has not fetched it. The cost is a shader compile at startup.
 
-Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT. rtty takes nothing from Zed's
-GPL `terminal` / `terminal_view` crates.
+Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty and sysinfo are MIT. rtty takes nothing
+from Zed's GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap
 
-1. **Editor-aware navigation.** One set of keys moves across Neovim windows, Emacs windows and
-   rtty panes alike, as tutti's editor plugins already do inside tutti.
-2. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
+1. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
    keyboard protocol, live light/dark (mode 2031), notifications, OSC 52 and hyperlinks, and
-   undercurl and cursor shapes passed through to its panes.
+   undercurl and cursor shapes passed through to its panes; and a move past tutti's edge, from
+   tutti or its editor plugins, goes on to rtty's panes.
