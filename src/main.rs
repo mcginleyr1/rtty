@@ -167,6 +167,7 @@ fn run(options: Options) -> Result<(), String> {
     let trace = trace.transpose()?;
     let keys = config.keys.unwrap_or_default();
     let socket = control::socket_path()?;
+    control::sweep(socket.parent().expect("the socket is in its directory"));
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     Application::new().run(move |cx: &mut App| {

@@ -4,7 +4,7 @@
 
 use std::fs::{self, DirBuilder};
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -111,6 +111,23 @@ pub fn socket_path() -> Result<PathBuf, String> {
     Ok(dir.join(format!("{}.sock", std::process::id())))
 }
 
+/// Removes the sockets rtty processes left in `dir` when they died without quitting: sockets
+/// named as rtty names them (`<pid>.sock`) that refuse a connection. A live rtty's socket
+/// accepts and stays; nothing else in the directory is touched.
+pub fn sweep(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let stem = path.file_name().and_then(|name| name.to_str()?.strip_suffix(".sock"));
+        let named =
+            stem.is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+        let socket = fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_socket());
+        let refused = |err: io::Error| err.kind() == io::ErrorKind::ConnectionRefused;
+        if named && socket && UnixStream::connect(&path).is_err_and(refused) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 /// Listens on `path`, a connection at a time, on a thread of its own. Each request arrives on
 /// the receiver with the way back for its answer.
 pub fn listen(path: &Path) -> io::Result<UnboundedReceiver<Incoming>> {
@@ -188,6 +205,29 @@ mod tests {
             line.starts_with("{\"error\":\"not a request: unknown variant `nonsense`"),
             "{line}"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_sweep_removes_dead_rttys_sockets_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("rtty-sweep-{}", std::process::id()));
+        DirBuilder::new().mode(0o700).recursive(true).create(&dir).unwrap();
+        let socket = |name: &str| UnixListener::bind(dir.join(name)).unwrap();
+        drop(socket("11.sock"));
+        let live = socket("22.sock");
+        drop(socket("notes.sock"));
+        fs::write(dir.join("33.sock"), "not a socket").unwrap();
+        fs::write(dir.join("readme"), "").unwrap();
+        sweep(&dir);
+        let mut left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["22.sock", "33.sock", "notes.sock", "readme"]);
+        // The live one still answers.
+        assert!(UnixStream::connect(dir.join("22.sock")).is_ok());
+        drop(live);
         fs::remove_dir_all(dir).unwrap();
     }
 
