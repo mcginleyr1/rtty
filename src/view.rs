@@ -421,6 +421,21 @@ impl PaneView {
                 }
                 let _ = writeln!(out);
             }
+            // As the last frame shaped the row: each glyph and the cell it sits on.
+            if let (Some(shaped), Some(grid)) = (self.cache.rows.get(&index), self.geometry) {
+                for (run, line) in shaped.line.runs.iter().zip(&shaped.shaped) {
+                    let glyphs = line.runs.iter().flat_map(|run| &run.glyphs);
+                    let glyphs: Vec<String> = glyphs
+                        .map(|glyph| {
+                            format!("{:?}@{:.2}", glyph.id, glyph.position.x / grid.cell.width)
+                        })
+                        .collect();
+                    let _ = writeln!(out, "  glyphs {} {}", run.col, glyphs.join(" "));
+                }
+            }
+        }
+        if let Some((start, end)) = selection {
+            let _ = writeln!(out, "selected {start:?}..={end:?} {:?}", term.text(start, end));
         }
         out
     }
