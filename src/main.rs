@@ -156,11 +156,13 @@ fn run(options: Options) -> Result<(), String> {
             std::process::exit(2);
         }
         let (rows, cols) = START_SIZE;
-        let (pane, notices) = Pane::spawn(command(options.command), rows, cols, trace)
-            .unwrap_or_else(|err| {
-                eprintln!("rtty: cannot start the shell: {err}");
-                std::process::exit(1);
-            });
+        let scheme = theme.for_appearance(cx.window_appearance());
+        let (pane, notices) =
+            Pane::spawn(command(options.command), rows, cols, Some(scheme.as_ref()), trace)
+                .unwrap_or_else(|err| {
+                    eprintln!("rtty: cannot start the shell: {err}");
+                    std::process::exit(1);
+                });
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-c", Copy, Some("Terminal")),
@@ -210,7 +212,7 @@ fn finish(pane: &mut Pane) -> Option<u32> {
 fn smoke() -> ExitCode {
     let (rows, cols) = START_SIZE;
     let (mut pane, _notices) =
-        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None)
+        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None, None)
             .expect("spawn /bin/sh");
     let exit_code = finish(&mut pane);
     let screen = pane.lock().contents();
@@ -239,7 +241,7 @@ fn bench(command: &str) -> ExitCode {
 
     let started = Instant::now();
     let (mut pane, _notices) =
-        Pane::spawn(shell_command(command), rows, cols, None).expect("spawn /bin/sh");
+        Pane::spawn(shell_command(command), rows, cols, None, None).expect("spawn /bin/sh");
     finish(&mut pane);
     let pipeline = started.elapsed();
 

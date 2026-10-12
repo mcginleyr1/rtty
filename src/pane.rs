@@ -71,11 +71,14 @@ pub struct Pane {
 }
 
 impl Pane {
-    /// Runs `command` on a new `rows`×`cols` pty. The receiver yields the pane's notices.
+    /// Runs `command` on a new `rows`×`cols` pty. With a `scheme`, color queries are answered
+    /// from the program's first byte on (see `set_scheme`). The receiver yields the pane's
+    /// notices.
     pub fn spawn(
         mut command: CommandBuilder,
         rows: u16,
         cols: u16,
+        scheme: Option<&Scheme>,
         trace: Option<Trace>,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
         let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
@@ -93,6 +96,9 @@ impl Pane {
         // Alternate scroll on, as most terminals start: the wheel moves a full-screen program
         // that takes no mouse reports (a pager) by its arrow keys.
         term.advance(b"\x1b[?1007h");
+        if let Some(scheme) = scheme {
+            host_scheme(&mut term, scheme);
+        }
         let term = Arc::new(Mutex::new(term));
         let (notices, receiver) = unbounded();
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
@@ -175,11 +181,7 @@ impl Pane {
     /// for mode 2031 reports hears when it flips between dark and light.
     pub fn set_scheme(&self, scheme: &Scheme) {
         let mut term = self.lock();
-        for slot in 0..SLOTS {
-            term.set_host_color(slot, Some(scheme.color(slot)));
-        }
-        let leaning = if scheme.is_dark() { ColorScheme::Dark } else { ColorScheme::Light };
-        term.set_color_scheme(Some(leaning));
+        host_scheme(&mut term, scheme);
         let replies = term.take_events();
         drop(term);
         for event in replies {
@@ -217,6 +219,14 @@ impl Drop for Pane {
     fn drop(&mut self) {
         let _ = self.killer.kill();
     }
+}
+
+fn host_scheme(term: &mut Terminal, scheme: &Scheme) {
+    for slot in 0..SLOTS {
+        term.set_host_color(slot, Some(scheme.color(slot)));
+    }
+    let leaning = if scheme.is_dark() { ColorScheme::Dark } else { ColorScheme::Light };
+    term.set_color_scheme(Some(leaning));
 }
 
 fn read(
@@ -290,7 +300,7 @@ mod tests {
     #[test]
     fn output_reaches_the_terminal_and_the_exit_code_the_waiter() {
         let (pane, _) =
-            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None).unwrap();
+            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None, None).unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
     }
 
@@ -299,7 +309,7 @@ mod tests {
     fn replies_go_back_to_the_program() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[6n'; \
                       dd bs=1 count=6 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None).unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None, None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   1   ;   1   R"), "{screen}");
     }
@@ -310,20 +320,36 @@ mod tests {
     fn a_scheme_change_reaches_a_program_that_asked() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[?2031hready\\n'; \
                       dd bs=1 count=9 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None).unwrap();
         let schemes = load(&[]).unwrap();
-        pane.set_scheme(&find(&schemes, "OneDark Pro").unwrap());
+        let dark = find(&schemes, "OneDark Pro").unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
         wait_for(&pane, "ready");
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   ?   9   9   7   ;   2   n"), "{screen}");
     }
 
+    /// A program that asks for the background in its first write (nvim does) is answered.
+    #[test]
+    fn color_queries_are_answered_from_the_first_byte() {
+        let script = "stty -icanon -echo min 0 time 20; printf '\\033]11;?\\007'; \
+                      dd bs=1 count=24 2>/dev/null | tr '\\033\\007' EB";
+        let dark = find(&load(&[]).unwrap(), "OneDark Pro").unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
+        let (screen, _) = finish(pane);
+        assert!(screen.contains("E]11;rgb:2828/2c2c/3434B"), "{screen}");
+    }
+
     #[test]
     fn the_view_scrolls_within_the_scrollback_and_stays_put_under_output() {
-        let (mut pane, _) =
-            Pane::spawn(shell_command("seq 1 40; printf done; sleep 1; seq 41 45"), 10, 20, None)
-                .unwrap();
+        let (mut pane, _) = Pane::spawn(
+            shell_command("seq 1 40; printf done; sleep 1; seq 41 45"),
+            10,
+            20,
+            None,
+            None,
+        )
+        .unwrap();
         wait_for(&pane, "done");
         let bottom = pane.lock().screen_top();
         pane.scroll(5);
