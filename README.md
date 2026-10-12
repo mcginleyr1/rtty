@@ -157,29 +157,38 @@ has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1
 - `window.rs` — `TerminalWindow`, a window's panes. One shows; tabs and splits will lay out
   several, each pane view in its own part of the window.
 - `scheme.rs` and `config.rs` — color schemes and the config file.
-- `keys.rs` — the key encoder (GPUI keystroke → bytes) and paste wrapping, unit tested.
+- `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
+  protocol) and paste wrapping, unit tested.
+- `script.rs` — `--script`, which drives the real window the way a person would and dumps what it
+  draws; how rtty is checked against Neovim, Emacs and the rest without a screenshot.
 
 ## Measurements (Apple silicon Mac, release build)
 
-`rtty --bench` (80×24 grid, 10k lines of scrollback; one run each, repeat runs vary by ~20%):
+`rtty --bench` (80×24 grid, 10k rows of scrollback; one run each, repeat runs vary by ~10%):
 
-| Workload | into a pipe | parse only (memory) | pty + reader + Term |
+| Workload | into a pipe | parse only (memory) | pty + reader + rtty-vt |
 | --- | --- | --- | --- |
-| `seq -f %.0f 1 2000000` (16.9 MB) | 196 ms | 103 ms (164 MB/s) | 2253 ms (7.5 MB/s) |
-| `seq -f %.0f 1 2000000 \| cat` | 190 ms | 99 ms (171 MB/s) | 210 ms (80 MB/s) |
-| 20k lines, a color/bold/italic change every word (32.7 MB) | 625 ms | 107 ms (307 MB/s) | 882 ms (37 MB/s) |
+| `seq -f %.0f 1 2000000` (16.9 MB) | 235 ms | 71 ms (238 MB/s) | 2020 ms (8.4 MB/s) |
+| `seq -f %.0f 1 2000000 \| cat` | 192 ms | 67 ms (251 MB/s) | 201 ms (84 MB/s) |
+| 20k lines, a color/bold/italic change every word (32.7 MB) | 618 ms | 97 ms (336 MB/s) | 956 ms (34 MB/s) |
+| the same 20k lines from a file (`cat`) | 14 ms | 96 ms (339 MB/s) | 186 ms (176 MB/s) |
 
 The pipeline keeps up with the producer. Plain `seq` on a tty is slow because stdio line-buffers
 a tty: two million one-line `write(2)`s into the tty layer (`script -q /dev/null seq …` takes
 2.8 s with no terminal at all). Through `cat`, the same bytes take ~200 ms end to end. The parser
-alone runs at 160–300 MB/s, well above what a pty delivers.
+alone runs at 240–340 MB/s, well above what a pty delivers. On alacritty_terminal (rtty before
+rtty-vt) the same parse took 99–105 ms and `cat` of the file 207 ms.
 
-Drawing (`--stats`, 900×600 window, 14 pt): during the `seq` flood 117 frames/s at 0.33 ms
-layout + 0.06 ms paint per frame (CPU time; GPU time is not measured); a steady colorful redraw
-~0.14 ms + 0.16 ms; the dense color flood at 6 pt (~250×75 cells, a style change every word)
-88 frames/s at 1.5 ms + 8.3 ms. Rendering does not slow the pipeline: the dense flood
-finishes as fast in the window (0.9 s) as headless. GPUI stops drawing while the window is
-occluded, so `--stats` prints nothing for a hidden window.
+In the window (900×600, Menlo 14, launch to exit with `/usr/bin/time`, three runs each): five
+copies of the dense file (163 MB) drain in 1.24 s with 0.89 s of user CPU (alacritty_terminal:
+1.38 s, 1.24 s), five of `seq`'s output (74 MB) in 0.80–0.86 s (1.10–1.13 s). An idle window
+over a quiet program uses 0.13 s of CPU in 20 s once started, as before.
+
+Drawing (`--stats`): a frame re-reads and reshapes only the rows the engine reports changed,
+plus the cursor's. A steady one-line redraw costs ~0.06–0.09 ms layout + 0.2 ms paint per frame;
+the dense flood at 6 pt (~250×75 cells, a style change every word) 1.0 ms layout + 8.3 ms paint
+(alacritty_terminal: 1.6 ms + 8.3 ms). CPU time; GPU time is not measured. GPUI stops drawing
+while the window is occluded, so `--stats` prints nothing for a hidden window.
 
 ## Ligatures
 
@@ -211,11 +220,12 @@ font's `calt`, `liga` and `dlig` features.
 
 Works: one window running a shell or `-e` program with colors, attributes, wide chars,
 ligatures, every underline style (single, double, curly, dotted, dashed; SGR 4:0–4:5) in its own
-color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline, selection and copy/paste, scrollback, resize with reflow, mouse reports, window title
-from OSC 0/2, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
-the window is activated and deactivated and as the pane gains and loses the keyboard), a config
-file, and WezTerm-format color schemes that follow the macOS appearance live (with DEC mode 2031
-reports).
+color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline, selection and copy/paste,
+scrollback, resize with reflow, mouse reports, window title from OSC 0/2, OSC 52 copy,
+synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated
+and deactivated and as the pane gains and loses the keyboard), the keyboard protocols above, a
+config file, and WezTerm-format color schemes that follow the macOS appearance live (with DEC
+mode 2031 reports).
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
