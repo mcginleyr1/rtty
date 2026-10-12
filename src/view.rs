@@ -12,13 +12,15 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
-    App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
+    App, BorderStyle, Bounds, ClipboardItem, Context, Div, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
     Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task,
     TextRun, UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions,
     canvas, div, fill, outline, point, prelude::*, px, size,
 };
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSArray, NSString, NSURL};
 use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
@@ -102,10 +104,11 @@ pub struct PaneView {
     search: Option<Search>,
     /// Where the pointer last was over the pane.
     pointer: Option<Point<Pixels>>,
-    /// The link under the pointer while Cmd is held.
-    link: Option<Link>,
-    /// The links Cmd+click opened, or under `--script` would have.
-    opened: Vec<String>,
+    /// The link under the pointer while Cmd is held, and its target when its text is not that
+    /// (`links::disguise`).
+    link: Option<(Link, Option<String>)>,
+    /// What Cmd+clicks on links did, or under `--script` would have.
+    followed: Vec<String>,
     /// When the last bell flashed the pane.
     flashed: Option<Instant>,
     stats: Option<FrameStats>,
@@ -264,7 +267,7 @@ impl PaneView {
             search: None,
             pointer: None,
             link: None,
-            opened: Vec::new(),
+            followed: Vec::new(),
             flashed: None,
             stats,
         }
@@ -393,7 +396,7 @@ impl PaneView {
     /// Puts the link under the pointer, and the search's matches in view and the current one,
     /// into `scene`.
     fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
-        scene.link = self.link.as_ref().map(|link| (link.start, link.end));
+        scene.link = self.link.as_ref().map(|(link, _)| (link.start, link.end));
         let Some(search) = &self.search else { return };
         let bottom = top + u64::from(rows);
         let in_view = |found: &&Match| found.1.0 >= top && found.0.0 < bottom;
@@ -606,8 +609,8 @@ impl PaneView {
         if let Some(at) = self.flashed {
             let _ = writeln!(out, "bell flashed {} ms ago", at.elapsed().as_millis());
         }
-        if self.link.is_some() || !self.opened.is_empty() {
-            let _ = writeln!(out, "link {:?} opened {:?}", self.link, self.opened);
+        if self.link.is_some() || !self.followed.is_empty() {
+            let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);
         }
         if let Some(search) = &self.search {
             let current = search.current.and_then(|index| search.matches.get(index));
@@ -789,30 +792,44 @@ impl PaneView {
         }
     }
 
-    /// Cmd held over a link underlines it, ready for Cmd+click.
+    /// Cmd held over a link underlines it, ready for Cmd+click, and shows its target when its
+    /// text is not that.
     fn hover(&mut self, cmd: bool, cx: &mut Context<Self>) {
         let point = self.pointer.filter(|_| cmd).and_then(|position| self.grid_point(position));
-        let link = point.and_then(|(point, _)| links::link_at(&self.pane.lock(), point));
+        let term = self.pane.lock();
+        let link = point.and_then(|(point, _)| links::link_at(&term, point));
+        let link = link.map(|link| {
+            let disguise = links::disguise(&term, &link);
+            (link, disguise)
+        });
+        drop(term);
         if link != self.link {
             self.link = link;
             cx.notify();
         }
     }
 
-    /// Cmd+click on a link opens it with the system's handler when its scheme may be opened
-    /// (`links::openable`); under `--script` it is only recorded. Whether there was a link.
+    /// Cmd+click on a link: http, https and mailto open with the system's handler, a file shows
+    /// in Finder (never opened: that would run an app or a script), anything else is ignored;
+    /// under `--script` it is only recorded. Whether there was a link.
     fn open_link(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
         let Some((point, _)) = self.grid_point(position) else { return false };
         let Some(link) = links::link_at(&self.pane.lock(), point) else { return false };
-        let open_links = cx.global::<Settings>().open_links;
-        let opened = links::open(&link.uri, |uri| {
-            if open_links {
-                cx.open_url(uri)
-            }
-        });
-        if opened {
-            self.opened.push(link.uri);
-        }
+        let act = cx.global::<Settings>().open_links;
+        let follow = links::follow(
+            &link.uri,
+            |uri| {
+                if act {
+                    cx.open_url(uri)
+                }
+            },
+            |uri| {
+                if act {
+                    reveal_in_finder(uri)
+                }
+            },
+        );
+        self.followed.push(format!("{follow:?} {}", link.uri));
         true
     }
 
@@ -1354,13 +1371,14 @@ impl Render for PaneView {
                 .size_full(),
             )
             .children(self.search_bar(cx))
+            .children(self.link_target(cx))
     }
 }
 
 impl PaneView {
-    /// The open search's bar, top right, in the scheme's colors inverted: the query, where the
-    /// current match is among them, and whether the query is a regex.
-    fn search_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+    /// The open search's bar, top right: the query, where the current match is among them, and
+    /// whether the query is a regex.
+    fn search_bar(&self, cx: &App) -> Option<Div> {
         let search = self.search.as_ref()?;
         let status = match (&search.error, search.current) {
             (Some(_), _) => "not a regex".to_string(),
@@ -1369,20 +1387,37 @@ impl PaneView {
             (None, None) => "no matches".to_string(),
         };
         let mode = if search.query.regex { "regex" } else { "find" };
+        let text = format!("{mode}: {}\u{258f}  {status}", search.query.text);
+        Some(self.label(text, cx).top(px(0.)).right(px(0.)))
+    }
+
+    /// Where the link under the pointer really goes, bottom left, while Cmd is held over one
+    /// whose text says otherwise.
+    fn link_target(&self, cx: &App) -> Option<Div> {
+        let (_, target) = self.link.as_ref()?;
+        Some(self.label(target.clone()?, cx).bottom(px(0.)).left(px(0.)))
+    }
+
+    /// A line over the pane, in the scheme's colors inverted.
+    fn label(&self, text: String, cx: &App) -> Div {
         let settings = cx.global::<Settings>();
-        Some(
-            div()
-                .absolute()
-                .top(px(0.))
-                .right(px(0.))
-                .px(px(8.))
-                .py(px(2.))
-                .font(settings.font.clone())
-                .text_size(settings.font_size)
-                .bg(hsla(self.scheme.color(FOREGROUND)))
-                .text_color(hsla(self.scheme.color(BACKGROUND)))
-                .child(format!("{mode}: {}\u{258f}  {status}", search.query.text)),
-        )
+        div()
+            .absolute()
+            .px(px(8.))
+            .py(px(2.))
+            .font(settings.font.clone())
+            .text_size(settings.font_size)
+            .bg(hsla(self.scheme.color(FOREGROUND)))
+            .text_color(hsla(self.scheme.color(BACKGROUND)))
+            .child(text)
+    }
+}
+
+/// Shows the file a `file:` URL names in Finder, selected. Never opens it.
+fn reveal_in_finder(uri: &str) {
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(uri)) {
+        NSWorkspace::sharedWorkspace()
+            .activateFileViewerSelectingURLs(&NSArray::from_slice(&[&*url]));
     }
 }
 

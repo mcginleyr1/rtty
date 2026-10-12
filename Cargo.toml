@@ -14,8 +14,8 @@ libc = "0.2"
 # The dock's attention on a bell, and macOS notifications (which need rtty in an app bundle).
 block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString", "NSError", "NSSet"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSString", "NSError", "NSSet", "NSURL"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 portable-pty = "0.9"
 regex = "1"

@@ -1,6 +1,10 @@
 //! Links in a terminal, independent of GPUI: an OSC 8 hyperlink on a cell, else a plain URL in the
-//! text around it; and which of them may be opened. Nothing here opens anything: the caller
-//! passes the opener.
+//! text around it; what a click on one does; and what to show of one whose text is not its target.
+//! Nothing here opens anything: the caller passes the opener and the revealer.
+//!
+//! A `file:` link is never opened: opening a file URL launches what it names (an app, a
+//! `.command` that runs in Terminal, an executable), and an OSC 8 link's text can be anything, so
+//! output that says "click here" could run a program. It is shown in Finder instead.
 
 use std::sync::LazyLock;
 
@@ -16,8 +20,19 @@ static URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)\b(?:https?|file)://[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]"#).expect("a regex")
 });
 
-/// The schemes a click may open; any other is ignored.
-const OPENABLE: [&str; 4] = ["http", "https", "file", "mailto"];
+/// The schemes a click opens with the system's handler; `file` is revealed, any other ignored.
+const OPENABLE: [&str; 3] = ["http", "https", "mailto"];
+
+/// What a Cmd+click on a link does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Follow {
+    /// http, https, mailto: the system's handler opens it.
+    Open,
+    /// file: Finder shows it, selected, and nothing runs.
+    Reveal,
+    /// Any other scheme.
+    Ignore,
+}
 
 /// A link and the cells it covers, inclusive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,19 +64,41 @@ pub fn link_at(term: &Terminal, (row, col): Point) -> Option<Link> {
     Some(Link { uri: term.text(start, end), start, end })
 }
 
-/// Whether a click may open `uri`: http, https, file and mailto only.
-pub fn openable(uri: &str) -> bool {
+/// What a click on `uri` does, by its scheme.
+pub fn follows(uri: &str) -> Follow {
     let scheme = uri.split_once(':').map_or("", |(scheme, _)| scheme);
-    OPENABLE.iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    if scheme.eq_ignore_ascii_case("file") {
+        Follow::Reveal
+    } else if OPENABLE.iter().any(|allowed| scheme.eq_ignore_ascii_case(allowed)) {
+        Follow::Open
+    } else {
+        Follow::Ignore
+    }
 }
 
-/// Opens `uri` with `open` when it may be opened; whether it was.
-pub fn open(uri: &str, open: impl FnOnce(&str)) -> bool {
-    let may = openable(uri);
-    if may {
-        open(uri);
+/// Follows a click on `uri`: `open` for what may open, `reveal` for a file; what it did.
+pub fn follow(uri: &str, open: impl FnOnce(&str), reveal: impl FnOnce(&str)) -> Follow {
+    let follow = follows(uri);
+    match follow {
+        Follow::Open => open(uri),
+        Follow::Reveal => reveal(uri),
+        Follow::Ignore => {}
     }
-    may
+    follow
+}
+
+/// What to show while Cmd is held over `link`, when its text is not its target: the target, and
+/// what a click does with it. Nothing for a link that says what it is, a plain URL among them.
+pub fn disguise(term: &Terminal, link: &Link) -> Option<String> {
+    if term.text(link.start, link.end).trim() == link.uri {
+        return None;
+    }
+    let verb = match follows(&link.uri) {
+        Follow::Open => "opens",
+        Follow::Reveal => "shows in Finder",
+        Follow::Ignore => "does not open",
+    };
+    Some(format!("{verb} {}", link.uri))
 }
 
 #[cfg(test)]
@@ -125,14 +162,59 @@ mod tests {
     }
 
     #[test]
-    fn only_http_https_file_and_mailto_open() {
+    fn http_https_and_mailto_open_files_are_revealed_and_the_rest_ignored() {
+        let never = |uri: &str| panic!("{uri} went the wrong way");
         let mut opened = Vec::new();
-        for uri in ["https://example.com", "HTTP://x", "file:///tmp/a", "mailto:a@b.c"] {
-            assert!(open(uri, |uri| opened.push(uri.to_string())), "{uri}");
+        for uri in ["https://example.com", "HTTP://x", "mailto:a@b.c"] {
+            let follow = follow(uri, |uri| opened.push(uri.to_string()), never);
+            assert_eq!(follow, Follow::Open, "{uri}");
         }
+        assert_eq!(opened, ["https://example.com", "HTTP://x", "mailto:a@b.c"]);
         for uri in ["javascript:alert(1)", "ftp://h/x", "ssh://h", "x-man-page://ls", "noscheme"] {
-            assert!(!open(uri, |_| panic!("opened {uri}")), "{uri}");
+            assert_eq!(follow(uri, never, never), Follow::Ignore, "{uri}");
         }
-        assert_eq!(opened, ["https://example.com", "HTTP://x", "file:///tmp/a", "mailto:a@b.c"]);
+    }
+
+    /// Output that says "click here" over a file URL naming something that would run: a click
+    /// shows it in Finder and opens nothing.
+    #[test]
+    fn a_hostile_file_link_is_revealed_never_opened() {
+        let hostile = term(2, 40, b"\x1b]8;;file:///tmp/x.command\x1b\\click here\x1b]8;;\x1b\\");
+        let link = link_at(&hostile, (0, 3)).unwrap();
+        let mut revealed = Vec::new();
+        let did =
+            follow(&link.uri, |uri| panic!("opened {uri}"), |uri| revealed.push(uri.to_string()));
+        assert_eq!((did, revealed), (Follow::Reveal, vec!["file:///tmp/x.command".to_string()]));
+        // A plain file URL in the text goes the same way.
+        let plain = term(2, 40, b"see file:///Applications/X.app now");
+        let link = link_at(&plain, (0, 10)).unwrap();
+        assert_eq!(follow(&link.uri, |uri| panic!("opened {uri}"), |_| {}), Follow::Reveal);
+    }
+
+    #[test]
+    fn a_disguised_link_shows_its_target_and_a_plain_url_nothing_more() {
+        let shown = |bytes: &[u8], col| {
+            let term = term(2, 60, bytes);
+            disguise(&term, &link_at(&term, (0, col)).unwrap())
+        };
+        assert_eq!(
+            shown(b"\x1b]8;;file:///tmp/x.command\x1b\\click here\x1b]8;;\x1b\\", 2).as_deref(),
+            Some("shows in Finder file:///tmp/x.command")
+        );
+        assert_eq!(
+            shown(b"\x1b]8;;https://evil.example/\x1b\\https://bank.example/\x1b]8;;\x1b\\", 2)
+                .as_deref(),
+            Some("opens https://evil.example/")
+        );
+        assert_eq!(
+            shown(b"\x1b]8;;javascript:alert(1)\x1b\\docs\x1b]8;;\x1b\\", 1).as_deref(),
+            Some("does not open javascript:alert(1)")
+        );
+        // A link that says what it is, and a plain URL, show nothing more.
+        assert_eq!(
+            shown(b"\x1b]8;;https://a.example/\x1b\\https://a.example/\x1b]8;;\x1b\\", 3),
+            None
+        );
+        assert_eq!(shown(b"go to https://a.example/x now", 8), None);
     }
 }

@@ -164,8 +164,12 @@ searched again.
 
 **Links.** A link is an OSC 8 hyperlink, or a plain `http`, `https` or `file` URL in the text
 (trailing punctuation left out). Holding `Cmd` underlines the one under the pointer and `Cmd+click`
-opens it with the system's handler. Only `http`, `https`, `file` and `mailto` open; any other
-scheme a program writes is ignored, and nothing opens without the click.
+follows it: `http`, `https` and `mailto` open with the system's handler; a `file` link is shown in
+Finder, selected, and never opened, since opening a file URL launches what it names (an app, a
+`.command` script, an executable) and an OSC 8 link's text can claim anything; any other scheme is
+ignored. Nothing happens without the click. While `Cmd` is held over a link whose text is not its
+target (an OSC 8 "click here", or one showing one address and going to another), the pane's bottom
+edge shows where it really goes and what a click will do.
 
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
 window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC
@@ -265,7 +269,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `mouse.rs` — mouse reports in every encoding, unit tested.
 - `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
-  line) with the schemes a click may open; both unit tested, and neither opens anything.
+  line) with what a click does with it (open, reveal in Finder, ignore) and what to show of a
+  disguised one; both unit tested, and neither opens anything.
 - `notify.rs` — the dock's attention and macOS notifications, which need an app bundle.
 - `view.rs` — `PaneView`, the GPUI view of one pane. A foreground task drains the pane's channel
   in batches: `Output` marks the view dirty, so however many arrive between two display
