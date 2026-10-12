@@ -5,6 +5,7 @@ mod keys;
 mod layout;
 mod links;
 mod mouse;
+mod notify;
 mod pane;
 mod render;
 mod scheme;
@@ -169,6 +170,7 @@ fn run(options: Options) -> Result<(), String> {
         .map(|path| Trace::create(path).map_err(|err| format!("{}: {err}", path.display())));
     let trace = trace.transpose()?;
     let keys = config.keys.unwrap_or_default();
+    let bell = config.bell.unwrap_or_default();
     let socket = control::socket_path()?;
     control::sweep(socket.parent().expect("the socket is in its directory"));
     let requests =
@@ -249,6 +251,18 @@ fn run(options: Options) -> Result<(), String> {
             }
         })
         .detach();
+        // A click on one of rtty's notifications brings rtty forward at the pane that sent it.
+        let (clicks, mut clicked) = futures::channel::mpsc::unbounded();
+        notify::init(clicks);
+        cx.spawn(async move |cx| {
+            while let Some(pane) = clicked.next().await {
+                let _ = cx.update(|cx| {
+                    window::answer(control::Request::Focus { pane }, cx);
+                    cx.activate(true);
+                });
+            }
+        })
+        .detach();
         cx.on_app_quit({
             let socket = socket.clone();
             move |_| {
@@ -278,6 +292,7 @@ fn run(options: Options) -> Result<(), String> {
             trace,
             socket,
             open_links,
+            bell,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

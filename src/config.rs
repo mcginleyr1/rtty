@@ -16,6 +16,7 @@ pub struct Config {
     pub size: Option<f32>,
     pub ligatures: Option<bool>,
     pub keys: Option<Keys>,
+    pub bell: Option<Bell>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -30,6 +31,16 @@ pub enum Keys {
     Rtty,
     /// Also tutti's direct keys, Ctrl+h/j/k/l and Alt+h/j/k/l, unless the pane claims them.
     Tutti,
+}
+
+/// What BEL does.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Bell {
+    /// The pane flashes, and the dock asks for attention while the window is not focused.
+    #[default]
+    Visual,
+    None,
 }
 
 /// The scheme for each window appearance.
@@ -140,5 +151,14 @@ mod tests {
         assert_eq!(keys("keys = 'tutti'").unwrap(), Some(Keys::Tutti));
         let err = keys("keys = 'vim'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `vim`, expected `rtty` or `tutti`"), "{err}");
+    }
+
+    #[test]
+    fn the_bell_is_visual_or_none() {
+        let bell = |source| toml::from_str::<Config>(source).map(|config| config.bell);
+        assert_eq!(bell("").unwrap().unwrap_or_default(), Bell::Visual);
+        assert_eq!(bell("bell = 'none'").unwrap(), Some(Bell::None));
+        let err = bell("bell = 'audible'").unwrap_err().to_string();
+        assert!(err.contains("unknown variant `audible`, expected `visual` or `none`"), "{err}");
     }
 }

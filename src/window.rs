@@ -24,6 +24,7 @@ use rtty_vt::BACKGROUND;
 use crate::cli::RESIZE_STEP;
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
 use crate::layout::{Amount, Closed, Direction, Orientation, PaneId, Rect, Tabs};
+use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::scheme::Scheme;
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
@@ -66,6 +67,8 @@ pub struct TerminalWindow {
     views: HashMap<PaneId, Entity<PaneView>>,
     /// The theme's scheme for the window's appearance, for the tab bar and dividers.
     scheme: Arc<Scheme>,
+    /// What bells and notifications asked of macOS, and what came of it, for `--script`'s dump.
+    attention: Vec<String>,
 }
 
 /// Opens a window with `command` running in its one pane: the first window centered, later ones
@@ -170,7 +173,12 @@ impl TerminalWindow {
         // The font size sets the cells the layout shares out.
         cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
-        let mut this = TerminalWindow { tabs: Tabs::new(id), views: HashMap::new(), scheme };
+        let mut this = TerminalWindow {
+            tabs: Tabs::new(id),
+            views: HashMap::new(),
+            scheme,
+            attention: Vec::new(),
+        };
         this.add(id, pane, notices, window, cx);
         this
     }
@@ -294,6 +302,25 @@ impl TerminalWindow {
                     window.set_window_title(&self.title(id, cx));
                     cx.notify();
                 }
+            }
+            PaneEvent::Bell if !window.is_window_active() => {
+                notify::request_attention();
+                self.attention.push(format!("bell in pane {id}: the dock asked for attention"));
+            }
+            PaneEvent::Bell => {}
+            // A notification is for someone looking elsewhere: not posted from the pane they are
+            // typing in.
+            PaneEvent::Notification { title, body } => {
+                let seen = window.is_window_active() && self.tabs.active().focus() == id;
+                let fate = if seen {
+                    "not posted: its pane has the keyboard"
+                } else if notify::post(id, title.as_deref(), body.as_deref()) {
+                    "posted"
+                } else {
+                    "not posted: rtty is not in an app bundle"
+                };
+                self.attention
+                    .push(format!("notification from pane {id} {title:?} {body:?}: {fate}"));
             }
             PaneEvent::Exited => self.close(id, window, cx),
         }
@@ -527,7 +554,11 @@ impl TerminalWindow {
         );
         let labels: Vec<String> =
             (0..self.tabs.all().len()).map(|index| self.tab_label(index, cx)).collect();
-        let _ = writeln!(out, "windows {} tabs {labels:?}", cx.windows().len());
+        let bundled = if notify::bundled() { "an app bundle" } else { "no app bundle" };
+        let _ = writeln!(out, "windows {} tabs {labels:?} in {bundled}", cx.windows().len());
+        for asked in &self.attention {
+            let _ = writeln!(out, "attention: {asked}");
+        }
         let rects = layout.rects(area);
         for (id, rect) in &rects {
             let _ =

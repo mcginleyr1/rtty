@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The least macOS needs to treat rtty as an app with an identity: enough for notifications.
+     Built into an .app as the README's "Notifications" shows. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>local.rtty</string>
+  <key>CFBundleName</key>
+  <string>rtty</string>
+  <key>CFBundleExecutable</key>
+  <string>rtty</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

@@ -23,7 +23,7 @@ use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
 
-use crate::config::Theme;
+use crate::config::{Bell, Theme};
 use crate::keys;
 use crate::links::{self, Link};
 use crate::mouse::{self, Action, Button, Report};
@@ -41,6 +41,9 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// While output arrives, an open search looks again at most this often.
 const SEARCH_REFRESH: Duration = Duration::from_millis(100);
+
+/// How long a bell flashes the pane.
+const FLASH: Duration = Duration::from_millis(150);
 
 /// A blinking cursor is on for this long, then off for as long; it holds still once the
 /// keyboard has been idle for `BLINK_FOR`, so an idle window draws nothing.
@@ -60,6 +63,7 @@ pub struct Settings {
     /// Cmd+click opens links with the system's handler; under `--script` it records them in the
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,
+    pub bell: Bell,
 }
 
 impl Global for Settings {}
@@ -102,6 +106,8 @@ pub struct PaneView {
     link: Option<Link>,
     /// The links Cmd+click opened, or under `--script` would have.
     opened: Vec<String>,
+    /// When the last bell flashed the pane.
+    flashed: Option<Instant>,
     stats: Option<FrameStats>,
 }
 
@@ -124,6 +130,13 @@ pub enum PaneEvent {
     Title,
     /// A click gave the pane the keyboard.
     Focused,
+    /// BEL.
+    Bell,
+    /// OSC 9, OSC 777;notify or OSC 99.
+    Notification {
+        title: Option<String>,
+        body: Option<String>,
+    },
     Exited,
 }
 
@@ -183,6 +196,8 @@ struct Frame {
     rows: Vec<(u16, Rc<ShapedRow>)>,
     cursor: Option<PaintQuad>,
     marked_text: Option<(PaintQuad, Point<Pixels>, ShapedLine)>,
+    /// A bell's flash over the pane: the text color, faint.
+    flash: Option<Hsla>,
     layout_time: Duration,
 }
 
@@ -250,6 +265,7 @@ impl PaneView {
             pointer: None,
             link: None,
             opened: Vec::new(),
+            flashed: None,
             stats,
         }
     }
@@ -450,6 +466,21 @@ impl PaneView {
             Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
+            Notice::Event(Event::Bell) => {
+                if cx.global::<Settings>().bell == Bell::Visual {
+                    self.flashed = Some(Instant::now());
+                    cx.notify();
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(FLASH).await;
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    })
+                    .detach();
+                    cx.emit(PaneEvent::Bell);
+                }
+            }
+            Notice::Event(Event::Notification { title, body }) => {
+                cx.emit(PaneEvent::Notification { title, body })
+            }
             Notice::Event(_) => {}
             Notice::Exit => {
                 if let Some(stats) = self.stats.as_mut() {
@@ -572,6 +603,9 @@ impl PaneView {
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
         let mut out = String::new();
         let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
+        if let Some(at) = self.flashed {
+            let _ = writeln!(out, "bell flashed {} ms ago", at.elapsed().as_millis());
+        }
         if self.link.is_some() || !self.opened.is_empty() {
             let _ = writeln!(out, "link {:?} opened {:?}", self.link, self.opened);
         }
@@ -993,6 +1027,10 @@ impl PaneView {
                 .collect(),
             cursor,
             marked_text,
+            flash: self
+                .flashed
+                .filter(|at| at.elapsed() < FLASH)
+                .map(|_| hsla(scene.fg).opacity(0.2)),
             layout_time: started.elapsed(),
         };
         cache.last = Some(frame.clone());
@@ -1040,6 +1078,9 @@ impl PaneView {
         if let Some((backdrop, origin, line)) = frame.marked_text {
             window.paint_quad(backdrop);
             line.paint(origin, cell.height, window, cx).ok();
+        }
+        if let Some(flash) = frame.flash {
+            window.paint_quad(fill(bounds, flash));
         }
         if let Some(stats) = self.stats.as_mut() {
             stats.record(frame.layout_time, started.elapsed());
