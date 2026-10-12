@@ -4,8 +4,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use alacritty_terminal::term::color::{COUNT, Colors};
-use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+use rtty_vt::{BACKGROUND, CURSOR, FOREGROUND, Rgb};
 use serde::Deserialize;
 
 const BUILT_IN: [&str; 4] = [
@@ -15,15 +14,18 @@ const BUILT_IN: [&str; 4] = [
     include_str!("../schemes/solarized-light.toml"),
 ];
 
-/// A color scheme, expanded into the terminal's whole color table (alacritty's layout: 16 ANSI,
-/// the 6×6×6 cube, 24 grays, then foreground, background, cursor, dims, bright and dim
-/// foreground). Cells keep color indices, so a frame drawn with another scheme recolors them.
+/// The palette slots rtty-vt names: 256 indexed colors, then foreground, background and cursor.
+pub const SLOTS: usize = CURSOR + 1;
+
+/// A color scheme, expanded into the terminal's whole palette (16 ANSI, the 6×6×6 cube, 24
+/// grays, then foreground, background and cursor). Cells keep color indices, so a frame drawn
+/// with another scheme recolors them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scheme {
     pub name: String,
     /// The file it was read from; `None` for the built-ins.
     pub path: Option<PathBuf>,
-    table: [Rgb; COUNT],
+    table: [Rgb; SLOTS],
     pub cursor_fg: Rgb,
     pub cursor_border: Rgb,
     /// Foreground and background of selected cells; `None` inverts them.
@@ -84,7 +86,7 @@ impl Scheme {
         let name = file.metadata.name.or(stem.map(String::from)).expect("built-ins have names");
         let colors = file.colors;
         let foreground = colors.foreground.0;
-        let mut table: [Rgb; COUNT] = std::array::from_fn(xterm_256);
+        let mut table: [Rgb; SLOTS] = std::array::from_fn(xterm_256);
         for (slot, color) in colors.ansi.iter().chain(&colors.brights).enumerate() {
             table[slot] = color.0;
         }
@@ -95,14 +97,9 @@ impl Scheme {
             table[usize::from(index)] = color.0;
         }
         let cursor = colors.cursor_bg.map_or(foreground, |color| color.0);
-        table[NamedColor::Foreground as usize] = foreground;
-        table[NamedColor::Background as usize] = colors.background.0;
-        table[NamedColor::Cursor as usize] = cursor;
-        for slot in 0..8 {
-            table[NamedColor::DimBlack as usize + slot] = dim(table[slot]);
-        }
-        table[NamedColor::BrightForeground as usize] = foreground;
-        table[NamedColor::DimForeground as usize] = dim(foreground);
+        table[FOREGROUND] = foreground;
+        table[BACKGROUND] = colors.background.0;
+        table[CURSOR] = cursor;
         Ok(Scheme {
             name,
             path,
@@ -113,25 +110,16 @@ impl Scheme {
         })
     }
 
-    /// A program's own colors (OSC 4/10/11/12) win over the scheme's.
-    pub fn resolve(&self, color: Color, overrides: &Colors) -> Rgb {
-        let index = match color {
-            Color::Spec(rgb) => return rgb,
-            Color::Named(named) => named as usize,
-            Color::Indexed(index) => usize::from(index),
-        };
-        overrides[index].unwrap_or(self.table[index])
-    }
-
+    /// Palette slot `index`: 0–255, `FOREGROUND`, `BACKGROUND` or `CURSOR`.
     pub fn color(&self, index: usize) -> Rgb {
         self.table[index]
     }
 
-    /// Dark when its background contrasts more with white than with black.
+    /// Dark when its background contrasts more with white than with black: relative luminance
+    /// `l` against white is 1.05 / (l + 0.05), against black (l + 0.05) / 0.05.
     pub fn is_dark(&self) -> bool {
-        let background = self.table[NamedColor::Background as usize];
-        background.contrast(Rgb { r: 255, g: 255, b: 255 })
-            > background.contrast(Rgb { r: 0, g: 0, b: 0 })
+        let l = luminance(self.table[BACKGROUND]) + 0.05;
+        1.05 / l > l / 0.05
     }
 }
 
@@ -174,8 +162,19 @@ pub fn find(schemes: &[Scheme], name: &str) -> Result<Arc<Scheme>, String> {
     })
 }
 
-pub fn dim(rgb: Rgb) -> Rgb {
-    rgb * 0.66
+/// SGR 2 (faint): two thirds of the color.
+pub fn dim(Rgb(r, g, b): Rgb) -> Rgb {
+    let third = |channel: u8| (f32::from(channel) * 0.66) as u8;
+    Rgb(third(r), third(g), third(b))
+}
+
+/// WCAG relative luminance, 0 for black to 1 for white.
+fn luminance(Rgb(r, g, b): Rgb) -> f32 {
+    let linear = |channel: u8| {
+        let c = f32::from(channel) / 255.;
+        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
 }
 
 /// xterm's 6×6×6 cube and gray ramp for 16..256; the other slots are filled from the scheme.
@@ -184,13 +183,13 @@ fn xterm_256(index: usize) -> Rgb {
     match index {
         16..232 => {
             let i = index - 16;
-            Rgb { r: level(i / 36), g: level(i / 6 % 6), b: level(i % 6) }
+            Rgb(level(i / 36), level(i / 6 % 6), level(i % 6))
         }
         232..256 => {
             let v = 8 + 10 * (index - 232) as u8;
-            Rgb { r: v, g: v, b: v }
+            Rgb(v, v, v)
         }
-        _ => Rgb::default(),
+        _ => Rgb(0, 0, 0),
     }
 }
 
@@ -198,10 +197,15 @@ fn parse_color(value: &str) -> Option<Rgb> {
     let hex = value.strip_prefix('#').filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))?;
     let channel = |at: usize, width: usize| u8::from_str_radix(&hex[at..at + width], 16).ok();
     match hex.len() {
-        3 => Some(Rgb { r: channel(0, 1)? * 17, g: channel(1, 1)? * 17, b: channel(2, 1)? * 17 }),
-        6 | 8 => Some(Rgb { r: channel(0, 2)?, g: channel(2, 2)?, b: channel(4, 2)? }),
+        3 => Some(Rgb(channel(0, 1)? * 17, channel(1, 1)? * 17, channel(2, 1)? * 17)),
+        6 | 8 => Some(Rgb(channel(0, 2)?, channel(2, 2)?, channel(4, 2)?)),
         _ => None,
     }
+}
+
+#[cfg(test)]
+pub fn rgb(value: u32) -> Rgb {
+    Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
 
 #[cfg(test)]
@@ -209,10 +213,6 @@ mod tests {
     use super::*;
 
     const WEZTERM_FIXTURE: &str = include_str!("../tests/fixtures/onedarkpro_onedark.toml");
-
-    fn rgb(value: u32) -> Rgb {
-        Rgb { r: (value >> 16) as u8, g: (value >> 8) as u8, b: value as u8 }
-    }
 
     #[test]
     fn every_built_in_parses_with_source_and_license() {
@@ -224,7 +224,7 @@ mod tests {
         }
         let dark = find(&schemes, "OneDark Pro").unwrap();
         assert!(dark.is_dark());
-        assert_eq!(dark.color(NamedColor::Background as usize), rgb(0x282c34));
+        assert_eq!(dark.color(BACKGROUND), rgb(0x282c34));
         assert_eq!(dark.color(214), rgb(0xd19a66));
         assert!(!find(&schemes, "Solarized Light").unwrap().is_dark());
         assert!(find(&schemes, "Solarized Dark").unwrap().is_dark());
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(scheme.color(8), rgb(0x5c6370));
         assert_eq!(scheme.color(100), rgb(0xe2be7d));
         assert_eq!(scheme.color(196), rgb(0xff0000));
-        assert_eq!(scheme.color(NamedColor::Cursor as usize), rgb(0xc678dd));
+        assert_eq!(scheme.color(CURSOR), rgb(0xc678dd));
         assert_eq!(scheme.cursor_fg, rgb(0x282c34));
         assert_eq!(scheme.selection, Some((rgb(0xabb2bf), rgb(0xc678dd))));
         let schemes = [scheme];
@@ -277,17 +277,6 @@ mod tests {
         let bad_index = WEZTERM_FIXTURE.replace("59 = ", "fifty-nine = ");
         let err = Scheme::parse(&bad_index, path()).unwrap_err();
         assert!(err.contains("colors.indexed") && err.contains("fifty-nine"), "{err}");
-    }
-
-    #[test]
-    fn program_colors_win_over_the_scheme() {
-        let scheme = find(&load(&[]).unwrap(), "OneDark Pro").unwrap();
-        let mut overrides = Colors::default();
-        let red = rgb(0xff0000);
-        overrides[NamedColor::Background] = Some(red);
-        assert_eq!(scheme.resolve(Color::Named(NamedColor::Background), &overrides), red);
-        assert_eq!(scheme.resolve(Color::Indexed(1), &overrides), rgb(0xe06c75));
-        assert_eq!(scheme.resolve(Color::Spec(red), &Colors::default()), red);
     }
 
     #[test]

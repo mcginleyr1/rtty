@@ -1,34 +1,38 @@
+use std::collections::HashMap;
 use std::iter;
 use std::mem;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::event::{Event, WindowSize};
-use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
-use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::TermMode;
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun,
-    Size, StrikethroughStyle, TextRun, UTF16Selection, UnderlineStyle, Window, actions, canvas,
-    div, fill, outline, point, prelude::*, px, size,
+    EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent,
+    ShapedGlyph, ShapedLine, ShapedRun, Size, StrikethroughStyle, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WindowTextSystem, actions, canvas, div, fill, outline, point,
+    prelude::*, px, size,
 };
+use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 
 use crate::config::Theme;
 use crate::keys;
-use crate::scheme::{self, Scheme};
-use crate::session::Session;
+use crate::mouse::{self, Action, Button, Report};
+use crate::pane::{Notice, Pane};
+use crate::render::{CursorShape, Line, Palette, Run, Scene};
+use crate::scheme::Scheme;
+use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 
 actions!(rtty, [Quit, Copy, Paste, IncreaseFontSize, DecreaseFontSize]);
 
+/// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
+const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+
+#[derive(Clone)]
 pub struct Settings {
     pub font: Font,
     pub font_size: Pixels,
@@ -36,71 +40,86 @@ pub struct Settings {
     pub stats: bool,
 }
 
-pub struct TerminalView {
-    session: Session,
+/// A pane as the window shows it: the pane itself, its keyboard focus, its font, and what its
+/// last frame put where.
+pub struct PaneView {
+    pane: Pane,
     focus: FocusHandle,
     font: Font,
     font_size: Pixels,
     theme: Theme,
     /// The theme's scheme for the window's current appearance.
     scheme: Arc<Scheme>,
-    grid: Option<GridGeometry>,
+    geometry: Option<Geometry>,
+    cache: Cache,
     marked_text: Option<String>,
     scroll_remainder: Pixels,
+    /// The cell the last mouse report named.
+    mouse_cell: Option<(u16, u16)>,
+    /// When the synchronized update now holding the screen began.
+    sync_since: Option<Instant>,
     stats: Option<FrameStats>,
 }
 
+/// What a pane tells the window that holds it.
+pub enum PaneEvent {
+    Title(String),
+    Exited,
+}
+
+impl EventEmitter<PaneEvent> for PaneView {}
+
 /// Where the last frame put the cells, for mapping mouse positions and placing the IME window.
 #[derive(Clone, Copy)]
-struct GridGeometry {
+struct Geometry {
     origin: Point<Pixels>,
     cell: Size<Pixels>,
-    size: WindowSize,
+    rows: u16,
+    cols: u16,
+    /// The terminal's cursor cell, visible or not, where composed text goes.
     cursor: Bounds<Pixels>,
 }
 
+/// A row as drawn, its runs shaped (`shaped[i]` is `line.runs[i]`).
+struct ShapedRow {
+    line: Line,
+    shaped: Vec<ShapedLine>,
+}
+
+/// Rows shaped by earlier frames, by absolute index. A row is shaped again when the engine
+/// reports it damaged, when the cursor is or was on it, when it left the screen since the last
+/// frame (it may have changed on its way out), or when anything every row depends on changed.
+#[derive(Default)]
+struct Cache {
+    key: Option<CacheKey>,
+    rows: HashMap<u64, Rc<ShapedRow>>,
+    screen_top: u64,
+    cursor_row: Option<u64>,
+    last: Option<Frame>,
+}
+
+#[derive(PartialEq)]
+struct CacheKey {
+    palette: Palette,
+    colors: (Rgb, Rgb),
+    selection: Option<(GridPoint, GridPoint)>,
+    focused: bool,
+    size: (u16, u16),
+    font_size: Pixels,
+}
+
+#[derive(Clone)]
 struct Frame {
-    line_height: Pixels,
-    backgrounds: Vec<PaintQuad>,
-    text: Vec<(Point<Pixels>, ShapedLine)>,
+    bounds: Bounds<Pixels>,
+    cell: Size<Pixels>,
+    /// From a cell's top: where underlines and strikethroughs go.
+    underline: Pixels,
+    strike: Pixels,
+    background: Hsla,
+    rows: Vec<(u16, Rc<ShapedRow>)>,
     cursor: Option<PaintQuad>,
     marked_text: Option<(PaintQuad, Point<Pixels>, ShapedLine)>,
     layout_time: Duration,
-}
-
-/// Consecutive single-width cells of a row with the same colors and font style, shaped as one
-/// run so the font's ligatures can form. Wide and combining cells stand alone, and the cursor
-/// cell ends a run so the glyph under the cursor shows its own character. `cells` counts the
-/// merged single-width cells.
-struct TextSpan {
-    line: usize,
-    column: usize,
-    cells: usize,
-    text: String,
-    fg: Rgb,
-    bg: Rgb,
-    flags: Flags,
-    single_width: bool,
-}
-
-struct BackgroundSpan {
-    line: usize,
-    column: usize,
-    cells: usize,
-    color: Rgb,
-}
-
-/// The visible cells, read under the terminal lock; backgrounds only where they differ from the
-/// default background.
-struct Cells {
-    background: Rgb,
-    backgrounds: Vec<BackgroundSpan>,
-    texts: Vec<TextSpan>,
-    cursor_line: usize,
-    cursor_column: usize,
-    cursor_shape: CursorShape,
-    /// The hollow (unfocused) cursor's outline, or the beam's or underline's color.
-    cursor_outline: Rgb,
 }
 
 #[derive(Default)]
@@ -112,10 +131,10 @@ struct FrameStats {
     worst: Duration,
 }
 
-impl TerminalView {
+impl PaneView {
     pub fn new(
-        session: Session,
-        mut events: UnboundedReceiver<Event>,
+        pane: Pane,
+        mut notices: UnboundedReceiver<Notice>,
         settings: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -126,12 +145,13 @@ impl TerminalView {
         cx.observe_window_appearance(window, |view, window, cx| view.follow_appearance(window, cx))
             .detach();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
+        pane.set_scheme(&scheme);
         cx.spawn_in(window, async move |this, cx| {
-            while let Some(event) = events.next().await {
-                let batch: Vec<Event> =
-                    iter::once(event).chain(iter::from_fn(|| events.try_recv().ok())).collect();
-                let applied = this.update_in(cx, |view, window, cx| {
-                    batch.into_iter().for_each(|event| view.handle_event(event, window, cx))
+            while let Some(notice) = notices.next().await {
+                let batch: Vec<Notice> =
+                    iter::once(notice).chain(iter::from_fn(|| notices.try_recv().ok())).collect();
+                let applied = this.update_in(cx, |view, _, cx| {
+                    batch.into_iter().for_each(|notice| view.notice(notice, cx))
                 });
                 if applied.is_err() {
                     break;
@@ -143,78 +163,61 @@ impl TerminalView {
         })
         .detach();
         Self {
-            session,
+            pane,
             focus,
             font: settings.font,
             font_size: settings.font_size,
             theme: settings.theme,
             scheme,
-            grid: None,
+            geometry: None,
+            cache: Cache::default(),
             marked_text: None,
             scroll_remainder: px(0.),
+            mouse_cell: None,
+            sync_since: None,
             stats: settings.stats.then(FrameStats::default),
         }
     }
 
     /// The OS switched between light and dark: repaint with the other scheme (cells keep color
-    /// indices, so what is on screen recolors) and tell programs that asked (mode 2031). Colors a
-    /// program set itself with OSC 4/10/11/12 live in the terminal, not the scheme, and stay.
+    /// indices, so what is on screen recolors) and tell the terminal, which answers color queries
+    /// with it and tells programs that asked (mode 2031). Colors a program set itself with
+    /// OSC 4/10/11/12 are the program's, not the scheme's, and stay.
     fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let scheme = self.theme.for_appearance(window.appearance());
         if Arc::ptr_eq(scheme, &self.scheme) {
             return;
         }
         self.scheme = scheme.clone();
-        self.session.scheme_changed(self.scheme.is_dark());
+        self.pane.set_scheme(&self.scheme);
         cx.notify();
     }
 
-    fn handle_event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
-        match event {
-            Event::Wakeup => cx.notify(),
-            Event::Title(title) => window.set_window_title(&title),
-            Event::ResetTitle => window.set_window_title("rtty"),
-            Event::PtyWrite(text) => self.session.reply(text),
-            Event::ClipboardStore(_, text) => {
+    fn notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        match notice {
+            Notice::Output | Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
+            Notice::Event(Event::Title(title)) => cx.emit(PaneEvent::Title(title)),
+            Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
-            Event::ClipboardLoad(_, format) => {
-                let text =
-                    cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
-                self.session.write(format(&text).into_bytes());
-            }
-            Event::ColorRequest(index, format) => {
-                let color = self.session.term.lock().colors()[index];
-                let rgb = color.unwrap_or_else(|| self.scheme.color(index));
-                self.session.write(format(rgb).into_bytes());
-            }
-            Event::TextAreaSizeRequest(format) => {
-                if let Some(grid) = self.grid {
-                    self.session.write(format(grid.size).into_bytes());
-                }
-            }
-            Event::ChildExit(_) | Event::Exit => {
+            Notice::Event(_) => {}
+            Notice::Exit => {
                 if let Some(stats) = self.stats.as_mut() {
                     stats.report();
                 }
-                cx.quit()
+                cx.emit(PaneEvent::Exited)
             }
-            Event::MouseCursorDirty | Event::CursorBlinkingChange | Event::Bell => {}
         }
     }
 
     fn input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
-        let mut term = self.session.term.lock();
-        term.selection = None;
-        term.scroll_display(Scroll::Bottom);
-        drop(term);
-        self.session.write(bytes);
+        self.pane.input(bytes);
         cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        let app_cursor = self.session.term.lock().mode().contains(TermMode::APP_CURSOR);
+        let app_cursor = self.pane.lock().modes().cursor_keys;
         // A held key repeats here: the input handler would open the accent picker instead.
         let bytes = keys::encode(keystroke, app_cursor).or_else(|| {
             event.is_held.then(|| keystroke.key_char.clone()).flatten().map(String::into_bytes)
@@ -228,7 +231,7 @@ impl TerminalView {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.session.term.lock().selection_to_string() {
+        if let Some(text) = self.pane.selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -237,7 +240,7 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        let bracketed = self.session.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
+        let bracketed = self.pane.lock().modes().bracketed_paste;
         self.input(keys::paste(&text, bracketed), cx);
     }
 
@@ -251,57 +254,111 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// The cell under `position`, as a point `display_offset` lines into the scrollback.
-    fn grid_point(
-        &self,
-        position: Point<Pixels>,
-        display_offset: usize,
-    ) -> Option<(GridPoint, Side)> {
-        let grid = self.grid?;
+    /// The cell under `position` as (row in view, column), and which half of it.
+    fn cell_at(&self, position: Point<Pixels>) -> Option<((u16, u16), Side)> {
+        let grid = self.geometry?;
         let x = ((position.x - grid.origin.x) / grid.cell.width).max(0.);
         let y = ((position.y - grid.origin.y) / grid.cell.height).max(0.);
-        let column = (x as usize).min(usize::from(grid.size.num_cols) - 1);
-        let line = (y as usize).min(usize::from(grid.size.num_lines) - 1);
+        let col = (x as u16).min(grid.cols - 1);
+        let row = (y as u16).min(grid.rows - 1);
         let side = if x.fract() < 0.5 { Side::Left } else { Side::Right };
-        let line = Line(line as i32 - display_offset as i32);
-        Some((GridPoint::new(line, Column(column)), side))
+        Some(((row, col), side))
+    }
+
+    /// The cell under `position` by absolute row.
+    fn grid_point(&self, position: Point<Pixels>) -> Option<(GridPoint, Side)> {
+        let ((row, col), side) = self.cell_at(position)?;
+        let top = self.pane.top(&self.pane.lock());
+        Some(((top + u64::from(row), col), side))
+    }
+
+    /// Reports a mouse event to a program that asked for mouse reports (mode 9, 1000, 1002 or
+    /// 1003) and whether the program owns the mouse; Shift keeps it for selecting.
+    fn report_mouse(
+        &mut self,
+        button: Button,
+        action: Action,
+        position: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+    ) -> bool {
+        let modes = self.pane.lock().modes().clone();
+        let (Some(grid), Some((cell, _))) = (self.geometry, self.cell_at(position)) else {
+            return false;
+        };
+        let wheel = matches!(button, Button::WheelUp | Button::WheelDown);
+        if modes.mouse == MouseMode::None || modifiers.shift && !wheel {
+            return false;
+        }
+        // Motion within a cell tells a cell-addressed program nothing new.
+        let moved = self.mouse_cell.replace(cell) != Some(cell);
+        if action == Action::Motion && !moved && modes.mouse_encoding != MouseEncoding::SgrPixels {
+            return true;
+        }
+        let offset = position - grid.origin;
+        let report = Report {
+            button,
+            action,
+            modifiers: mouse::Modifiers {
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+                control: modifiers.control,
+            },
+            cell,
+            pixel: (f32::from(offset.x).max(0.) as u32, f32::from(offset.y).max(0.) as u32),
+        };
+        if mouse::wanted(modes.mouse, &report)
+            && let Some(bytes) = mouse::encode(&report, modes.mouse, modes.mouse_encoding)
+        {
+            self.pane.write(bytes);
+        }
+        true
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        let mut term = self.session.term.lock();
-        let Some((point, side)) = self.grid_point(event.position, term.grid().display_offset())
-        else {
+        let button = mouse_button(event.button);
+        if self.report_mouse(button, Action::Press, event.position, event.modifiers)
+            || event.button != MouseButton::Left
+        {
+            return;
+        }
+        let Some((point, side)) = self.grid_point(event.position) else {
             return;
         };
         let kind = match event.click_count {
-            2 => SelectionType::Semantic,
-            3 => SelectionType::Lines,
-            _ => SelectionType::Simple,
+            2 => Kind::Words,
+            3 => Kind::Lines,
+            _ => Kind::Cells,
         };
-        term.selection = Some(Selection::new(kind, point, side));
+        self.pane.selection = Some(Selection::new(kind, point, side));
         cx.notify();
     }
 
+    fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        let button = mouse_button(event.button);
+        self.report_mouse(button, Action::Release, event.position, event.modifiers);
+    }
+
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.pressed_button != Some(MouseButton::Left) {
+        let button = event.pressed_button.map_or(Button::None, mouse_button);
+        if self.report_mouse(button, Action::Motion, event.position, event.modifiers)
+            || event.pressed_button != Some(MouseButton::Left)
+        {
             return;
         }
-        let mut term = self.session.term.lock();
-        let Some((point, side)) = self.grid_point(event.position, term.grid().display_offset())
-        else {
+        let Some((point, side)) = self.grid_point(event.position) else {
             return;
         };
-        if let Some(selection) = term.selection.as_mut() {
-            selection.update(point, side);
+        if let Some(selection) = self.pane.selection.as_mut() {
+            selection.extend(point, side);
             cx.notify();
         }
     }
 
     /// The wheel scrolls the scrollback, unless a full-screen program owns it: one that asked for
-    /// mouse reports gets wheel buttons, any other gets arrow keys (xterm's alternate scroll).
+    /// mouse reports gets wheel buttons, any other gets arrow keys (alternate scroll, mode 1007).
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(grid) = self.grid else { return };
+        let Some(grid) = self.geometry else { return };
         self.scroll_remainder += event.delta.pixel_delta(grid.cell.height).y;
         let lines = (self.scroll_remainder / grid.cell.height) as i32;
         if lines == 0 {
@@ -309,39 +366,36 @@ impl TerminalView {
         }
         self.scroll_remainder -= grid.cell.height * lines as f32;
         let count = lines.unsigned_abs() as usize;
-        let mut term = self.session.term.lock();
-        let mode = *term.mode();
-        if mode.intersects(TermMode::MOUSE_MODE) {
-            let Some((point, _)) = self.grid_point(event.position, 0) else {
-                return;
-            };
-            let (column, line) = (point.column.0 + 1, point.line.0 as usize + 1);
-            let button = if lines > 0 { 64 } else { 65 };
-            let report = if mode.contains(TermMode::SGR_MOUSE) {
-                format!("\x1b[<{button};{column};{line}M").into_bytes()
-            } else {
-                let encode = |n: usize| (32 + n).min(255) as u8;
-                vec![0x1b, b'[', b'M', 32 + button, encode(column), encode(line)]
-            };
-            self.session.write(report.repeat(count));
-        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-            let arrow = match (lines > 0, mode.contains(TermMode::APP_CURSOR)) {
+        let button = if lines > 0 { Button::WheelUp } else { Button::WheelDown };
+        let modes = self.pane.lock().modes().clone();
+        if modes.mouse != MouseMode::None {
+            for _ in 0..count {
+                self.report_mouse(button, Action::Press, event.position, event.modifiers);
+            }
+        } else if modes.alt_screen && modes.alternate_scroll {
+            let arrow = match (lines > 0, modes.cursor_keys) {
                 (true, true) => "\x1bOA",
                 (true, false) => "\x1b[A",
                 (false, true) => "\x1bOB",
                 (false, false) => "\x1b[B",
             };
-            self.session.write(arrow.repeat(count).into_bytes());
+            self.pane.write(arrow.repeat(count).into_bytes());
         } else {
-            term.scroll_display(Scroll::Delta(lines));
+            self.pane.scroll(lines);
             cx.notify();
         }
     }
 
-    /// Fits the grid to `bounds`, then turns the visible cells into background quads and shaped
-    /// text runs, holding the terminal lock only while reading cells.
-    fn layout(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> Frame {
+    /// Fits the grid to `bounds`, then shapes the rows that changed since the last frame,
+    /// holding the terminal lock only while reading cells.
+    fn layout(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Frame {
         let started = Instant::now();
+        self.pane.drawing();
         let text_system = window.text_system().clone();
         let font_id = text_system.resolve_font(&self.font);
         let cell_width = text_system
@@ -349,242 +403,141 @@ impl TerminalView {
             .expect("the terminal font has an 'm'")
             .width;
         let ascent = text_system.ascent(font_id, self.font_size);
-        let descent = text_system.descent(font_id, self.font_size);
-        let cell = size(cell_width, (ascent + descent.abs()).ceil());
-        let columns = ((bounds.size.width / cell.width) as u16).max(2);
-        let lines = ((bounds.size.height / cell.height) as u16).max(1);
-        let window_size = WindowSize {
-            num_lines: lines,
-            num_cols: columns,
-            cell_width: f32::from(cell.width) as u16,
-            cell_height: f32::from(cell.height) as u16,
-        };
-        if self
-            .grid
-            .is_none_or(|grid| (grid.size.num_cols, grid.size.num_lines) != (columns, lines))
-        {
-            self.session.resize(window_size);
+        let descent = text_system.descent(font_id, self.font_size).abs();
+        let cell = size(cell_width, (ascent + descent).ceil());
+        let cols = ((bounds.size.width / cell.width) as u16).max(2);
+        let rows = ((bounds.size.height / cell.height) as u16).max(1);
+        if self.geometry.is_none_or(|grid| (grid.rows, grid.cols) != (rows, cols)) {
+            let pixels = (f32::from(cell.width) as u16, f32::from(cell.height) as u16);
+            self.pane.resize(rows, cols, pixels);
         }
         let focused = self.focus.is_focused(window) && window.is_window_active();
-        let cells = self.read_cells(focused);
 
-        let at = |line: usize, column: usize| {
+        let mut term = self.pane.lock();
+        if !term.modes().sync_update {
+            self.sync_since = None;
+        } else if let Some(frame) = self.cache.last.clone().filter(|frame| frame.bounds == bounds) {
+            // DEC mode 2026: the program is drawing a frame; keep showing the last one until it
+            // is done, or for a while if it never says so.
+            if self.sync_since.is_none() {
+                self.sync_since = Some(Instant::now());
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(SYNC_TIMEOUT).await;
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                })
+                .detach();
+            }
+            if self.sync_since.is_some_and(|since| since.elapsed() < SYNC_TIMEOUT) {
+                return frame;
+            }
+        }
+        let palette = Palette::new(&term, &self.scheme);
+        let top = self.pane.top(&term);
+        let selection = self.pane.selection.and_then(|selection| selection.range(&term));
+        let scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        let screen_top = term.screen_top();
+        let (cursor_row, cursor_col) = term.cursor_position();
+        let cache = &mut self.cache;
+        let key = CacheKey {
+            palette: palette.clone(),
+            colors: (scene.fg, scene.bg),
+            selection,
+            focused,
+            size: (rows, cols),
+            font_size: self.font_size,
+        };
+        if cache.key.as_ref() != Some(&key) {
+            cache.rows.clear();
+            cache.key = Some(key);
+        }
+        let cursor = scene.cursor.map(|cursor| cursor.row);
+        let damaged = term.take_damage().into_iter().map(|row| screen_top + u64::from(row));
+        for row in damaged.chain(cache.cursor_row).chain(cursor) {
+            cache.rows.remove(&row);
+        }
+        let left_screen = cache.screen_top..screen_top;
+        let in_view = top..top + u64::from(rows);
+        cache.rows.retain(|row, _| in_view.contains(row) && !left_screen.contains(row));
+        (cache.screen_top, cache.cursor_row) = (screen_top, cursor);
+        let missing: Vec<(u64, Line)> = term
+            .rows(top, in_view.end)
+            .filter(|(index, _)| !cache.rows.contains_key(index))
+            .map(|(index, row)| (index, scene.line(row, index)))
+            .collect();
+        drop(term);
+
+        for (index, line) in missing {
+            let shaped = line
+                .runs
+                .iter()
+                .map(|run| shape(&text_system, &self.font, self.font_size, cell.width, run))
+                .collect();
+            cache.rows.insert(index, Rc::new(ShapedRow { line, shaped }));
+        }
+        let at = |row: u16, col: u16| {
             point(
-                bounds.origin.x + cell.width * column as f32,
-                bounds.origin.y + cell.height * line as f32,
+                bounds.origin.x + cell.width * f32::from(col),
+                bounds.origin.y + cell.height * f32::from(row),
             )
         };
-        let cursor_bounds = Bounds::new(at(cells.cursor_line, cells.cursor_column), cell);
-        self.grid = Some(GridGeometry {
-            origin: bounds.origin,
-            cell,
-            size: window_size,
-            cursor: cursor_bounds,
-        });
+        let screen_row = (screen_top + u64::from(cursor_row)).saturating_sub(top);
+        let cursor_bounds =
+            Bounds::new(at(screen_row.min(u64::from(rows - 1)) as u16, cursor_col), cell);
+        self.geometry =
+            Some(Geometry { origin: bounds.origin, cell, rows, cols, cursor: cursor_bounds });
 
-        let backgrounds = iter::once(fill(bounds, hsla(cells.background)))
-            .chain(cells.backgrounds.into_iter().map(|span| {
-                let width = cell.width * span.cells as f32;
-                fill(
-                    Bounds::new(at(span.line, span.column), size(width, cell.height)),
-                    hsla(span.color),
-                )
-            }))
-            .collect();
-        let decorated = Flags::ALL_UNDERLINES | Flags::STRIKEOUT;
-        let text = cells
-            .texts
-            .into_iter()
-            .filter(|span| !span.text.trim().is_empty() || span.flags.intersects(decorated))
-            .map(|span| {
-                let run = self.text_run(span.text.len(), span.fg, span.flags);
-                let mut line =
-                    text_system.shape_line(span.text.into(), self.font_size, &[run], None);
-                if span.single_width
-                    && let Some(snapped) = snap_to_cells(&line, &line.text, cell.width)
-                {
-                    *line = Arc::new(snapped);
+        let cursor = scene.cursor.and_then(|cursor| {
+            let width = cell.width * if cursor.wide { 2. } else { 1. };
+            let origin = at((cursor.row - top) as u16, cursor.col);
+            let color = hsla(cursor.color);
+            match cursor.shape {
+                // The cell's own background and text are the block.
+                CursorShape::Block => None,
+                CursorShape::Bar => {
+                    Some(fill(Bounds::new(origin, size(px(2.), cell.height)), color))
                 }
-                (at(span.line, span.column), line)
-            })
-            .collect();
-        let cursor_color = hsla(cells.cursor_outline);
-        let cursor_quad = match cells.cursor_shape {
-            CursorShape::Beam => Some(fill(
-                Bounds::new(cursor_bounds.origin, size(px(2.), cell.height)),
-                cursor_color,
-            )),
-            CursorShape::Underline => Some(fill(
-                Bounds::new(
-                    cursor_bounds.bottom_left() - point(px(0.), px(2.)),
-                    size(cell.width, px(2.)),
-                ),
-                cursor_color,
-            )),
-            CursorShape::HollowBlock => {
-                Some(outline(cursor_bounds, cursor_color, BorderStyle::Solid))
+                CursorShape::Underline => {
+                    let origin = origin + point(px(0.), cell.height - px(2.));
+                    Some(fill(Bounds::new(origin, size(width, px(2.))), color))
+                }
+                CursorShape::Hollow => Some(outline(
+                    Bounds::new(origin, size(width, cell.height)),
+                    color,
+                    BorderStyle::Solid,
+                )),
             }
-            CursorShape::Block | CursorShape::Hidden => None,
-        };
+        });
         let marked_text = self.marked_text.clone().map(|text| {
-            let fg = self.scheme.color(NamedColor::Foreground as usize);
-            let run = self.text_run(text.len(), fg, Flags::UNDERLINE);
+            let fg = hsla(palette.color(FOREGROUND));
+            let underline = UnderlineStyle { color: Some(fg), thickness: px(1.), wavy: false };
+            let run = TextRun {
+                underline: Some(underline),
+                ..text_run(&self.font, text.len(), palette.color(FOREGROUND), false, false)
+            };
             let line = text_system.shape_line(text.into(), self.font_size, &[run], None);
             let backdrop = fill(
                 Bounds::new(cursor_bounds.origin, size(line.width, cell.height)),
-                hsla(cells.background),
+                hsla(scene.bg),
             );
             (backdrop, cursor_bounds.origin, line)
         });
-        Frame {
-            line_height: cell.height,
-            backgrounds,
-            text,
-            cursor: cursor_quad,
+        let padding = (cell.height - ascent - descent) / 2.;
+        let baseline = padding + ascent;
+        let frame = Frame {
+            bounds,
+            cell,
+            underline: baseline + descent * 0.618,
+            strike: (ascent * 0.5 + baseline) * 0.5,
+            background: hsla(scene.bg),
+            rows: (0..rows)
+                .filter_map(|row| Some((row, cache.rows.get(&(top + u64::from(row)))?.clone())))
+                .collect(),
+            cursor,
             marked_text,
             layout_time: started.elapsed(),
-        }
-    }
-
-    fn read_cells(&self, focused: bool) -> Cells {
-        let term = self.session.term.lock();
-        let content = term.renderable_content();
-        let colors = content.colors;
-        let scheme = &self.scheme;
-        let default_bg = scheme.resolve(Color::Named(NamedColor::Background), colors);
-        let cursor_color = scheme.resolve(Color::Named(NamedColor::Cursor), colors);
-        let cursor = content.cursor;
-        let shape = match cursor.shape {
-            CursorShape::Hidden => CursorShape::Hidden,
-            _ if !focused => CursorShape::HollowBlock,
-            shape => shape,
         };
-        let cursor_outline = match shape {
-            CursorShape::HollowBlock => colors[NamedColor::Cursor].unwrap_or(scheme.cursor_border),
-            _ => cursor_color,
-        };
-        let offset = content.display_offset;
-        let selection = content.selection;
-        let under_block_cursor = |point: GridPoint, flags: Flags| {
-            shape == CursorShape::Block
-                && (point == cursor.point
-                    || flags.contains(Flags::WIDE_CHAR_SPACER)
-                        && GridPoint::new(point.line, point.column - 1) == cursor.point)
-        };
-        let starts_run_at_cursor = |point: GridPoint| {
-            shape != CursorShape::Hidden
-                && point.line == cursor.point.line
-                && (point.column == cursor.point.column || point.column == cursor.point.column + 1)
-        };
-        let mut backgrounds: Vec<BackgroundSpan> = Vec::new();
-        let mut texts: Vec<TextSpan> = Vec::new();
-        for indexed in content.display_iter {
-            let cell = indexed.cell;
-            let line = (indexed.point.line.0 + offset as i32) as usize;
-            let column = indexed.point.column.0;
-            let mut fg = scheme.resolve(cell.fg, colors);
-            let mut bg = scheme.resolve(cell.bg, colors);
-            if cell.flags.contains(Flags::DIM) {
-                fg = scheme::dim(fg);
-            }
-            if cell.flags.contains(Flags::INVERSE) {
-                mem::swap(&mut fg, &mut bg);
-            }
-            if selection.is_some_and(|range| range.contains(indexed.point)) {
-                (fg, bg) = scheme.selection.unwrap_or((bg, fg));
-            }
-            if cell.flags.contains(Flags::HIDDEN) {
-                fg = bg;
-            }
-            if under_block_cursor(indexed.point, cell.flags) {
-                (fg, bg) = (scheme.cursor_fg, cursor_color);
-            }
-
-            match backgrounds.last_mut() {
-                Some(span)
-                    if span.line == line
-                        && span.column + span.cells == column
-                        && span.color == bg =>
-                {
-                    span.cells += 1
-                }
-                _ if bg != default_bg => {
-                    backgrounds.push(BackgroundSpan { line, column, cells: 1, color: bg })
-                }
-                _ => {}
-            }
-
-            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                continue;
-            }
-            let flags =
-                cell.flags & (Flags::BOLD_ITALIC | Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
-            let single_width = !cell.flags.contains(Flags::WIDE_CHAR) && cell.zerowidth().is_none();
-            match texts.last_mut() {
-                Some(span)
-                    if single_width
-                        && span.single_width
-                        && span.line == line
-                        && span.column + span.cells == column
-                        && (span.fg, span.bg, span.flags) == (fg, bg, flags)
-                        && !starts_run_at_cursor(indexed.point) =>
-                {
-                    span.text.push(cell.c);
-                    span.cells += 1;
-                }
-                _ => texts.push(TextSpan {
-                    line,
-                    column,
-                    cells: 1,
-                    text: iter::once(cell.c)
-                        .chain(cell.zerowidth().into_iter().flatten().copied())
-                        .collect(),
-                    fg,
-                    bg,
-                    flags,
-                    single_width,
-                }),
-            }
-        }
-        let cursor_line = (cursor.point.line.0 + offset as i32).max(0) as usize;
-        Cells {
-            background: default_bg,
-            backgrounds,
-            texts,
-            cursor_line,
-            cursor_column: cursor.point.column.0,
-            cursor_shape: if cursor_line < term.screen_lines() {
-                shape
-            } else {
-                CursorShape::Hidden
-            },
-            cursor_outline,
-        }
-    }
-
-    fn text_run(&self, len: usize, fg: Rgb, flags: Flags) -> TextRun {
-        let color = hsla(fg);
-        let mut font = self.font.clone();
-        if flags.contains(Flags::BOLD) {
-            font = font.bold();
-        }
-        if flags.contains(Flags::ITALIC) {
-            font = font.italic();
-        }
-        TextRun {
-            len,
-            font,
-            color,
-            background_color: None,
-            underline: flags.intersects(Flags::ALL_UNDERLINES).then_some(UnderlineStyle {
-                color: Some(color),
-                thickness: px(1.),
-                wavy: flags.contains(Flags::UNDERCURL),
-            }),
-            strikethrough: flags
-                .contains(Flags::STRIKEOUT)
-                .then_some(StrikethroughStyle { color: Some(color), thickness: px(1.) }),
-        }
+        cache.last = Some(frame.clone());
+        frame
     }
 
     fn paint(
@@ -596,10 +549,40 @@ impl TerminalView {
     ) {
         let started = Instant::now();
         window.handle_input(&self.focus, ElementInputHandler::new(bounds, cx.entity()), cx);
-        frame.backgrounds.into_iter().for_each(|quad| window.paint_quad(quad));
-        for (origin, line) in &frame.text {
-            if let Err(err) = line.paint(*origin, frame.line_height, window, cx) {
-                eprintln!("rtty: painting {:?} failed: {err}", line.text);
+        let cell = frame.cell;
+        let at = |row: u16, col: u16| {
+            point(
+                frame.bounds.origin.x + cell.width * f32::from(col),
+                frame.bounds.origin.y + cell.height * f32::from(row),
+            )
+        };
+        window.paint_quad(fill(bounds, frame.background));
+        for (row, shaped) in &frame.rows {
+            for span in &shaped.line.backgrounds {
+                let width = cell.width * f32::from(span.cells);
+                window.paint_quad(fill(
+                    Bounds::new(at(*row, span.col), size(width, cell.height)),
+                    hsla(span.color),
+                ));
+            }
+        }
+        for (row, shaped) in &frame.rows {
+            for (run, line) in shaped.line.runs.iter().zip(&shaped.shaped) {
+                let origin = at(*row, run.col);
+                if let Err(err) = line.paint(origin, cell.height, window, cx) {
+                    eprintln!("rtty: painting {:?} failed: {err}", line.text);
+                }
+                let width = cell.width * f32::from(run.cells);
+                let color = Some(hsla(run.style.fg));
+                if run.style.underline != Underline::None {
+                    let wavy = run.style.underline == Underline::Curly;
+                    let style = UnderlineStyle { color, thickness: px(1.), wavy };
+                    window.paint_underline(origin + point(px(0.), frame.underline), width, &style);
+                }
+                if run.style.strike {
+                    let style = StrikethroughStyle { color, thickness: px(1.) };
+                    window.paint_strikethrough(origin + point(px(0.), frame.strike), width, &style);
+                }
             }
         }
         if let Some(cursor) = frame.cursor {
@@ -607,11 +590,56 @@ impl TerminalView {
         }
         if let Some((backdrop, origin, line)) = frame.marked_text {
             window.paint_quad(backdrop);
-            line.paint(origin, frame.line_height, window, cx).ok();
+            line.paint(origin, cell.height, window, cx).ok();
         }
         if let Some(stats) = self.stats.as_mut() {
             stats.record(frame.layout_time, started.elapsed());
         }
+    }
+}
+
+fn mouse_button(button: MouseButton) -> Button {
+    match button {
+        MouseButton::Middle => Button::Middle,
+        MouseButton::Right => Button::Right,
+        _ => Button::Left,
+    }
+}
+
+/// The run shaped as one string, every glyph on its cell.
+fn shape(
+    text_system: &WindowTextSystem,
+    font: &Font,
+    font_size: Pixels,
+    cell_width: Pixels,
+    run: &Run,
+) -> ShapedLine {
+    let style = &run.style;
+    let text_run = text_run(font, run.text.len(), style.fg, style.bold, style.italic);
+    let mut line = text_system.shape_line(run.text.clone().into(), font_size, &[text_run], None);
+    if run.single_width
+        && let Some(snapped) = snap_to_cells(&line, &line.text, cell_width)
+    {
+        *line = Arc::new(snapped);
+    }
+    line
+}
+
+fn text_run(font: &Font, len: usize, fg: Rgb, bold: bool, italic: bool) -> TextRun {
+    let mut font = font.clone();
+    if bold {
+        font = font.bold();
+    }
+    if italic {
+        font = font.italic();
+    }
+    TextRun {
+        len,
+        font,
+        color: hsla(fg),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
     }
 }
 
@@ -705,12 +733,12 @@ fn grid_positions(
     (!on_grid).then_some(snapped)
 }
 
-fn hsla(rgb: Rgb) -> Hsla {
+fn hsla(Rgb(r, g, b): Rgb) -> Hsla {
     let channel = |value: u8| f32::from(value) / 255.;
-    Rgba { r: channel(rgb.r), g: channel(rgb.g), b: channel(rgb.b), a: 1. }.into()
+    Rgba { r: channel(r), g: channel(g), b: channel(b), a: 1. }.into()
 }
 
-impl Render for TerminalView {
+impl Render for PaneView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout_view = cx.entity();
         let paint_view = cx.entity();
@@ -725,11 +753,16 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::mouse_up))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .child(
                 canvas(
                     move |bounds, window, cx: &mut App| {
-                        layout_view.update(cx, |view, _| view.layout(bounds, window))
+                        layout_view.update(cx, |view, cx| view.layout(bounds, window, cx))
                     },
                     move |bounds, frame, window, cx: &mut App| {
                         paint_view.update(cx, |view, cx| view.paint(bounds, frame, window, cx))
@@ -742,7 +775,7 @@ impl Render for TerminalView {
 
 /// The platform's text input: committed text goes to the pty, composing (marked) text is drawn
 /// at the cursor until the input method commits it.
-impl EntityInputHandler for TerminalView {
+impl EntityInputHandler for PaneView {
     fn text_for_range(
         &mut self,
         _: Range<usize>,
@@ -802,7 +835,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.grid.map(|grid| grid.cursor)
+        self.geometry.map(|grid| grid.cursor)
     }
 
     fn character_index_for_point(

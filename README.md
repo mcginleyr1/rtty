@@ -1,9 +1,10 @@
 # rtty
 
 A GPU terminal emulator in Rust: [GPUI](https://gpui.rs) (Zed's UI framework) draws it,
-[alacritty_terminal](https://crates.io/crates/alacritty_terminal) holds the terminal state and
-owns the pty. v0 is the spike that proves this stack before rtty becomes a native GUI front end
-for tutti, the tmux-for-AI-agents daemon: one window, one terminal, a local pty.
+[rtty-vt](vt/README.md), the terminal engine in `vt/` that tutti shares, holds the terminal
+state, and [portable-pty](https://crates.io/crates/portable-pty) opens the pty. rtty is on its
+way to being a native GUI front end for tutti, the tmux-for-AI-agents daemon; today it is one
+window, one terminal, a local pty.
 
 ## Build and run
 
@@ -82,8 +83,8 @@ notifications. `CSI ? 996 n` asks for the scheme and gets `CSI ? 997 ; 1 n` (dar
 time the scheme changes, so Neovim and friends can switch `background` live. `CSI ? 2031 l` or RIS
 turns it off, and DECRQM (`CSI ? 2031 $ p`) reports the mode's state. Dark or light is the
 scheme's background, not the OS setting, so a pinned light scheme answers light on a dark Mac.
-alacritty_terminal does not know these sequences; rtty watches the pty's output for them with a
-second vte parser on the reader thread (`color_reports.rs`).
+rtty-vt answers all of these itself: rtty hands it the scheme's palette and leaning at startup
+and on every flip.
 
 ## Keys
 
@@ -95,8 +96,9 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | `Cmd+C` | copy the selection |
 | `Cmd+V` | paste (bracketed when the program asked for it) |
 | `Cmd+=` / `Cmd+-` | font size up / down |
-| mouse drag | select (double click: word, triple click: line) |
-| wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll) |
+| mouse drag | select (double click: word, triple click: line); Shift+drag when a program takes the mouse |
+| mouse buttons | reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding) |
+| wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
 The terminal gets printable text (through the platform input handler, so dead keys and IME
 composition go through macOS), Enter, Backspace, Tab, Shift+Tab, Esc, the arrows,
@@ -107,19 +109,33 @@ A held key repeats instead of opening macOS's accent picker.
 
 ## How it works
 
-- `session.rs` — spawns the child on a pty (`alacritty_terminal::tty`) and runs alacritty's
-  `EventLoop`: a reader thread parses pty output into the `Term` under a `FairMutex` and sends
-  `Wakeup` events. A channel carries the terminal's events to the UI. The pty is wrapped so the
-  same reads also feed the color-report watcher.
-- `color_reports.rs` — DEC mode 2031 and the `CSI ? 996 n` query.
+- `pane.rs` — one terminal, self-contained: the child on a pty (portable-pty), the rtty-vt
+  `Terminal` behind a mutex, and three threads. The reader feeds the pty's output to
+  `Terminal::advance` and sends the engine's replies to the writer in stream order; the writer
+  owns the pty's input side, so a program that stops reading stalls neither the reader nor the
+  window; the waiter reports the child's exit. A channel carries notices to the window: `Output`
+  (at most one in flight until the window draws), the engine's other events (title, OSC 52
+  clipboard, cursor style, mode changes) and the exit. The pane also keeps the view state a
+  window needs per terminal: where the view sits in the scrollback (an absolute row, so it stays
+  on its text while output arrives) and the selection.
+- `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
+  and text runs with their resolved colors and decorations, and the cursor. A program's colors
+  (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the defaults.
+- `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
+  `Terminal::text`.
+- `mouse.rs` — mouse reports in every encoding, unit tested.
+- `view.rs` — `PaneView`, the GPUI view of one pane. A foreground task drains the pane's channel
+  in batches: `Output` marks the view dirty, so however many arrive between two display
+  refreshes, GPUI draws one frame (that is the coalescing). Each frame locks the terminal only to
+  read the rows that changed (the engine's damage, plus the cursor's rows and rows that left the
+  screen) into `render` lines, then shapes those outside the lock; unchanged rows reuse last
+  frame's shaped runs (see [Ligatures](#ligatures)). A synchronized update (mode 2026) keeps the
+  last frame up until it ends, or for 150 ms. Resizing recomputes rows/cols from the cell metrics
+  and resizes the terminal and the pty. The view is also GPUI's text input handler, for committed
+  text and IME marked text.
+- `window.rs` — `TerminalWindow`, a window's panes. One shows; tabs and splits will lay out
+  several, each pane view in its own part of the window.
 - `scheme.rs` and `config.rs` — color schemes and the config file.
-- `view.rs` — the GPUI view. A foreground task drains the event channel in batches: `Wakeup`
-  marks the view dirty, so however many arrive between two display refreshes, GPUI draws one frame
-  (that is the coalescing). Each frame locks the term only to read the visible cells into spans,
-  then shapes outside the lock: per row, runs of same-background cells become one quad, and runs
-  of same-style cells become one shaped text run (see [Ligatures](#ligatures)). Resizing the
-  window recomputes rows/cols from the cell metrics and resizes the term and the pty. The view is
-  also GPUI's text input handler, for committed text and IME marked text.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes) and paste wrapping, unit tested.
 
 ## Measurements (Apple silicon Mac, release build)
@@ -172,16 +188,15 @@ font's `calt`, `liga` and `dlig` features.
 
 ## Status
 
-v0 works: one window running a shell or `-e` program with colors, attributes, wide chars,
-ligatures, cursor shapes, selection and copy/paste, scrollback, resize, window title from
-OSC 0/2, a config file, and WezTerm-format color schemes that follow the macOS appearance live
-(with DEC mode 2031 reports).
+Works: one window running a shell or `-e` program with colors, attributes, wide chars,
+ligatures, cursor shapes, selection and copy/paste, scrollback, resize with reflow, mouse
+reports, window title from OSC 0/2, OSC 52 copy, synchronized updates, a config file, and
+WezTerm-format color schemes that follow the macOS appearance live (with DEC mode 2031 reports).
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
-candidate window is placed there) but unverified with a real input method; mouse clicks are not
-reported to programs (only the wheel is); emoji and CJK rely on CoreText's font fallback and an
-emoji may overhang its two cells; no blinking cursor, bell, kitty keyboard protocol, URL
-detection, config file, tabs or splits; macOS only.
+candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
+CoreText's font fallback and an emoji may overhang its two cells; no blinking cursor, bell, kitty
+keyboard protocol, URL detection, tabs or splits; macOS only.
 
 ## The GPUI pin
 
@@ -191,19 +206,18 @@ would not guarantee (Zed tracks its own `rust-toolchain`, and a rev drags in its
 `runtime_shaders` compiles GPUI's Metal shaders when the app starts instead of at build time:
 Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
-machine that has not fetched it. The cost is a shader compile at startup. `alacritty_terminal` is
-pinned to `=0.26.0`.
+machine that has not fetched it. The cost is a shader compile at startup.
 
-Licensing: GPUI and alacritty_terminal are Apache-2.0. rtty takes nothing from Zed's GPL
-`terminal` / `terminal_view` crates.
+Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT. rtty takes nothing from Zed's
+GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap
 
 1. **Attach to tutti.** Replace the local pty with a raw single-pane stream from tutti-server
-   (being built now): the stream's bytes feed the same `Term` the pty reader feeds today, and key
-   bytes go back over the socket instead of into the pty. `Session` is the seam. tutti-server
+   (being built now): the stream's bytes feed the same `Terminal` the pty reader feeds today, and
+   key bytes go back over the socket instead of into the pty. `Pane` is the seam. tutti-server
    answers DA1/DA2/DSR/CPR itself and strips those queries from the raw stream, so rtty must not
-   answer them on an attached pane (today the `Term`'s replies go straight back into the pty).
+   answer them on an attached pane (today the engine's replies go straight back into the pty).
 2. **Sidebar and agent panels** as GPUI views beside the terminal: tutti's project/agent tree with
    state dots, the waiting queue, the changed-files panel.
 3. **Layout on Cmd chords** (split, focus, zoom, tabs) so every Ctrl key stays with the panes.

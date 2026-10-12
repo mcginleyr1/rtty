@@ -1,36 +1,37 @@
-mod color_reports;
 mod config;
 mod keys;
+mod mouse;
+mod pane;
+mod render;
 mod scheme;
-mod session;
+mod selection;
 mod view;
+mod window;
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::Term;
-use alacritty_terminal::event::{Event, VoidListener, WindowSize};
-use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::tty::Shell;
-use alacritty_terminal::vte::ansi::Processor;
 use gpui::{
     App, AppContext, Application, Bounds, FontFeatures, KeyBinding, TitlebarOptions, WindowBounds,
     WindowOptions, font, px, size,
 };
+use portable_pty::CommandBuilder;
+use rtty_vt::Terminal;
 
 use config::Config;
-use session::Session;
-use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, Settings, TerminalView};
+use pane::{Pane, SCROLLBACK, shell_command};
+use view::{Copy, DecreaseFontSize, IncreaseFontSize, Paste, Quit, Settings};
+use window::TerminalWindow;
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [-e PROGRAM [ARGS...]]
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
 
-const START_SIZE: WindowSize =
-    WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
+/// The terminal's size until the window has laid out its first frame.
+const START_SIZE: (u16, u16) = (24, 80);
 
 // macOS seq prints 1e+06 past a million without the explicit format.
 const BENCH_COMMAND: &str = "seq -f %.0f 1 2000000";
@@ -43,7 +44,7 @@ struct Options {
     size: Option<f32>,
     ligatures: Option<bool>,
     stats: bool,
-    command: Option<Shell>,
+    command: Option<Vec<String>>,
 }
 
 fn main() -> ExitCode {
@@ -76,7 +77,7 @@ fn main() -> ExitCode {
             },
             "-e" => match args.next() {
                 Some(program) => {
-                    options.command = Some(Shell::new(program, args.by_ref().collect()))
+                    options.command = Some(std::iter::once(program).chain(args.by_ref()).collect())
                 }
                 None => return usage_error("-e needs a program"),
             },
@@ -93,6 +94,16 @@ fn main() -> ExitCode {
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("rtty: {message}\n{USAGE}");
     ExitCode::from(2)
+}
+
+/// The user's login shell, started in their home directory; or `-e`'s program, started here.
+fn command(argv: Option<Vec<String>>) -> CommandBuilder {
+    let Some(argv) = argv else { return CommandBuilder::new_default_prog() };
+    let mut command = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
+    if let Ok(dir) = std::env::current_dir() {
+        command.cwd(dir);
+    }
+    command
 }
 
 /// Reads `config.toml` (or `--config`), loads the color schemes, and runs the window.
@@ -122,9 +133,9 @@ fn run(options: Options) -> Result<(), String> {
             eprintln!("rtty: no font family named {family:?}");
             std::process::exit(2);
         }
-        let dark = theme.for_appearance(cx.window_appearance()).is_dark();
-        let (session, events) =
-            Session::spawn(options.command, START_SIZE, dark).unwrap_or_else(|err| {
+        let (rows, cols) = START_SIZE;
+        let (pane, notices) =
+            Pane::spawn(command(options.command), rows, cols).unwrap_or_else(|err| {
                 eprintln!("rtty: cannot start the shell: {err}");
                 std::process::exit(1);
             });
@@ -154,7 +165,7 @@ fn run(options: Options) -> Result<(), String> {
         };
         let settings = Settings { font, font_size: px(font_size), theme, stats: options.stats };
         cx.open_window(window_options, |window, cx| {
-            cx.new(|cx| TerminalView::new(session, events, settings, window, cx))
+            cx.new(|cx| TerminalWindow::new(pane, notices, settings, window, cx))
         })
         .expect("open the terminal window");
         cx.activate(true);
@@ -162,18 +173,18 @@ fn run(options: Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Waits for the pane's output to end and its child to exit; the exit code.
+fn finish(pane: &mut Pane) -> Option<u32> {
+    pane.reader.take().expect("a reader thread").join().expect("the pty reader");
+    pane.waiter.take().expect("a waiter thread").join().expect("the child waiter")
+}
+
 fn smoke() -> ExitCode {
-    let (session, mut events) =
-        Session::spawn(Some(session::command("printf hello-rtty; exit 7")), START_SIZE, true)
-            .expect("spawn /bin/sh");
-    let _ = session.reader.join().expect("pty reader thread");
-    let exit_code = std::iter::from_fn(|| events.try_recv().ok())
-        .find_map(|event| match event {
-            Event::ChildExit(status) => Some(status.code()),
-            _ => None,
-        })
-        .flatten();
-    let screen = session::screen(&session.term.lock());
+    let (rows, cols) = START_SIZE;
+    let (mut pane, _notices) =
+        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols).expect("spawn /bin/sh");
+    let exit_code = finish(&mut pane);
+    let screen = pane.lock().contents();
     let passed = screen.contains("hello-rtty") && exit_code == Some(7);
     println!(
         "smoke {}: screen {:?}, exit code {exit_code:?}",
@@ -191,16 +202,16 @@ fn bench(command: &str) -> ExitCode {
     // What the pty's onlcr turns the output into.
     let bytes = String::from_utf8_lossy(&output.stdout).replace('\n', "\r\n").into_bytes();
 
-    let mut term = Term::new(Default::default(), &TermSize::new(80, 24), VoidListener);
-    let mut parser: Processor = Processor::new();
+    let (rows, cols) = START_SIZE;
+    let mut term = Terminal::new(rows, cols, SCROLLBACK);
     let started = Instant::now();
-    parser.advance(&mut term, &bytes);
+    term.advance(&bytes);
     let parse = started.elapsed();
 
     let started = Instant::now();
-    let (session, _events) =
-        Session::spawn(Some(session::command(command)), START_SIZE, true).expect("spawn /bin/sh");
-    let _ = session.reader.join().expect("pty reader thread");
+    let (mut pane, _notices) =
+        Pane::spawn(shell_command(command), rows, cols).expect("spawn /bin/sh");
+    finish(&mut pane);
     let pipeline = started.elapsed();
 
     let megabytes = bytes.len() as f64 / 1e6;
@@ -209,12 +220,12 @@ fn bench(command: &str) -> ExitCode {
         println!("  {label:<28} {:>8.1} ms {:>8.1} MB/s", seconds * 1000., megabytes / seconds);
     };
     println!(
-        "bench: `{command}`, {megabytes:.1} MB after onlcr, 80x24 grid, 10k lines of scrollback"
+        "bench: `{command}`, {megabytes:.1} MB after onlcr, {cols}x{rows} grid, {SCROLLBACK} rows of scrollback"
     );
     line("command into a pipe", produce);
-    line("vte parse into Term (memory)", parse);
-    line("pty + reader thread + Term", pipeline);
-    let same = session::screen(&term) == session::screen(&session.term.lock());
+    line("parse into rtty-vt (memory)", parse);
+    line("pty + reader thread + rtty-vt", pipeline);
+    let same = term.contents() == pane.lock().contents();
     println!("  pipeline screen matches the in-memory parse: {same}");
     if same { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }

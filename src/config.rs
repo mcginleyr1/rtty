@@ -21,7 +21,7 @@ pub struct Config {
 }
 
 /// The scheme for each window appearance.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Theme {
     Follow { dark: Arc<Scheme>, light: Arc<Scheme> },
     Fixed(Arc<Scheme>),

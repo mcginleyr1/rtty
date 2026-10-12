@@ -3,15 +3,14 @@ name = "rtty"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "A GPU terminal emulator on GPUI and alacritty_terminal"
+description = "A GPU terminal emulator on GPUI and rtty-vt"
 
 [dependencies]
-alacritty_terminal = "=0.26.0"
 futures = "0.3"
 # runtime_shaders: compile the Metal shaders at startup, so building needs no
 # offline Metal toolchain (Xcode 26 ships it as a separate download).
 gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
-# The poller types in alacritty_terminal's pty traits, which rtty's tapped pty implements.
-polling = "3.8"
+portable-pty = "0.9"
+rtty-vt = { path = "vt" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
