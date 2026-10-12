@@ -7,8 +7,7 @@ A GPU terminal emulator in Rust: [GPUI](https://gpui.rs) (Zed's UI framework) dr
 rtty is one half of a tmux replacement. The other half is tutti, the multiplexer for AI coding
 agents: a TUI you run in any terminal, whose daemon keeps sessions alive across detaches.
 
-- **rtty** is the terminal. Like WezTerm, it has its own tabs, windows and splits (on the
-  [roadmap](#roadmap)).
+- **rtty** is the terminal. Like WezTerm, it has its own tabs, windows and splits.
 - **tutti** stays an app. Inside rtty it finds rtty and uses what rtty offers.
 - **Both run the same engine.** rtty-vt is shared by rtty, tutti's daemon and tutti's TUI, so a
   program behaves the same in either.
@@ -34,10 +33,10 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `--font NAME` | font family (default Menlo); an unknown family is an error |
 | `--size PT` | font size in points (default 14) |
 | `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`; default on |
-| `-e PROGRAM [ARGS...]` | run the program instead of the login shell; the window closes when it exits |
-| `--stats` | once a second while frames are drawn, print frames, layout and paint ms/frame |
-| `--trace FILE` | write every read from the pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, focus in and out, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
+| `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
+| `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes), clicks, drags and the wheel at window cells (to the pane under them), focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -67,9 +66,13 @@ scheme_light = "Solarized Light"  # the default
 
 Schemes are WezTerm's TOML format, so WezTerm scheme files work unchanged: `[colors]` with
 `foreground`, `background`, `ansi` (8), `brights` (8), optionally `cursor_bg`, `cursor_fg`,
-`cursor_border`, `selection_bg`, `selection_fg` and `[colors.indexed]` (index → color), and
-`[metadata] name`. Keys rtty does not draw (`tab_bar`, `scrollbar_thumb`, …) are ignored. Colors
-are `#rgb`, `#rrggbb` or `#rrggbbaa` (alpha ignored).
+`cursor_border`, `selection_bg`, `selection_fg`, `split` (the line between panes),
+`[colors.tab_bar]` (`background`, and `fg_color` and `bg_color` of `active_tab` and
+`inactive_tab`) and `[colors.indexed]` (index → color), and `[metadata] name`. What a scheme
+leaves out of the tab bar and the split line is mixed from its foreground and background: the
+active tab is the pane's own colors, the bar and the other tabs recede toward the background. Keys
+rtty does not draw (`scrollbar_thumb`, the tab bar's hover and new-tab colors, …) are ignored.
+Colors are `#rgb`, `#rrggbb` or `#rrggbbaa` (alpha ignored).
 
 rtty looks for a scheme name in this order, first match wins:
 
@@ -106,12 +109,36 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | Key | Action |
 | --- | --- |
 | `Cmd+Q` | quit |
+| `Cmd+N` | new window |
+| `Cmd+T` | new tab, after the current one |
+| `Cmd+1`–`9` | show that tab |
+| `Cmd+Shift+[` / `Cmd+Shift+]` | previous / next tab, round the ends |
+| `Cmd+D` / `Cmd+Shift+D` | split the pane right / down |
+| `Cmd+W` | close the pane; the last pane closes its tab, the last tab its window, the last window quits |
+| `Cmd+Opt+arrows` | focus the nearest pane that way |
+| `Cmd+Ctrl+arrows` | move the pane's nearest divider that way, 2 cells a press |
+| `Cmd+Shift+Enter` | zoom the pane to fill its tab, or back |
 | `Cmd+C` | copy the selection |
 | `Cmd+V` | paste (bracketed when the program asked for it) |
-| `Cmd+=` / `Cmd+-` | font size up / down |
-| mouse drag | select (double click: word, triple click: line); Shift+drag when a program takes the mouse |
-| mouse buttons | reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding) |
+| `Cmd+=` / `Cmd+-` | font size up / down, in every pane of every window |
+| mouse drag | select (double click: word, triple click: line), within the pane; Shift+drag when a program takes the mouse |
+| mouse buttons | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
+| divider drag | resize the panes on either side |
+| tab click | show that tab |
 | wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
+
+New panes, tabs and windows run the login shell in the focused pane's working directory, as its
+shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else in your home directory.
+macOS's zsh and bash send OSC 7 only from `/etc/zshrc_$TERM_PROGRAM`, which exists for
+Terminal.app alone, so have your prompt send it. A pane closes when its program exits, with the
+same cascade as `Cmd+W`.
+Focus by direction picks, among the panes beyond the focused one's edge that overlap it across,
+the nearest; then the one focused last; then the one overlapping it most, as tmux and WezTerm do.
+
+The window title is the focused pane's title, and each tab is titled by its focused pane. The tab
+bar shows while a window has more than one tab. The focused pane draws the focused cursor and the
+others a hollow one; focus reports (mode 1004) go to the pane gaining and the pane losing the
+keyboard.
 
 The terminal gets printable text (through the platform input handler, so dead keys and IME
 composition go through macOS), Enter, Backspace, Tab, Shift+Tab, Esc, the arrows,
@@ -159,11 +186,17 @@ has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1
   read the rows that changed (the engine's damage, plus the cursor's rows and rows that left the
   screen) into `render` lines, then shapes those outside the lock; unchanged rows reuse last
   frame's shaped runs (see [Ligatures](#ligatures)). A synchronized update (mode 2026) keeps the
-  last frame up until it ends, or for 150 ms. Resizing recomputes rows/cols from the cell metrics
-  and resizes the terminal and the pty. The view is also GPUI's text input handler, for committed
-  text and IME marked text.
-- `window.rs` — `TerminalWindow`, a window's panes. One shows; tabs and splits will lay out
-  several, each pane view in its own part of the window.
+  last frame up until it ends, or for 150 ms. The view is also GPUI's text input handler, for
+  committed text and IME marked text.
+- `layout.rs` — a window's tabs, each a tree of splits with ratios, in cells, with no GPUI in it
+  and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
+  gets fewer than two across a split), split and close with the cascade to tab and window, a
+  divider dragged to a cell or moved by a resize, focus by direction, zoom.
+- `window.rs` — `TerminalWindow`: one window's tabs, the tab bar and the dividers, and the Cmd
+  chords as GPUI actions. It shares the window's cells out with `layout`, and every pane's grid
+  and pty, shown or not, follow its cells on every resize. Each pane draws as a cached GPUI view,
+  so output in one pane redraws that pane alone. `focus_toward` is the one call for moving focus
+  by direction, for whatever navigates next (an editor's own splits, say).
 - `scheme.rs` and `config.rs` — color schemes and the config file.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol) and paste wrapping, unit tested.
@@ -191,6 +224,13 @@ In the window (900×600, Menlo 14, launch to exit with `/usr/bin/time`, three ru
 copies of the dense file (163 MB) drain in 1.24 s with 0.89 s of user CPU (alacritty_terminal:
 1.38 s, 1.24 s), five of `seq`'s output (74 MB) in 0.80–0.86 s (1.10–1.13 s). An idle window
 over a quiet program uses 0.13 s of CPU in 20 s once started, as before.
+
+Splits (40×121 cells, timed by `/usr/bin/time -p` in the pane, three runs each): the five dense
+copies drain in 0.95–1.07 s in a lone pane and 0.94–1.00 s in one pane of a 2×2 split while the
+other three sit at a prompt. Idle, the window costs the same with eight panes as with one: 0.14 s
+of CPU per 30 s (comparing 10 s and 40 s idle runs, startup excluded), about 5 ms a second. With
+one pane of four redrawing a line, `--stats` prints one line a second: the idle panes draw
+nothing.
 
 Drawing (`--stats`): a frame re-reads and reshapes only the rows the engine reports changed,
 plus the cursor's. A steady one-line redraw costs ~0.06–0.09 ms layout + 0.2 ms paint per frame;
@@ -226,14 +266,17 @@ font's `calt`, `liga` and `dlig` features.
 
 ## Status
 
-Works: one window running a shell or `-e` program with colors, attributes, wide chars,
-ligatures, every underline style (single, double, curly, dotted, dashed; SGR 4:0–4:5) in its own
-color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline, selection and copy/paste,
-scrollback, resize with reflow, mouse reports, window title from OSC 0/2, OSC 52 copy,
-synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated
-and deactivated and as the pane gains and loses the keyboard), the keyboard protocols above, a
-config file, and WezTerm-format color schemes that follow the macOS appearance live (with DEC
-mode 2031 reports).
+Works: windows, tabs and splits (above), each pane running a shell or `-e` program with colors,
+attributes, wide chars, ligatures, every underline style (single, double, curly, dotted, dashed;
+SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline,
+selection and copy/paste, scrollback, resize with reflow, mouse reports, window and tab titles
+from OSC 0/2, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
+the window is activated and deactivated and as the pane gains and loses the keyboard), the
+keyboard protocols above, a config file, and WezTerm-format color schemes that follow the macOS
+appearance live in every pane (with DEC mode 2031 reports). Checked with `--script` against
+Neovim in two side-by-side panes (each redraws at its own size through divider moves and window
+resizes; clicks reach the pane under them at its own cells; a light/dark flip reaches both) and
+Emacs `-nw` in a stacked split.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
@@ -242,8 +285,8 @@ it stops blinking and stays on after 10 s without a key, so an idle window draws
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback and an emoji may overhang its two cells; no bell, URL detection, tabs or
-splits; macOS only.
+CoreText's font fallback and an emoji may overhang its two cells; no bell or URL detection; a
+selection drag stops at its pane's edge rather than scrolling; macOS only.
 
 ## The GPUI pin
 
@@ -260,13 +303,8 @@ GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap
 
-1. **Tabs, windows and splits.** Each pane has its own pty and engine. Cmd chords drive them, so
-   every Ctrl key stays with the programs:
-   - `Cmd+T` new tab, `Cmd+N` new window, `Cmd+1`–`9` pick a tab;
-   - `Cmd+D` split right, `Cmd+Shift+D` split down, `Cmd+W` close the pane;
-   - `Cmd+Opt+arrows` move between panes.
-2. **Editor-aware navigation.** One set of keys moves across Neovim windows, Emacs windows and
+1. **Editor-aware navigation.** One set of keys moves across Neovim windows, Emacs windows and
    rtty panes alike, as tutti's editor plugins already do inside tutti.
-3. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
+2. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
    keyboard protocol, live light/dark (mode 2031), notifications, OSC 52 and hyperlinks, and
    undercurl and cursor shapes passed through to its panes.
