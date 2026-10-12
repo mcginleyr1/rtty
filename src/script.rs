@@ -1,7 +1,8 @@
 //! `--script FILE`: drives the real window as a person would, to check rtty against real programs
 //! with nobody at the keyboard and no screenshots. Keys go through GPUI's own keystroke dispatch
-//! (key bindings, the key encoder, the text input handler), mouse events through its hit testing,
-//! and `dump` writes what the next frame draws. One step per line; `#` starts a comment.
+//! (key bindings, the key encoder, the text input handler), mouse events to the pane's handlers,
+//! focus through GPUI's focus, and `dump` writes what the next frame draws. One step per line;
+//! `#` starts a comment.
 //!
 //! ```text
 //! wait TEXT              until the screen shows TEXT (10 s at most)
@@ -12,6 +13,7 @@
 //! drag ROW COL ROW COL   with the left button
 //! move ROW COL           with no button
 //! wheel ROW COL LINES    positive scrolls up
+//! focus in|out           the keyboard comes to the pane or leaves the window's elements
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells
 //! dump FILE
@@ -39,6 +41,7 @@ pub enum Step {
     Drag { from: (u16, u16), to: (u16, u16) },
     Move { row: u16, col: u16 },
     Wheel { row: u16, col: u16, lines: f32 },
+    Focus(bool),
     Appearance(WindowAppearance),
     Resize { rows: u16, cols: u16 },
     Dump(PathBuf),
@@ -107,6 +110,11 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 let lines = lines.ok_or_else(|| error("a number of lines expected"))?;
                 Step::Wheel { row: cell[0], col: cell[1], lines }
             }
+            "focus" => match rest.trim() {
+                "in" => Step::Focus(true),
+                "out" => Step::Focus(false),
+                _ => return Err(error("in or out expected")),
+            },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
                 "light" => Step::Appearance(WindowAppearance::Light),
@@ -240,6 +248,12 @@ async fn perform(
                 touch_phase: TouchPhase::Moved,
             };
             dispatch(Mouse::Wheel(wheel), cx)?;
+        }
+        Step::Focus(true) => pane
+            .update_in(cx, |pane, window, _| pane.focus(window))
+            .map_err(|err| err.to_string())?,
+        Step::Focus(false) => {
+            cx.update(|window, _| window.blur()).map_err(|err| err.to_string())?
         }
         Step::Appearance(appearance) => {
             pane.update(cx, |pane, cx| pane.follow_appearance(*appearance, cx))

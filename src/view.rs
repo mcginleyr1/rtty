@@ -62,6 +62,8 @@ pub struct PaneView {
     scroll_remainder: Pixels,
     /// The cell the last mouse report named.
     mouse_cell: Option<(u16, u16)>,
+    /// The pane has the keyboard in the active window, as last reported to the program.
+    focused: bool,
     /// When the synchronized update now holding the screen began.
     sync_since: Option<Instant>,
     /// When the cursor began blinking, counted again from each key.
@@ -153,7 +155,9 @@ impl PaneView {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
-        cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, Self::focus_changed).detach();
+        cx.on_focus(&focus, window, Self::focus_changed).detach();
+        cx.on_blur(&focus, window, Self::focus_changed).detach();
         cx.observe_window_appearance(window, |view, window, cx| {
             view.follow_appearance(window.appearance(), cx)
         })
@@ -188,11 +192,29 @@ impl PaneView {
             marked_text: None,
             scroll_remainder: px(0.),
             mouse_cell: None,
+            focused: window.is_window_active(),
             sync_since: None,
             blink_since: None,
             blink_wake: None,
             stats: settings.stats.then(FrameStats::default),
         }
+    }
+
+    /// The keyboard came to or left this pane, or the window was activated or deactivated: draw
+    /// the cursor accordingly and tell a program that asked (mode 1004) with `CSI I` / `CSI O`.
+    fn focus_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.focus.is_focused(window) && window.is_window_active();
+        if mem::replace(&mut self.focused, focused) != focused
+            && self.pane.lock().modes().focus_reports
+        {
+            self.pane.write(if focused { b"\x1b[I" } else { b"\x1b[O" }.to_vec());
+        }
+        cx.notify();
+    }
+
+    /// Gives this pane the keyboard.
+    pub fn focus(&self, window: &mut Window) {
+        window.focus(&self.focus);
     }
 
     /// The OS switched between light and dark: repaint with the other scheme (cells keep color

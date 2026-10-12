@@ -30,7 +30,7 @@ cargo run --release -- --stats          # print frame timings to stderr while dr
 | `-e PROGRAM [ARGS...]` | run the program instead of the login shell; the window closes when it exits |
 | `--stats` | once a second while frames are drawn, print frames, layout and paint ms/frame |
 | `--trace FILE` | write every read from the pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs` |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch), clicks, drags and the wheel, focus in and out, an appearance flip, a resize, and `dump`, which writes what the next frame draws (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs` |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 
@@ -196,8 +196,10 @@ font's `calt`, `liga` and `dlig` features.
 Works: one window running a shell or `-e` program with colors, attributes, wide chars,
 ligatures, every underline style (single, double, curly, dotted, dashed; SGR 4:0–4:5) in its own
 color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline, selection and copy/paste, scrollback, resize with reflow, mouse reports, window title
-from OSC 0/2, OSC 52 copy, synchronized updates, a config file, and WezTerm-format color schemes
-that follow the macOS appearance live (with DEC mode 2031 reports).
+from OSC 0/2, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
+the window is activated and deactivated and as the pane gains and loses the keyboard), a config
+file, and WezTerm-format color schemes that follow the macOS appearance live (with DEC mode 2031
+reports).
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
