@@ -1,10 +1,17 @@
 # rtty
 
 A GPU terminal emulator in Rust: [GPUI](https://gpui.rs) (Zed's UI framework) draws it,
-[rtty-vt](vt/README.md), the terminal engine in `vt/` that tutti shares, holds the terminal
-state, and [portable-pty](https://crates.io/crates/portable-pty) opens the pty. rtty is on its
-way to being a native GUI front end for tutti, the tmux-for-AI-agents daemon; today it is one
-window, one terminal, a local pty.
+[rtty-vt](vt/README.md), our own terminal engine in `vt/`, holds the terminal state, and
+[portable-pty](https://crates.io/crates/portable-pty) opens the pty.
+
+rtty is one half of a tmux replacement. The other half is tutti, the multiplexer for AI coding
+agents: a TUI you run in any terminal, whose daemon keeps sessions alive across detaches.
+
+- **rtty** is the terminal. Like WezTerm, it has its own tabs, windows and splits (on the
+  [roadmap](#roadmap)).
+- **tutti** stays an app. Inside rtty it finds rtty and uses what rtty offers.
+- **Both run the same engine.** rtty-vt is shared by rtty, tutti's daemon and tutti's TUI, so a
+  program behaves the same in either.
 
 ## Build and run
 
@@ -252,11 +259,13 @@ GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap
 
-1. **Attach to tutti.** Replace the local pty with a raw single-pane stream from tutti-server
-   (being built now): the stream's bytes feed the same `Terminal` the pty reader feeds today, and
-   key bytes go back over the socket instead of into the pty. `Pane` is the seam. tutti-server
-   answers DA1/DA2/DSR/CPR itself and strips those queries from the raw stream, so rtty must not
-   answer them on an attached pane (today the engine's replies go straight back into the pty).
-2. **Sidebar and agent panels** as GPUI views beside the terminal: tutti's project/agent tree with
-   state dots, the waiting queue, the changed-files panel.
-3. **Layout on Cmd chords** (split, focus, zoom, tabs) so every Ctrl key stays with the panes.
+1. **Tabs, windows and splits.** Each pane has its own pty and engine. Cmd chords drive them, so
+   every Ctrl key stays with the programs:
+   - `Cmd+T` new tab, `Cmd+N` new window, `Cmd+1`–`9` pick a tab;
+   - `Cmd+D` split right, `Cmd+Shift+D` split down, `Cmd+W` close the pane;
+   - `Cmd+Opt+arrows` move between panes.
+2. **Editor-aware navigation.** One set of keys moves across Neovim windows, Emacs windows and
+   rtty panes alike, as tutti's editor plugins already do inside tutti.
+3. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
+   keyboard protocol, live light/dark (mode 2031), notifications, OSC 52 and hyperlinks, and
+   undercurl and cursor shapes passed through to its panes.

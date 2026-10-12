@@ -4426,6 +4426,7 @@ dependencies = [
 name = "rtty-vt"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "unicode-segmentation",
  "unicode-width",
  "vte",
