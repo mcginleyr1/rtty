@@ -70,7 +70,10 @@ pub struct Style {
     pub bold: bool,
     pub italic: bool,
     pub underline: Underline,
+    /// SGR 58's color, else the text's.
+    pub underline_color: Rgb,
     pub strike: bool,
+    pub overline: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,7 +209,9 @@ impl<'a> Scene<'a> {
                 bold: attrs.contains(Attrs::BOLD),
                 italic: attrs.contains(Attrs::ITALIC),
                 underline: attrs.underline(),
+                underline_color: self.resolve(row.underline_color(usize::from(col)), fg),
                 strike: attrs.contains(Attrs::STRIKE),
+                overline: attrs.contains(Attrs::OVERLINE),
             };
             text.clear();
             row.push_grapheme(usize::from(col), &mut text);
@@ -244,7 +249,7 @@ impl<'a> Scene<'a> {
 impl Style {
     /// Draws something even over blanks.
     fn decorated(&self) -> bool {
-        self.underline != Underline::None || self.strike
+        self.underline != Underline::None || self.strike || self.overline
     }
 }
 
@@ -426,5 +431,31 @@ mod tests {
         let runs: Vec<_> = lines[0].runs.iter().map(|run| (run.col, run.style.underline)).collect();
         assert_eq!(runs, [(0, Underline::Curly), (5, Underline::None)]);
         assert!(lines[0].runs[1].style.strike);
+    }
+
+    #[test]
+    fn every_underline_style_and_its_color() {
+        let mut term = term(b"");
+        // nvim's diagnostics: undercurl in an RGB underline color (colon form), as it sends them.
+        term.advance(b"\x1b[0;4:3m\x1b[58:2::255:192:185mA\x1b[4:2;58;5;1mB");
+        term.advance(b"\x1b[4:4;59mC\x1b[4:5;31mD\x1b[4mE\x1b[24;53mF\x1b[0m");
+        let (lines, _) = draw(&term);
+        let runs: Vec<_> = lines[0]
+            .runs
+            .iter()
+            .map(|run| (run.text.as_str(), run.style.underline, run.style.underline_color))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("A", Underline::Curly, rgb(0xffc0b9)),
+                ("B", Underline::Double, rgb(RED)),
+                ("C", Underline::Dotted, rgb(FG)),
+                ("D", Underline::Dashed, rgb(RED)),
+                ("E", Underline::Single, rgb(RED)),
+                ("F", Underline::None, rgb(RED)),
+            ]
+        );
+        assert!(lines[0].runs[5].style.overline && !lines[0].runs[4].style.overline);
     }
 }

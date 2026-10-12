@@ -194,7 +194,8 @@ font's `calt`, `liga` and `dlig` features.
 ## Status
 
 Works: one window running a shell or `-e` program with colors, attributes, wide chars,
-ligatures, selection and copy/paste, scrollback, resize with reflow, mouse reports, window title
+ligatures, every underline style (single, double, curly, dotted, dashed; SGR 4:0–4:5) in its own
+color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline, selection and copy/paste, scrollback, resize with reflow, mouse reports, window title
 from OSC 0/2, OSC 52 copy, synchronized updates, a config file, and WezTerm-format color schemes
 that follow the macOS appearance live (with DEC mode 2031 reports).
 

@@ -14,9 +14,9 @@ use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent,
-    ShapedGlyph, ShapedLine, ShapedRun, Size, StrikethroughStyle, Task, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
-    outline, point, prelude::*, px, size,
+    ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection, UnderlineStyle,
+    Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill, outline, point,
+    prelude::*, px, size,
 };
 use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 
@@ -125,6 +125,8 @@ struct Frame {
     /// From a cell's top: where underlines and strikethroughs go.
     underline: Pixels,
     strike: Pixels,
+    /// Of every decoration line.
+    thickness: Pixels,
     background: Hsla,
     rows: Vec<(u16, Rc<ShapedRow>)>,
     cursor: Option<PaintQuad>,
@@ -370,7 +372,11 @@ impl PaneView {
                     }
                 }
                 if style.underline != Underline::None {
-                    let _ = write!(out, " underline {:?}", style.underline);
+                    let color = hex(style.underline_color);
+                    let _ = write!(out, " underline {:?} {color}", style.underline);
+                }
+                if style.overline {
+                    let _ = write!(out, " overline");
                 }
                 let _ = writeln!(out);
             }
@@ -664,6 +670,7 @@ impl PaneView {
             cell,
             underline: baseline + descent * 0.618,
             strike: (ascent * 0.5 + baseline) * 0.5,
+            thickness: px((f32::from(self.font_size) / 14.).round().max(1.)),
             background: hsla(scene.bg),
             rows: (0..rows)
                 .filter_map(|row| Some((row, cache.rows.get(&(top + u64::from(row)))?.clone())))
@@ -708,17 +715,7 @@ impl PaneView {
                 if let Err(err) = line.paint(origin, cell.height, window, cx) {
                     eprintln!("rtty: painting {:?} failed: {err}", line.text);
                 }
-                let width = cell.width * f32::from(run.cells);
-                let color = Some(hsla(run.style.fg));
-                if run.style.underline != Underline::None {
-                    let wavy = run.style.underline == Underline::Curly;
-                    let style = UnderlineStyle { color, thickness: px(1.), wavy };
-                    window.paint_underline(origin + point(px(0.), frame.underline), width, &style);
-                }
-                if run.style.strike {
-                    let style = StrikethroughStyle { color, thickness: px(1.) };
-                    window.paint_strikethrough(origin + point(px(0.), frame.strike), width, &style);
-                }
+                decorate(run, origin, &frame, window);
             }
         }
         if let Some(cursor) = frame.cursor {
@@ -731,6 +728,57 @@ impl PaneView {
         if let Some(stats) = self.stats.as_mut() {
             stats.record(frame.layout_time, started.elapsed());
         }
+    }
+}
+
+/// The run's underline in its style and color, its strikethrough and its overline, across all of
+/// its cells.
+fn decorate(run: &Run, origin: Point<Pixels>, frame: &Frame, window: &mut Window) {
+    let (cell, thick) = (frame.cell, frame.thickness);
+    let width = cell.width * f32::from(run.cells);
+    let line = |window: &mut Window, y: Pixels, color: Rgb| {
+        window.paint_quad(fill(
+            Bounds::new(origin + point(px(0.), y), size(width, thick)),
+            hsla(color),
+        ))
+    };
+    let underline = run.style.underline_color;
+    let y = frame.underline;
+    match run.style.underline {
+        Underline::None => {}
+        Underline::Single => line(window, y, underline),
+        Underline::Double => {
+            line(window, y - thick, underline);
+            line(window, y + thick, underline);
+        }
+        Underline::Curly => {
+            let style =
+                UnderlineStyle { color: Some(hsla(underline)), thickness: thick, wavy: true };
+            window.paint_underline(origin + point(px(0.), y - thick), width, &style);
+        }
+        Underline::Dotted => {
+            let dots = (width / (thick * 2.)) as usize;
+            for dot in 0..dots {
+                let at = origin + point(thick * 2. * dot as f32, y);
+                window.paint_quad(fill(Bounds::new(at, size(thick, thick)), hsla(underline)));
+            }
+        }
+        // Half a cell of dash in the middle of each cell.
+        Underline::Dashed => {
+            for col in 0..run.cells {
+                let at = origin + point(cell.width * (f32::from(col) + 0.25), y);
+                window.paint_quad(fill(
+                    Bounds::new(at, size(cell.width / 2., thick)),
+                    hsla(underline),
+                ));
+            }
+        }
+    }
+    if run.style.strike {
+        line(window, frame.strike, run.style.fg);
+    }
+    if run.style.overline {
+        line(window, px(0.), run.style.fg);
     }
 }
 
