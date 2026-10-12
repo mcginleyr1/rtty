@@ -63,6 +63,7 @@ scheme_dark = "OneDark Pro"       # the default
 scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
 keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
+bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
 ```
 
 ## Color schemes
@@ -124,6 +125,9 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | `Cmd+Shift+Enter` | zoom the pane to fill its tab, or back |
 | `Cmd+C` | copy the selection |
 | `Cmd+V` | paste (bracketed when the program asked for it) |
+| `Cmd+F` | search the pane's scrollback and screen (below) |
+| `Cmd+Up` / `Cmd+Down` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
+| `Cmd` over a link, `Cmd+click` | underline the link under the pointer; open it (below) |
 | `Cmd+=` / `Cmd+-` | font size up / down, in every pane of every window |
 | mouse drag | select (double click: word, triple click: line), within the pane; Shift+drag when a program takes the mouse |
 | mouse buttons | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
@@ -149,6 +153,38 @@ The window title is the focused pane's title, and each tab is titled by its focu
 bar shows while a window has more than one tab. The focused pane draws the focused cursor and the
 others a hollow one; focus reports (mode 1004) go to the pane gaining and the pane losing the
 keyboard.
+
+**Search.** `Cmd+F` opens a bar at the pane's top right, which takes the keyboard until `Esc`. The
+query searches every row the pane holds, scrollback and screen, as lines: a match runs on across a
+soft wrap. A query without a capital ignores case (smart-case); `Ctrl+R` switches between text
+and a regex. Matches show on the scheme's yellow and the current one on its cursor color; `Enter`
+and `Shift+Enter` go to the next and previous match, round the ends, scrolling the view to it.
+Matches stay on their text while output scrolls it up, and output arriving with the bar open is
+searched again.
+
+**Links.** A link is an OSC 8 hyperlink, or a plain `http`, `https` or `file` URL in the text
+(trailing punctuation left out). Holding `Cmd` underlines the one under the pointer and `Cmd+click`
+opens it with the system's handler. Only `http`, `https`, `file` and `mailto` open; any other
+scheme a program writes is ignored, and nothing opens without the click.
+
+**Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
+window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC
+99 notifications become macOS notifications, except from the pane that has the keyboard in the key
+window; clicking one brings rtty forward at its pane. macOS posts notifications only for an app
+with a bundle identifier: unbundled (`cargo run`), `UNUserNotificationCenter` aborts the process
+and the old `NSUserNotificationCenter` drops what it is given, so rtty posts nothing and says so
+once on stderr. The least that works is a minimal, ad-hoc signed `.app`:
+
+```sh
+cargo build --release
+mkdir -p target/rtty.app/Contents/MacOS
+cp target/release/rtty target/rtty.app/Contents/MacOS/
+cp bundle/Info.plist target/rtty.app/Contents/
+codesign --force --sign - target/rtty.app
+open target/rtty.app    # or run target/rtty.app/Contents/MacOS/rtty with arguments
+```
+
+The bundle's first notification asks for permission (System Settings › Notifications › rtty).
 
 The terminal gets printable text (through the platform input handler, so dead keys and IME
 composition go through macOS), Enter, Backspace, Tab, Shift+Tab, Esc, the arrows,
@@ -227,6 +263,10 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
   `Terminal::text`.
 - `mouse.rs` — mouse reports in every encoding, unit tested.
+- `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
+  (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
+  line) with the schemes a click may open; both unit tested, and neither opens anything.
+- `notify.rs` — the dock's attention and macOS notifications, which need an app bundle.
 - `view.rs` — `PaneView`, the GPUI view of one pane. A foreground task drains the pane's channel
   in batches: `Output` marks the view dirty, so however many arrive between two display
   refreshes, GPUI draws one frame (that is the coalescing). Each frame locks the terminal only to
@@ -322,7 +362,8 @@ SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in th
 selection and copy/paste, scrollback, resize with reflow, mouse reports, window and tab titles
 from OSC 0/2, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
 the window is activated and deactivated and as the pane gains and loses the keyboard), the
-keyboard protocols above, a config file, and WezTerm-format color schemes that follow the macOS
+keyboard protocols above, scrollback search, prompt jumps, links, the bell, notifications (from
+an app bundle), a config file, and WezTerm-format color schemes that follow the macOS
 appearance live in every pane (with DEC mode 2031 reports). Checked with `--script` against
 Neovim in two side-by-side panes (each redraws at its own size through divider moves and window
 resizes; clicks reach the pane under them at its own cells; a light/dark flip reaches both) and
@@ -336,8 +377,9 @@ it stops blinking and stays on after 10 s without a key, so an idle window draws
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback and an emoji may overhang its two cells; no bell or URL detection; a
-selection drag stops at its pane's edge rather than scrolling; macOS only.
+CoreText's font fallback and an emoji may overhang its two cells; notifications need the `.app`
+above, and posting from it and clicking one are not yet checked on screen; a selection drag stops
+at its pane's edge rather than scrolling; macOS only.
 
 ## The GPUI pin
 
