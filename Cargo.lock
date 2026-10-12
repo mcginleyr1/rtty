@@ -4428,6 +4428,7 @@ dependencies = [
  "gpui",
  "libc",
  "portable-pty",
+ "regex",
  "rtty-vt",
  "serde",
  "serde_json",

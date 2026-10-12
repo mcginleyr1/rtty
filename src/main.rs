@@ -8,6 +8,7 @@ mod pane;
 mod render;
 mod scheme;
 mod script;
+mod search;
 mod selection;
 mod view;
 mod window;
@@ -26,7 +27,7 @@ use control::Response;
 use futures::StreamExt;
 use layout::Direction;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
-use view::{Copy, Paste, Settings};
+use view::{Copy, Find, Paste, Settings};
 use window::{
     ClosePane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, ToggleZoom,
@@ -179,6 +180,7 @@ fn run(options: Options) -> Result<(), String> {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-c", Copy, Some("Terminal")),
             KeyBinding::new("cmd-v", Paste, Some("Terminal")),
+            KeyBinding::new("cmd-f", Find, Some("Terminal")),
             KeyBinding::new("cmd-=", IncreaseFontSize, None),
             KeyBinding::new("cmd--", DecreaseFontSize, None),
             KeyBinding::new("cmd-n", NewWindow, None),

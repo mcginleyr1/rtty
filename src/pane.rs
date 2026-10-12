@@ -225,6 +225,19 @@ impl Pane {
         self.scrolled = (top < term.screen_top()).then_some(top);
     }
 
+    /// Scrolls the view, `rows` tall, so absolute row `row` shows: left alone when it does, else
+    /// with the row a third of the way down.
+    pub fn reveal(&mut self, row: u64, rows: u16) {
+        let term = self.lock();
+        let (top, screen_top) = (self.top(&term), term.screen_top());
+        if (top..top + u64::from(rows)).contains(&row) {
+            return;
+        }
+        let top = row.saturating_sub(u64::from(rows / 3)).clamp(term.oldest_row(), screen_top);
+        drop(term);
+        self.scrolled = (top < screen_top).then_some(top);
+    }
+
     /// The working directory of the process in the pty's foreground: its process group's leader,
     /// the shell at a prompt, else the program the shell runs.
     pub fn foreground_cwd(&self) -> Option<PathBuf> {

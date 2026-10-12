@@ -8,6 +8,7 @@ use rtty_vt::{Attrs, BACKGROUND, CURSOR, Color, CursorShape as Shape, FOREGROUND
 use rtty_vt::{Terminal, Underline};
 
 use crate::scheme::{self, SLOTS, Scheme};
+use crate::search::Match;
 use crate::selection::Point;
 
 /// The colors a frame resolves cells with: a program's own (OSC 4/10/11/12) over the scheme's.
@@ -19,15 +20,23 @@ pub struct Palette {
     /// The outline of the cursor while the pane is not focused.
     pub cursor_border: Rgb,
     pub selection: Option<(Rgb, Rgb)>,
+    /// Foreground and background of a search match (the background on yellow), and of the
+    /// current one (the background on the cursor's color).
+    pub matched: (Rgb, Rgb),
+    pub current_match: (Rgb, Rgb),
 }
 
 impl Palette {
     pub fn new(term: &Terminal, scheme: &Scheme) -> Palette {
+        let colors: [Rgb; SLOTS] =
+            std::array::from_fn(|i| term.color_override(i).unwrap_or(scheme.color(i)));
         Palette {
-            colors: std::array::from_fn(|i| term.color_override(i).unwrap_or(scheme.color(i))),
             cursor_text: scheme.cursor_fg,
             cursor_border: term.color_override(CURSOR).unwrap_or(scheme.cursor_border),
             selection: scheme.selection,
+            matched: (colors[BACKGROUND], colors[3]),
+            current_match: (colors[BACKGROUND], colors[CURSOR]),
+            colors,
         }
     }
 
@@ -104,6 +113,9 @@ pub struct Scene<'a> {
     pub bg: Rgb,
     pub selection: Option<(Point, Point)>,
     pub cursor: Option<Cursor>,
+    /// Search matches in view, and the current one.
+    pub matches: Vec<Match>,
+    pub current_match: Option<Match>,
 }
 
 impl<'a> Scene<'a> {
@@ -141,7 +153,7 @@ impl<'a> Scene<'a> {
             shape,
             color,
         });
-        Scene { palette, fg, bg, selection, cursor }
+        Scene { palette, fg, bg, selection, cursor, matches: Vec::new(), current_match: None }
     }
 
     fn resolve(&self, color: Color, default: Rgb) -> Rgb {
@@ -154,6 +166,15 @@ impl<'a> Scene<'a> {
 
     fn selected(&self, point: Point) -> bool {
         self.selection.is_some_and(|(start, end)| (start..=end).contains(&point))
+    }
+
+    /// The colors of the search match covering `point`, if one does.
+    fn highlight(&self, point: Point) -> Option<(Rgb, Rgb)> {
+        let covers = |&(start, end): &Match| (start..=end).contains(&point);
+        if self.current_match.as_ref().is_some_and(covers) {
+            return Some(self.palette.current_match);
+        }
+        self.matches.iter().any(covers).then_some(self.palette.matched)
     }
 
     /// Row `index` as drawn.
@@ -182,6 +203,9 @@ impl<'a> Scene<'a> {
             }
             // A wide character's right half is selected with its left.
             let owner = if cell.is_spacer() { col.saturating_sub(1) } else { col };
+            if let Some(colors) = self.highlight((index, col)) {
+                (fg, bg) = colors;
+            }
             if self.selected((index, owner)) {
                 (fg, bg) = self.palette.selection.unwrap_or((bg, fg));
             }
@@ -377,6 +401,32 @@ mod tests {
         assert_eq!(texts(&lines[0]), [(0, "a"), (1, "b"), (2, "日"), (4, "cd")]);
         assert_eq!(lines[0].runs[1].style.bg, rgb(MAGENTA));
         assert_eq!(lines[0].backgrounds, [Background { col: 1, cells: 3, color: rgb(MAGENTA) }]);
+    }
+
+    #[test]
+    fn search_matches_take_yellow_the_current_one_the_cursor_color_under_a_selection() {
+        let term = term("ab日cd ab\x1b[?25l".as_bytes());
+        let palette = Palette::new(&term, &onedark());
+        let mut scene = Scene::new(&term, &palette, 0, 3, Some(((0, 8), (0, 8))), true);
+        // "日c" (cells 2–4) is the current match; "ab" at 7–8 another, its "b" also selected.
+        scene.current_match = Some(((0, 2), (0, 4)));
+        scene.matches = vec![((0, 2), (0, 4)), ((0, 7), (0, 8))];
+        let line = scene.line(term.row(0).unwrap(), 0);
+        let (yellow, purple, bg) = (rgb(0xe5c07b), rgb(MAGENTA), rgb(0x282c34));
+        assert_eq!(
+            line.backgrounds,
+            [
+                Background { col: 2, cells: 3, color: purple },
+                Background { col: 7, cells: 1, color: yellow },
+                Background { col: 8, cells: 1, color: palette.selection.unwrap().1 },
+            ]
+        );
+        let run = |col| line.runs.iter().find(|run| run.col == col).unwrap().style;
+        assert_eq!((run(2).fg, run(2).bg), (bg, purple));
+        assert_eq!((run(4).fg, run(4).bg), (bg, purple));
+        assert_eq!((run(7).fg, run(7).bg), (bg, yellow));
+        // The selection's own colors win where the two meet.
+        assert_eq!(run(8).fg, palette.selection.unwrap().0);
     }
 
     #[test]

@@ -19,7 +19,9 @@ use gpui::{
     UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
     div, fill, outline, point, prelude::*, px, size,
 };
-use rtty_vt::{Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline};
+use rtty_vt::{
+    BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
+};
 
 use crate::config::Theme;
 use crate::keys;
@@ -27,13 +29,17 @@ use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
+use crate::search::{self, Match, Query};
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::window::{MoveFocus, ResizePane};
 
-actions!(rtty, [Copy, Paste]);
+actions!(rtty, [Copy, Paste, Find]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// While output arrives, an open search looks again at most this often.
+const SEARCH_REFRESH: Duration = Duration::from_millis(100);
 
 /// A blinking cursor is on for this long, then off for as long; it holds still once the
 /// keyboard has been idle for `BLINK_FOR`, so an idle window draws nothing.
@@ -84,7 +90,22 @@ pub struct PaneView {
     blink_since: Option<Instant>,
     /// The frame that shows the blinking cursor's next phase.
     blink_wake: Option<Task<()>>,
+    /// Cmd+F's search, while its bar is open.
+    search: Option<Search>,
     stats: Option<FrameStats>,
+}
+
+/// A search of the pane's scrollback and screen: the query, its matches top to bottom, and the
+/// one shown.
+#[derive(Default)]
+struct Search {
+    query: Query,
+    matches: Vec<Match>,
+    current: Option<usize>,
+    /// Why the query is no regex.
+    error: Option<String>,
+    /// The look again that output asked for, a moment after it.
+    refresh: Option<Task<()>>,
 }
 
 /// What a pane tells the window that holds it.
@@ -132,6 +153,7 @@ struct CacheKey {
     palette: Palette,
     colors: (Rgb, Rgb),
     selection: Option<(GridPoint, GridPoint)>,
+    matches: (Vec<Match>, Option<Match>),
     focused: bool,
     size: (u16, u16),
     font_size: Pixels,
@@ -213,6 +235,7 @@ impl PaneView {
             sync_since: None,
             blink_since: None,
             blink_wake: None,
+            search: None,
             stats,
         }
     }
@@ -240,7 +263,110 @@ impl PaneView {
         let grid = (rows, cols, (f32::from(cell.width) as u16, f32::from(cell.height) as u16));
         if mem::replace(&mut self.grid, grid) != grid {
             self.pane.resize(rows, cols, grid.2);
+            // Reflow renumbers the rows matches were found on.
+            self.research(false);
         }
+    }
+
+    /// Cmd+F: opens the search bar, which takes the keyboard until Esc.
+    fn find(&mut self, _: &Find, _: &mut Window, cx: &mut Context<Self>) {
+        self.search.get_or_insert_with(Search::default);
+        cx.notify();
+    }
+
+    /// Looks for the query again. After an edit the current match is the last one starting above
+    /// the view's bottom, and shows; otherwise it stays on the same text wherever output moved it,
+    /// and the view stays put.
+    fn research(&mut self, edited: bool) {
+        let Some(search) = self.search.as_mut() else { return };
+        let term = self.pane.lock();
+        let (matches, error) = match search.query.pattern() {
+            None => (Vec::new(), None),
+            Some(Ok(pattern)) => (search::find(&term, &pattern), None),
+            Some(Err(err)) => (Vec::new(), Some(err)),
+        };
+        let bottom = self.pane.top(&term) + u64::from(self.grid.0);
+        drop(term);
+        let previous = search.current.and_then(|index| search.matches.get(index).copied());
+        let last = matches.len().checked_sub(1);
+        search.current = match previous {
+            _ if edited => matches.iter().rposition(|&((row, _), _)| row < bottom).or(last),
+            Some(old) => last.map(|last| matches.partition_point(|found| *found < old).min(last)),
+            None => last,
+        };
+        (search.matches, search.error) = (matches, error);
+        if edited {
+            self.reveal_match();
+        }
+    }
+
+    /// Scrolls the view to the current match.
+    fn reveal_match(&mut self) {
+        let current = self.search.as_ref().and_then(|search| search.matches.get(search.current?));
+        if let Some(&((row, _), _)) = current {
+            self.pane.reveal(row, self.grid.0);
+        }
+    }
+
+    /// A key while the search bar is open is the bar's, never the program's: Esc closes it, Enter
+    /// and Shift+Enter go to the next match down or up (round the ends), Backspace takes a
+    /// character back, Ctrl+R switches between text and regex. Text goes on to the input
+    /// handler, which types it into the query (`replace_text_in_range`).
+    fn search_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        let mods = keystroke.modifiers;
+        let Some(search) = self.search.as_mut() else { return };
+        match keystroke.key.as_str() {
+            "escape" => self.search = None,
+            "enter" => {
+                let count = search.matches.len();
+                if count > 0 {
+                    let step = if mods.shift { count - 1 } else { 1 };
+                    search.current = Some(search.current.map_or(0, |index| (index + step) % count));
+                    self.reveal_match();
+                }
+            }
+            "backspace" => {
+                search.query.text.pop();
+                self.research(true);
+            }
+            "r" if mods.control => {
+                search.query.regex = !search.query.regex;
+                self.research(true);
+            }
+            _ if keystroke.key_char.is_some() && !mods.control && !mods.alt && !mods.platform => {
+                return;
+            }
+            _ => {}
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Output arrived while the search bar is open: look again a moment later, once however
+    /// much arrives meanwhile.
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = self.search.as_mut().filter(|search| search.refresh.is_none()) else {
+            return;
+        };
+        search.refresh = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_REFRESH).await;
+            let _ = this.update(cx, |view, cx| {
+                if let Some(search) = view.search.as_mut() {
+                    search.refresh = None;
+                }
+                view.research(false);
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Puts the search's matches in view, and the current one, into `scene`.
+    fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
+        let Some(search) = &self.search else { return };
+        let bottom = top + u64::from(rows);
+        let in_view = |found: &&Match| found.1.0 >= top && found.0.0 < bottom;
+        scene.matches = search.matches.iter().filter(in_view).copied().collect();
+        scene.current_match = search.current.and_then(|index| search.matches.get(index).copied());
     }
 
     pub fn title(&self) -> String {
@@ -293,7 +419,11 @@ impl PaneView {
 
     fn notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
         match notice {
-            Notice::Output | Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
+            Notice::Output => {
+                self.refresh_search(cx);
+                cx.notify()
+            }
+            Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
             Notice::Event(Event::Title(_)) => cx.emit(PaneEvent::Title),
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
                 self.claims_keys = value == "pane"
@@ -334,6 +464,9 @@ impl PaneView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if self.search.is_some() {
+            return self.search_key(keystroke, cx);
+        }
         let kind = if event.is_held { keys::Event::Repeat } else { keys::Event::Press };
         // A held key repeats here: the input handler would open the accent picker instead.
         let bytes = keys::encode(keystroke, self.key_modes(), kind).or_else(|| {
@@ -371,6 +504,11 @@ impl PaneView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
+        if let Some(search) = self.search.as_mut() {
+            search.query.text.push_str(text.lines().next().unwrap_or_default());
+            self.research(true);
+            return cx.notify();
+        }
         let bracketed = self.pane.lock().modes().bracketed_paste;
         self.input(keys::paste(&text, bracketed), cx);
     }
@@ -413,10 +551,23 @@ impl PaneView {
         let top = self.pane.top(&term);
         let selection = self.pane.selection.and_then(|selection| selection.range(&term));
         let focused = self.focus.is_focused(window) && window.is_window_active();
-        let scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        self.highlight(&mut scene, top, rows);
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
         let mut out = String::new();
         let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
+        if let Some(search) = &self.search {
+            let current = search.current.and_then(|index| search.matches.get(index));
+            let _ = writeln!(
+                out,
+                "search {:?} regex {} matches {} current {:?} {current:?} error {:?}",
+                search.query.text,
+                search.query.regex,
+                search.matches.len(),
+                search.current,
+                search.error,
+            );
+        }
         let _ = writeln!(
             out,
             "scheme {:?} focused {focused} title {:?}",
@@ -674,6 +825,7 @@ impl PaneView {
         let top = self.pane.top(&term);
         let selection = self.pane.selection.and_then(|selection| selection.range(&term));
         let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);
+        self.highlight(&mut scene, top, rows);
         self.blink_since = (focused && render::blinks(&term))
             .then(|| self.blink_since.unwrap_or_else(Instant::now));
         let blinking = self.blinking();
@@ -694,6 +846,7 @@ impl PaneView {
             palette: palette.clone(),
             colors: (scene.fg, scene.bg),
             selection,
+            matches: (scene.matches.clone(), scene.current_match),
             focused,
             size: (rows, cols),
             font_size,
@@ -1058,11 +1211,13 @@ impl Render for PaneView {
         let layout_view = cx.entity();
         let paint_view = cx.entity();
         div()
+            .relative()
             .size_full()
             .track_focus(&self.focus)
             .key_context("Terminal")
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::find))
             .on_action(cx.listener(|view, action: &MoveFocus, _, cx| {
                 view.claimed_chord(&action.keystroke, cx)
             }))
@@ -1093,6 +1248,36 @@ impl Render for PaneView {
                 )
                 .size_full(),
             )
+            .children(self.search_bar(cx))
+    }
+}
+
+impl PaneView {
+    /// The open search's bar, top right, in the scheme's colors inverted: the query, where the
+    /// current match is among them, and whether the query is a regex.
+    fn search_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let search = self.search.as_ref()?;
+        let status = match (&search.error, search.current) {
+            (Some(_), _) => "not a regex".to_string(),
+            (None, Some(index)) => format!("{} of {}", index + 1, search.matches.len()),
+            (None, None) if search.query.text.is_empty() => String::new(),
+            (None, None) => "no matches".to_string(),
+        };
+        let mode = if search.query.regex { "regex" } else { "find" };
+        let settings = cx.global::<Settings>();
+        Some(
+            div()
+                .absolute()
+                .top(px(0.))
+                .right(px(0.))
+                .px(px(8.))
+                .py(px(2.))
+                .font(settings.font.clone())
+                .text_size(settings.font_size)
+                .bg(hsla(self.scheme.color(FOREGROUND)))
+                .text_color(hsla(self.scheme.color(BACKGROUND)))
+                .child(format!("{mode}: {}\u{258f}  {status}", search.query.text)),
+        )
     }
 }
 
@@ -1136,6 +1321,11 @@ impl EntityInputHandler for PaneView {
         cx: &mut Context<Self>,
     ) {
         self.marked_text = None;
+        if let Some(search) = self.search.as_mut() {
+            search.query.text.push_str(text);
+            self.research(true);
+            return cx.notify();
+        }
         self.input(text.as_bytes().to_vec(), cx);
     }
 
