@@ -3,6 +3,7 @@ mod config;
 mod control;
 mod keys;
 mod layout;
+mod links;
 mod mouse;
 mod pane;
 mod render;
@@ -161,6 +162,7 @@ fn run(options: Options) -> Result<(), String> {
         return Err("--activate goes with --script".into());
     }
     let activate = script.is_none() || options.activate;
+    let open_links = script.is_none();
     let trace = options
         .trace
         .as_ref()
@@ -268,7 +270,15 @@ fn run(options: Options) -> Result<(), String> {
             vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
         }));
         let stats = options.stats;
-        cx.set_global(Settings { font, font_size: px(font_size), theme, stats, trace, socket });
+        cx.set_global(Settings {
+            font,
+            font_size: px(font_size),
+            theme,
+            stats,
+            trace,
+            socket,
+            open_links,
+        });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
             std::process::exit(1);

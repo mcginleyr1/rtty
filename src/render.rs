@@ -116,6 +116,8 @@ pub struct Scene<'a> {
     /// Search matches in view, and the current one.
     pub matches: Vec<Match>,
     pub current_match: Option<Match>,
+    /// The link under the pointer while Cmd is held, underlined.
+    pub link: Option<(Point, Point)>,
 }
 
 impl<'a> Scene<'a> {
@@ -153,7 +155,8 @@ impl<'a> Scene<'a> {
             shape,
             color,
         });
-        Scene { palette, fg, bg, selection, cursor, matches: Vec::new(), current_match: None }
+        let (matches, current_match, link) = (Vec::new(), None, None);
+        Scene { palette, fg, bg, selection, cursor, matches, current_match, link }
     }
 
     fn resolve(&self, color: Color, default: Rgb) -> Rgb {
@@ -227,13 +230,18 @@ impl<'a> Scene<'a> {
             if cell.is_spacer() {
                 continue;
             }
+            let linked =
+                self.link.is_some_and(|(start, end)| (start..=end).contains(&(index, col)));
             let style = Style {
                 fg,
                 bg,
                 bold: attrs.contains(Attrs::BOLD),
                 italic: attrs.contains(Attrs::ITALIC),
-                underline: attrs.underline(),
-                underline_color: self.resolve(row.underline_color(usize::from(col)), fg),
+                underline: if linked { Underline::Single } else { attrs.underline() },
+                underline_color: match linked {
+                    true => fg,
+                    false => self.resolve(row.underline_color(usize::from(col)), fg),
+                },
                 strike: attrs.contains(Attrs::STRIKE),
                 overline: attrs.contains(Attrs::OVERLINE),
             };
@@ -427,6 +435,19 @@ mod tests {
         assert_eq!((run(7).fg, run(7).bg), (bg, yellow));
         // The selection's own colors win where the two meet.
         assert_eq!(run(8).fg, palette.selection.unwrap().0);
+    }
+
+    #[test]
+    fn the_link_under_the_pointer_is_underlined_in_its_text_color() {
+        let term = term(b"\x1b[31mgo\x1b[m https://x.y\x1b[?25l");
+        let palette = Palette::new(&term, &onedark());
+        let mut scene = Scene::new(&term, &palette, 0, 3, None, true);
+        scene.link = Some(((0, 3), (0, 11)));
+        let line = scene.line(term.row(0).unwrap(), 0);
+        assert_eq!(texts(&line), [(0, "go"), (3, "https://x")]);
+        let link = line.runs[1].style;
+        assert_eq!((link.underline, link.underline_color), (Underline::Single, link.fg));
+        assert_eq!(line.runs[0].style.underline, Underline::None);
     }
 
     #[test]

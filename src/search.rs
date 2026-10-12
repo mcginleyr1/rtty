@@ -32,12 +32,16 @@ impl Query {
 /// Every match of `pattern` in the held rows (scrollback and screen), top to bottom. A line that
 /// soft-wraps is searched as one, so a match runs on across the wrap; an empty match is none.
 pub fn find(term: &Terminal, pattern: &Regex) -> Vec<Match> {
-    let end = term.screen_top() + u64::from(term.size().0);
+    find_in(term, pattern, term.oldest_row(), term.screen_top() + u64::from(term.size().0))
+}
+
+/// `find` over rows `from..to`, which should start a line (`line_rows`).
+pub fn find_in(term: &Terminal, pattern: &Regex, from: u64, to: u64) -> Vec<Match> {
     let mut matches = Vec::new();
     // The logical line so far, and where each grapheme in it starts and the cells it covers.
     let mut text = String::new();
     let mut cells: Vec<(usize, Point, Point)> = Vec::new();
-    for (index, row) in term.rows(term.oldest_row(), end) {
+    for (index, row) in term.rows(from, to) {
         let row_cells = row.cells();
         for (col, cell) in row_cells.iter().enumerate() {
             if cell.is_spacer() || cell.is_pad() {
@@ -61,6 +65,21 @@ pub fn find(term: &Terminal, pattern: &Regex) -> Vec<Match> {
         cells.clear();
     }
     matches
+}
+
+/// The rows of the logical line holding `row`: back while the row before soft-wraps into it,
+/// on while it wraps into the next.
+pub fn line_rows(term: &Terminal, row: u64) -> (u64, u64) {
+    let wraps = |index: u64| term.row(index).is_some_and(|row| row.wrapped());
+    let mut start = row;
+    while start > term.oldest_row() && wraps(start - 1) {
+        start -= 1;
+    }
+    let mut end = row;
+    while wraps(end) {
+        end += 1;
+    }
+    (start, end + 1)
 }
 
 #[cfg(test)]

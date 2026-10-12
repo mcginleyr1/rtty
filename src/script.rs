@@ -12,9 +12,9 @@
 //! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-d ...; each is
 //!                        pressed and released
 //! type TEXT              the rest of the line, one keystroke per character
-//! click ROW COL [left|middle|right] [CLICKS]
+//! click ROW COL [left|middle|right] [CLICKS] [cmd]
 //! drag ROW COL ROW COL   with the left button
-//! move ROW COL           with no button
+//! move ROW COL [cmd]     with no button; `cmd` holds Cmd, as over a link
 //! wheel ROW COL LINES    positive scrolls up
 //! focus in|out           the keyboard comes to the focused pane or leaves the window's elements
 //! appearance dark|light  what the window does when macOS flips
@@ -40,9 +40,9 @@ pub enum Step {
     Sleep(Duration),
     Keys(Vec<Keystroke>),
     Type(String),
-    Click { row: u16, col: u16, button: MouseButton, clicks: usize },
+    Click { row: u16, col: u16, button: MouseButton, clicks: usize, cmd: bool },
     Drag { from: (u16, u16), to: (u16, u16) },
-    Move { row: u16, col: u16 },
+    Move { row: u16, col: u16, cmd: bool },
     Wheel { row: u16, col: u16, lines: f32 },
     Focus(bool),
     Appearance(WindowAppearance),
@@ -80,7 +80,11 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             continue;
         }
         let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
-        let args: Vec<&str> = rest.split_whitespace().collect();
+        let mut args: Vec<&str> = rest.split_whitespace().collect();
+        let cmd = matches!(command, "click" | "move") && args.last() == Some(&"cmd");
+        if cmd {
+            args.pop();
+        }
         let error = |what: &str| format!("script line {number}: {what}: {line:?}");
         let numbers = |count: usize| -> Result<Vec<u16>, String> {
             let numbers: Option<Vec<u16>> =
@@ -108,7 +112,7 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 };
                 let clicks = args.get(3).map_or(Ok(1), |clicks| clicks.parse());
                 let clicks = clicks.map_err(|_| error("a click count expected"))?;
-                Step::Click { row: cell[0], col: cell[1], button, clicks }
+                Step::Click { row: cell[0], col: cell[1], button, clicks, cmd }
             }
             "drag" => {
                 let cells = numbers(4)?;
@@ -116,7 +120,7 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             }
             "move" => {
                 let cell = numbers(2)?;
-                Step::Move { row: cell[0], col: cell[1] }
+                Step::Move { row: cell[0], col: cell[1], cmd }
             }
             "wheel" => {
                 let cell = numbers(2)?;
@@ -228,11 +232,11 @@ async fn perform(
                 stroke(this, keystroke, cx)?;
             }
         }
-        Step::Click { row, col, button, clicks } => {
+        Step::Click { row, col, button, clicks, cmd } => {
             let position = center(*row, *col, cx)?;
             for click_count in 1..=*clicks {
                 let button = *button;
-                let modifiers = none;
+                let modifiers = Modifiers { platform: *cmd, ..none };
                 let first_mouse = false;
                 let down = MouseDownEvent { button, position, modifiers, click_count, first_mouse };
                 dispatch(Mouse::Down(down), cx)?;
@@ -252,9 +256,10 @@ async fn perform(
             let up = MouseUpEvent { button, position: end, modifiers, click_count };
             dispatch(Mouse::Up(up), cx)?;
         }
-        Step::Move { row, col } => {
+        Step::Move { row, col, cmd } => {
             let position = center(*row, *col, cx)?;
-            let motion = MouseMoveEvent { position, pressed_button: None, modifiers: none };
+            let modifiers = Modifiers { platform: *cmd, ..none };
+            let motion = MouseMoveEvent { position, pressed_button: None, modifiers };
             dispatch(Mouse::Move(motion), cx)?;
         }
         Step::Wheel { row, col, lines } => {
@@ -330,8 +335,11 @@ mod tests {
         );
         assert!(matches!(
             &steps[3].1,
-            Step::Click { row: 1, col: 2, button: MouseButton::Right, clicks: 2 }
+            Step::Click { row: 1, col: 2, button: MouseButton::Right, clicks: 2, cmd: false }
         ));
+        let cmd = parse("click 3 4 left 1 cmd\nmove 5 6 cmd").unwrap();
+        assert!(matches!(&cmd[0].1, Step::Click { row: 3, col: 4, clicks: 1, cmd: true, .. }));
+        assert!(matches!(&cmd[1].1, Step::Move { row: 5, col: 6, cmd: true }));
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
         assert!(parse("keys a-b").unwrap_err().contains("unknown keystroke"));

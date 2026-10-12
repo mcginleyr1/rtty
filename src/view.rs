@@ -14,10 +14,10 @@ use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
     EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
-    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
-    div, fill, outline, point, prelude::*, px, size,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task,
+    TextRun, UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions,
+    canvas, div, fill, outline, point, prelude::*, px, size,
 };
 use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
@@ -25,6 +25,7 @@ use rtty_vt::{
 
 use crate::config::Theme;
 use crate::keys;
+use crate::links::{self, Link};
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
@@ -56,6 +57,9 @@ pub struct Settings {
     pub trace: Option<Trace>,
     /// Where `rtty cli` reaches this rtty; each pane's `RTTY_SOCKET`.
     pub socket: PathBuf,
+    /// Cmd+click opens links with the system's handler; under `--script` it records them in the
+    /// pane's dump instead, so a scripted run never opens anything.
+    pub open_links: bool,
 }
 
 impl Global for Settings {}
@@ -92,6 +96,12 @@ pub struct PaneView {
     blink_wake: Option<Task<()>>,
     /// Cmd+F's search, while its bar is open.
     search: Option<Search>,
+    /// Where the pointer last was over the pane.
+    pointer: Option<Point<Pixels>>,
+    /// The link under the pointer while Cmd is held.
+    link: Option<Link>,
+    /// The links Cmd+click opened, or under `--script` would have.
+    opened: Vec<String>,
     stats: Option<FrameStats>,
 }
 
@@ -154,6 +164,7 @@ struct CacheKey {
     colors: (Rgb, Rgb),
     selection: Option<(GridPoint, GridPoint)>,
     matches: (Vec<Match>, Option<Match>),
+    link: Option<(GridPoint, GridPoint)>,
     focused: bool,
     size: (u16, u16),
     font_size: Pixels,
@@ -236,6 +247,9 @@ impl PaneView {
             blink_since: None,
             blink_wake: None,
             search: None,
+            pointer: None,
+            link: None,
+            opened: Vec::new(),
             stats,
         }
     }
@@ -360,8 +374,10 @@ impl PaneView {
         }));
     }
 
-    /// Puts the search's matches in view, and the current one, into `scene`.
+    /// Puts the link under the pointer, and the search's matches in view and the current one,
+    /// into `scene`.
     fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
+        scene.link = self.link.as_ref().map(|link| (link.start, link.end));
         let Some(search) = &self.search else { return };
         let bottom = top + u64::from(rows);
         let in_view = |found: &&Match| found.1.0 >= top && found.0.0 < bottom;
@@ -556,6 +572,9 @@ impl PaneView {
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
         let mut out = String::new();
         let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
+        if self.link.is_some() || !self.opened.is_empty() {
+            let _ = writeln!(out, "link {:?} opened {:?}", self.link, self.opened);
+        }
         if let Some(search) = &self.search {
             let current = search.current.and_then(|index| search.matches.get(index));
             let _ = writeln!(
@@ -704,6 +723,10 @@ impl PaneView {
     ) {
         window.focus(&self.focus);
         cx.emit(PaneEvent::Focused);
+        let cmd_click = event.modifiers.platform && event.button == MouseButton::Left;
+        if cmd_click && self.open_link(event.position, cx) {
+            return;
+        }
         self.pressed = true;
         let button = mouse_button(event.button);
         if self.report_mouse(button, Action::Press, event.position, event.modifiers)
@@ -732,8 +755,37 @@ impl PaneView {
         }
     }
 
+    /// Cmd held over a link underlines it, ready for Cmd+click.
+    fn hover(&mut self, cmd: bool, cx: &mut Context<Self>) {
+        let point = self.pointer.filter(|_| cmd).and_then(|position| self.grid_point(position));
+        let link = point.and_then(|(point, _)| links::link_at(&self.pane.lock(), point));
+        if link != self.link {
+            self.link = link;
+            cx.notify();
+        }
+    }
+
+    /// Cmd+click on a link opens it with the system's handler when its scheme may be opened
+    /// (`links::openable`); under `--script` it is only recorded. Whether there was a link.
+    fn open_link(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let Some((point, _)) = self.grid_point(position) else { return false };
+        let Some(link) = links::link_at(&self.pane.lock(), point) else { return false };
+        let open_links = cx.global::<Settings>().open_links;
+        let opened = links::open(&link.uri, |uri| {
+            if open_links {
+                cx.open_url(uri)
+            }
+        });
+        if opened {
+            self.opened.push(link.uri);
+        }
+        true
+    }
+
     /// Motion over this pane, with the button held only when it went down here.
     pub fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.pointer = Some(event.position);
+        self.hover(event.modifiers.platform, cx);
         let pressed = event.pressed_button.filter(|_| self.pressed);
         let button = pressed.map_or(Button::None, mouse_button);
         if self.report_mouse(button, Action::Motion, event.position, event.modifiers)
@@ -847,6 +899,7 @@ impl PaneView {
             colors: (scene.fg, scene.bg),
             selection,
             matches: (scene.matches.clone(), scene.current_match),
+            link: scene.link,
             focused,
             size: (rows, cols),
             font_size,
@@ -1234,6 +1287,9 @@ impl Render for PaneView {
             }))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
+            .on_modifiers_changed(cx.listener(|view, event: &ModifiersChangedEvent, _, cx| {
+                view.hover(event.modifiers.platform, cx)
+            }))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
