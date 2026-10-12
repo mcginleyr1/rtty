@@ -1,22 +1,24 @@
 //! `--script FILE`: drives the real window as a person would, to check rtty against real programs
 //! with nobody at the keyboard and no screenshots. Keys go through GPUI's own keystroke dispatch
-//! (key bindings, the key encoder, the text input handler), mouse events to the pane's handlers,
-//! focus through GPUI's focus, and `dump` writes what the next frame draws. One step per line;
-//! `#` starts a comment.
+//! (key bindings, the key encoder, the text input handler) to the focused pane, mouse events to
+//! the pane under them as the window's hit test would send them, focus through GPUI's focus, and
+//! `dump` writes the window's layout and what the next frame draws in each shown pane. Rows and
+//! columns are the window's cells, counted from the top left of the panes. One step per line; `#`
+//! starts a comment.
 //!
 //! ```text
-//! wait TEXT              until the screen shows TEXT (10 s at most)
+//! wait TEXT              until the focused pane shows TEXT (10 s at most)
 //! sleep MS
-//! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-c ...; each is
+//! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-d ...; each is
 //!                        pressed and released
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS]
 //! drag ROW COL ROW COL   with the left button
 //! move ROW COL           with no button
 //! wheel ROW COL LINES    positive scrolls up
-//! focus in|out           the keyboard comes to the pane or leaves the window's elements
+//! focus in|out           the keyboard comes to the focused pane or leaves the window's elements
 //! appearance dark|light  what the window does when macOS flips
-//! resize ROWS COLS       the window, to fit that many cells
+//! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
 //! quit
 //! ```
@@ -25,12 +27,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AsyncWindowContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    AsyncWindowContext, Context, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
     WeakEntity, Window, WindowAppearance, point,
 };
 
-use crate::view::PaneView;
 use crate::window::TerminalWindow;
 
 #[derive(Debug)]
@@ -55,6 +56,17 @@ enum Mouse {
     Up(MouseUpEvent),
     Move(MouseMoveEvent),
     Wheel(ScrollWheelEvent),
+}
+
+impl Mouse {
+    fn position(&self) -> Point<Pixels> {
+        match self {
+            Mouse::Down(event) => event.position,
+            Mouse::Up(event) => event.position,
+            Mouse::Move(event) => event.position,
+            Mouse::Wheel(event) => event.position,
+        }
+    }
 }
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -135,8 +147,8 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
     Ok(steps)
 }
 
-/// Runs the steps against the window's active pane, after its first frame. A step that fails
-/// ends rtty with exit status 1.
+/// Runs the steps against the window, each after the focused pane's first frame. A step that
+/// fails ends rtty with exit status 1.
 pub fn run(steps: Vec<(usize, Step)>, window: &mut Window, cx: &mut Context<TerminalWindow>) {
     cx.spawn_in(window, async move |this, cx| {
         for (number, step) in steps {
@@ -154,9 +166,9 @@ async fn perform(
     step: &Step,
     cx: &mut AsyncWindowContext,
 ) -> Result<(), String> {
-    let pane = this.update(cx, |window, _| window.active()).map_err(|err| err.to_string())?;
+    let pane = this.update(cx, |window, _| window.focused()).map_err(|err| err.to_string())?;
     let pane = pane.ok_or("no pane")?;
-    // The pane's first frame measures the cells that positions are made from.
+    // The pane's first frame lays out what the step works on.
     while pane
         .update(cx, |pane, _| pane.cell_center(0, 0))
         .map_err(|err| err.to_string())?
@@ -165,19 +177,25 @@ async fn perform(
         cx.background_executor().timer(Duration::from_millis(10)).await;
     }
     let center = |row: u16, col: u16, cx: &mut AsyncWindowContext| {
-        pane.update(cx, |pane, _| pane.cell_center(row, col))
-            .ok()
-            .flatten()
-            .ok_or(format!("no cell {row},{col}"))
+        this.update_in(cx, |this, window, cx| this.cell_center(row, col, window, cx))
+            .map_err(|err| err.to_string())
     };
     // gpui 0.2.2 keeps `Window::dispatch_event`'s result type private, so mouse events go to the
-    // pane's own handlers, which is where the window's hit testing would send them.
+    // panes' own handlers as the window's hit testing would send them: to the pane under the
+    // pointer, and a release to the others too (`on_mouse_up_out`).
     let dispatch = |event: Mouse, cx: &mut AsyncWindowContext| {
-        pane.update_in(cx, |pane, window, cx| match event {
-            Mouse::Down(event) => pane.mouse_down(&event, window, cx),
-            Mouse::Up(event) => pane.mouse_up(&event, window, cx),
-            Mouse::Move(event) => pane.mouse_move(&event, window, cx),
-            Mouse::Wheel(event) => pane.scroll_wheel(&event, window, cx),
+        this.update_in(cx, |this, window, cx| {
+            let under = this.pane_at(event.position(), window, cx);
+            for pane in this.shown(window, cx) {
+                let over = under.as_ref() == Some(&pane);
+                pane.update(cx, |pane, cx| match &event {
+                    Mouse::Down(event) if over => pane.mouse_down(event, window, cx),
+                    Mouse::Up(event) => pane.mouse_up(event, window, cx),
+                    Mouse::Move(event) if over => pane.mouse_move(event, window, cx),
+                    Mouse::Wheel(event) if over => pane.scroll_wheel(event, window, cx),
+                    _ => {}
+                });
+            }
         })
         .map_err(|err| err.to_string())
     };
@@ -196,7 +214,7 @@ async fn perform(
         Step::Sleep(duration) => cx.background_executor().timer(*duration).await,
         Step::Keys(keystrokes) => {
             for keystroke in keystrokes {
-                stroke(&pane, keystroke.clone(), cx)?;
+                stroke(this, keystroke.clone(), cx)?;
             }
         }
         Step::Type(text) => {
@@ -207,7 +225,7 @@ async fn perform(
                     key: c.to_ascii_lowercase().to_string(),
                     key_char: Some(c.to_string()),
                 };
-                stroke(&pane, keystroke, cx)?;
+                stroke(this, keystroke, cx)?;
             }
         }
         Step::Click { row, col, button, clicks } => {
@@ -256,17 +274,18 @@ async fn perform(
             cx.update(|window, _| window.blur()).map_err(|err| err.to_string())?
         }
         Step::Appearance(appearance) => {
-            pane.update(cx, |pane, cx| pane.follow_appearance(*appearance, cx))
+            this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
         }
         Step::Resize { rows, cols } => {
-            let size = pane.update(cx, |pane, _| pane.size_for(*rows, *cols)).ok().flatten();
-            let size = size.ok_or("no frame yet")?;
+            let size = this
+                .update_in(cx, |this, window, cx| this.size_for(*rows, *cols, window, cx))
+                .map_err(|err| err.to_string())?;
             cx.update(|window, _| window.resize(size)).map_err(|err| err.to_string())?;
         }
         Step::Dump(path) => {
-            let dump = cx
-                .update(|window, cx| pane.read(cx).dump(window))
+            let dump = this
+                .update_in(cx, |this, window, cx| this.dump(window, cx))
                 .map_err(|err| err.to_string())?;
             std::fs::write(path, dump).map_err(|err| format!("{}: {err}", path.display()))?;
         }
@@ -275,17 +294,23 @@ async fn perform(
     Ok(())
 }
 
-/// A key pressed through GPUI's dispatch, then released (to the pane, as GPUI would send it).
+/// A key pressed through GPUI's dispatch, then released to the pane that has the keyboard by
+/// then, as GPUI would send it.
 fn stroke(
-    pane: &Entity<PaneView>,
+    this: &WeakEntity<TerminalWindow>,
     keystroke: Keystroke,
     cx: &mut AsyncWindowContext,
 ) -> Result<(), String> {
     let up = KeyUpEvent { keystroke: keystroke.clone() };
     cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx))
         .map_err(|err| err.to_string())?;
-    pane.update_in(cx, |pane, window, cx| pane.key_up(&up, window, cx))
-        .map_err(|err| err.to_string())
+    let pane = this.update(cx, |this, _| this.focused()).map_err(|err| err.to_string())?;
+    match pane {
+        Some(pane) => pane
+            .update_in(cx, |pane, window, cx| pane.key_up(&up, window, cx))
+            .map_err(|err| err.to_string()),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod config;
 mod keys;
+mod layout;
 mod mouse;
 mod pane;
 mod render;
@@ -14,17 +15,18 @@ use std::process::{Command, ExitCode};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    App, AppContext, Application, BorrowAppContext, Bounds, FontFeatures, KeyBinding,
-    TitlebarOptions, WindowBounds, WindowOptions, actions, font, px, size,
-};
+use gpui::{App, Application, BorrowAppContext, FontFeatures, KeyBinding, actions, font, px};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
 use config::Config;
-use pane::{Pane, SCROLLBACK, Trace, shell_command};
+use layout::Direction;
+use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{Copy, Paste, Settings};
-use window::TerminalWindow;
+use window::{
+    ClosePane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
+    SplitDown, SplitRight, ToggleZoom,
+};
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize]);
 
@@ -32,9 +34,6 @@ const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--li
                      [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
-
-/// The terminal's size until the window has laid out its first frame.
-const START_SIZE: (u16, u16) = (24, 80);
 
 // macOS seq prints 1e+06 past a million without the explicit format.
 const BENCH_COMMAND: &str = "seq -f %.0f 1 2000000";
@@ -165,21 +164,38 @@ fn run(options: Options) -> Result<(), String> {
             eprintln!("rtty: no font family named {family:?}");
             std::process::exit(2);
         }
-        let (rows, cols) = START_SIZE;
-        let scheme = theme.for_appearance(cx.window_appearance());
-        let (pane, notices) =
-            Pane::spawn(command(options.command), rows, cols, Some(scheme.as_ref()), trace)
-                .unwrap_or_else(|err| {
-                    eprintln!("rtty: cannot start the shell: {err}");
-                    std::process::exit(1);
-                });
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-c", Copy, Some("Terminal")),
             KeyBinding::new("cmd-v", Paste, Some("Terminal")),
             KeyBinding::new("cmd-=", IncreaseFontSize, None),
             KeyBinding::new("cmd--", DecreaseFontSize, None),
+            KeyBinding::new("cmd-n", NewWindow, None),
+            KeyBinding::new("cmd-t", NewTab, None),
+            KeyBinding::new("cmd-w", ClosePane, None),
+            KeyBinding::new("cmd-d", SplitRight, None),
+            KeyBinding::new("cmd-shift-d", SplitDown, None),
+            KeyBinding::new("cmd-shift-enter", ToggleZoom, None),
+            // Cmd+Shift+[ and ], as macOS reports them.
+            KeyBinding::new("cmd-{", PreviousTab, None),
+            KeyBinding::new("cmd-}", NextTab, None),
         ]);
+        let arrows = [
+            ("left", Direction::Left),
+            ("right", Direction::Right),
+            ("up", Direction::Up),
+            ("down", Direction::Down),
+        ];
+        cx.bind_keys(arrows.into_iter().flat_map(|(key, direction)| {
+            [
+                KeyBinding::new(&format!("cmd-alt-{key}"), MoveFocus(direction), None),
+                KeyBinding::new(&format!("cmd-ctrl-{key}"), ResizePane(direction), None),
+            ]
+        }));
+        cx.bind_keys(
+            (1..=9)
+                .map(|digit| KeyBinding::new(&format!("cmd-{digit}"), SelectTab(digit - 1), None)),
+        );
         cx.on_action(|_: &Quit, cx| cx.quit());
         // Every pane in every window follows the one size, and reflows when it changes.
         let resize = |step: f32| {
@@ -197,28 +213,24 @@ fn run(options: Options) -> Result<(), String> {
             let shrink = resize(-1.);
             move |_: &DecreaseFontSize, cx| shrink(cx)
         });
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit()
+            }
+        })
+        .detach();
         let mut font = font(family);
         font.features = FontFeatures(Arc::new(if ligatures {
             vec![("calt".into(), 1), ("liga".into(), 1)]
         } else {
             vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
         }));
-        let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(900.), px(600.)),
-                cx,
-            ))),
-            titlebar: Some(TitlebarOptions { title: Some("rtty".into()), ..Default::default() }),
-            ..Default::default()
-        };
-        cx.set_global(Settings { font, font_size: px(font_size), theme, stats: options.stats });
-        let window = cx
-            .open_window(window_options, |window, cx| {
-                cx.new(|cx| TerminalWindow::new(pane, notices, window, cx))
-            })
-            .expect("open the terminal window");
+        let stats = options.stats;
+        cx.set_global(Settings { font, font_size: px(font_size), theme, stats, trace });
+        let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
+            eprintln!("rtty: {err}");
+            std::process::exit(1);
+        });
         if let Some(steps) = script {
             window
                 .update(cx, |_, window, cx| script::run(steps, window, cx))

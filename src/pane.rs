@@ -36,23 +36,34 @@ pub enum Notice {
     Exit,
 }
 
+/// The terminal's size until the window has laid out its first frame.
+pub const START_SIZE: (u16, u16) = (24, 80);
+
 /// `--trace`: every read from the pty (`<`) and write to it (`>`), one line each, escaped, after
-/// the milliseconds since the trace began.
+/// the milliseconds since the trace began and the pane's number.
 #[derive(Clone)]
-pub struct Trace(Arc<Mutex<(Instant, File)>>);
+pub struct Trace {
+    file: Arc<Mutex<(Instant, File)>>,
+    pane: u64,
+}
 
 impl Trace {
     pub fn create(path: &Path) -> io::Result<Trace> {
-        Ok(Trace(Arc::new(Mutex::new((Instant::now(), File::create(path)?)))))
+        Ok(Trace { file: Arc::new(Mutex::new((Instant::now(), File::create(path)?))), pane: 0 })
+    }
+
+    /// The same trace, its lines marked as `pane`'s.
+    pub fn for_pane(&self, pane: u64) -> Trace {
+        Trace { pane, ..self.clone() }
     }
 
     fn log(&self, direction: char, bytes: &[u8]) {
-        let mut trace = self.0.lock().expect("a pty thread panicked");
+        let mut trace = self.file.lock().expect("a pty thread panicked");
         let (started, file) = &mut *trace;
         let escaped: String =
             bytes.iter().flat_map(|&byte| ascii::escape_default(byte)).map(char::from).collect();
         let millis = started.elapsed().as_secs_f64() * 1000.;
-        let _ = writeln!(file, "{millis:10.3} {direction} {escaped}");
+        let _ = writeln!(file, "{millis:10.3} {} {direction} {escaped}", self.pane);
     }
 }
 

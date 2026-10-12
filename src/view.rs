@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::iter;
 use std::mem;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
@@ -23,7 +24,7 @@ use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 use crate::config::Theme;
 use crate::keys;
 use crate::mouse::{self, Action, Button, Report};
-use crate::pane::{Notice, Pane};
+use crate::pane::{Notice, Pane, Trace};
 use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
@@ -39,12 +40,13 @@ const BLINK_MS: u128 = 500;
 const BLINK_FOR: Duration = Duration::from_secs(10);
 
 /// What every window and pane shares: the font and its size (Cmd+= and Cmd+- change it for all of
-/// them) and the color theme.
+/// them), the color theme, and the diagnostics asked for.
 pub struct Settings {
     pub font: Font,
     pub font_size: Pixels,
     pub theme: Theme,
     pub stats: bool,
+    pub trace: Option<Trace>,
 }
 
 impl Global for Settings {}
@@ -62,6 +64,10 @@ pub struct PaneView {
     scroll_remainder: Pixels,
     /// The cell the last mouse report named.
     mouse_cell: Option<(u16, u16)>,
+    /// A button went down in this pane and has not come up: the drag is this pane's.
+    pressed: bool,
+    /// The grid and cell size in pixels the window last gave the pane.
+    grid: (u16, u16, (u16, u16)),
     /// The pane has the keyboard in the active window, as last reported to the program.
     focused: bool,
     /// When the synchronized update now holding the screen began.
@@ -75,7 +81,10 @@ pub struct PaneView {
 
 /// What a pane tells the window that holds it.
 pub enum PaneEvent {
-    Title(String),
+    /// The program named itself.
+    Title,
+    /// A click gave the pane the keyboard.
+    Focused,
     Exited,
 }
 
@@ -157,10 +166,6 @@ impl PaneView {
         cx.observe_window_activation(window, Self::focus_changed).detach();
         cx.on_focus(&focus, window, Self::focus_changed).detach();
         cx.on_blur(&focus, window, Self::focus_changed).detach();
-        cx.observe_window_appearance(window, |view, window, cx| {
-            view.follow_appearance(window.appearance(), cx)
-        })
-        .detach();
         cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
         let settings = cx.global::<Settings>();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
@@ -182,6 +187,7 @@ impl PaneView {
             }
         })
         .detach();
+        let (rows, cols) = pane.lock().size();
         Self {
             pane,
             focus,
@@ -191,6 +197,8 @@ impl PaneView {
             marked_text: None,
             scroll_remainder: px(0.),
             mouse_cell: None,
+            pressed: false,
+            grid: (rows, cols, (0, 0)),
             focused: window.is_window_active(),
             sync_since: None,
             blink_since: None,
@@ -216,6 +224,24 @@ impl PaneView {
         window.focus(&self.focus);
     }
 
+    /// Gives the terminal, and through the pty its program, `rows`×`cols` cells of `cell`: the
+    /// window decides from its layout, for shown and hidden panes alike.
+    pub fn resize(&mut self, rows: u16, cols: u16, cell: Size<Pixels>) {
+        let grid = (rows, cols, (f32::from(cell.width) as u16, f32::from(cell.height) as u16));
+        if mem::replace(&mut self.grid, grid) != grid {
+            self.pane.resize(rows, cols, grid.2);
+        }
+    }
+
+    pub fn title(&self) -> String {
+        self.pane.lock().title().to_owned()
+    }
+
+    /// The directory the shell last reported (OSC 7).
+    pub fn cwd(&self) -> Option<PathBuf> {
+        self.pane.lock().cwd().map(PathBuf::from)
+    }
+
     /// The OS switched between light and dark: repaint with the other scheme (cells keep color
     /// indices, so what is on screen recolors) and tell the terminal, which answers color queries
     /// with it and tells programs that asked (mode 2031). Colors a program set itself with
@@ -233,7 +259,7 @@ impl PaneView {
     fn notice(&mut self, notice: Notice, cx: &mut Context<Self>) {
         match notice {
             Notice::Output | Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
-            Notice::Event(Event::Title(title)) => cx.emit(PaneEvent::Title(title)),
+            Notice::Event(Event::Title(_)) => cx.emit(PaneEvent::Title),
             Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -326,12 +352,6 @@ impl PaneView {
             grid.origin
                 + point(cell.width * (f32::from(col) + 0.5), cell.height * (f32::from(row) + 0.5)),
         )
-    }
-
-    /// The window size that fits `rows`×`cols` cells, once a frame has measured them.
-    pub fn size_for(&self, rows: u16, cols: u16) -> Option<Size<Pixels>> {
-        let cell = self.geometry?.cell;
-        Some(size(cell.width * (f32::from(cols) + 0.5), cell.height * (f32::from(rows) + 0.5)))
     }
 
     pub fn screen_text(&self) -> String {
@@ -485,6 +505,8 @@ impl PaneView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus);
+        cx.emit(PaneEvent::Focused);
+        self.pressed = true;
         let button = mouse_button(event.button);
         if self.report_mouse(button, Action::Press, event.position, event.modifiers)
             || event.button != MouseButton::Left
@@ -503,15 +525,21 @@ impl PaneView {
         cx.notify();
     }
 
+    /// A release over this pane, or anywhere after a press in it (the program hears it at the
+    /// nearest cell); a release that ends another pane's press is not this pane's.
     pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
-        let button = mouse_button(event.button);
-        self.report_mouse(button, Action::Release, event.position, event.modifiers);
+        if mem::take(&mut self.pressed) {
+            let button = mouse_button(event.button);
+            self.report_mouse(button, Action::Release, event.position, event.modifiers);
+        }
     }
 
+    /// Motion over this pane, with the button held only when it went down here.
     pub fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let button = event.pressed_button.map_or(Button::None, mouse_button);
+        let pressed = event.pressed_button.filter(|_| self.pressed);
+        let button = pressed.map_or(Button::None, mouse_button);
         if self.report_mouse(button, Action::Motion, event.position, event.modifiers)
-            || event.pressed_button != Some(MouseButton::Left)
+            || pressed != Some(MouseButton::Left)
         {
             return;
         }
@@ -560,8 +588,8 @@ impl PaneView {
         }
     }
 
-    /// Fits the grid to `bounds`, then shapes the rows that changed since the last frame,
-    /// holding the terminal lock only while reading cells.
+    /// Shapes the rows that changed since the last frame, holding the terminal lock only while
+    /// reading cells. The window sized the grid to `bounds` (`resize`).
     fn layout(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -574,14 +602,7 @@ impl PaneView {
         let (font, font_size) = (settings.font.clone(), settings.font_size);
         let text_system = window.text_system().clone();
         let Metrics { cell, ascent, descent } = metrics(&text_system, &font, font_size);
-        // Laid out a whole number of cells wide, a pane gets that many whatever the rounding.
-        let fit = |pixels: Pixels, cell: Pixels| ((pixels + px(0.5)) / cell) as u16;
-        let cols = fit(bounds.size.width, cell.width).max(2);
-        let rows = fit(bounds.size.height, cell.height).max(1);
-        if self.geometry.is_none_or(|grid| (grid.rows, grid.cols) != (rows, cols)) {
-            let pixels = (f32::from(cell.width) as u16, f32::from(cell.height) as u16);
-            self.pane.resize(rows, cols, pixels);
-        }
+        let (rows, cols, _) = self.grid;
         let focused = self.focus.is_focused(window) && window.is_window_active();
 
         let mut term = self.pane.lock();
@@ -980,7 +1001,7 @@ fn grid_positions(
     (!on_grid).then_some(snapped)
 }
 
-fn hsla(Rgb(r, g, b): Rgb) -> Hsla {
+pub fn hsla(Rgb(r, g, b): Rgb) -> Hsla {
     let channel = |value: u8| f32::from(value) / 255.;
     Rgba { r: channel(r), g: channel(g), b: channel(b), a: 1. }.into()
 }
@@ -1004,6 +1025,9 @@ impl Render for PaneView {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(Self::mouse_up))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .child(
                 canvas(

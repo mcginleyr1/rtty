@@ -30,15 +30,34 @@ pub struct Scheme {
     pub cursor_border: Rgb,
     /// Foreground and background of selected cells; `None` inverts them.
     pub selection: Option<(Rgb, Rgb)>,
+    /// The line between split panes.
+    pub split: Rgb,
+    /// The tab bar's background, and the foreground and background of its tabs.
+    pub tab_bar: Rgb,
+    pub active_tab: (Rgb, Rgb),
+    pub inactive_tab: (Rgb, Rgb),
 }
 
-/// WezTerm's color scheme file. Keys rtty does not draw (`tab_bar`, `scrollbar_thumb`, …) are
-/// ignored so WezTerm's files load unchanged.
+/// WezTerm's color scheme file. Keys rtty does not draw (`scrollbar_thumb`, the tab bar's hover
+/// and new-tab colors, …) are ignored so WezTerm's files load unchanged.
 #[derive(Deserialize)]
 struct SchemeFile {
     colors: Palette,
     #[serde(default)]
     metadata: Metadata,
+}
+
+#[derive(Deserialize, Default)]
+struct TabBar {
+    background: Option<Hex>,
+    active_tab: Option<Tab>,
+    inactive_tab: Option<Tab>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+struct Tab {
+    fg_color: Hex,
+    bg_color: Hex,
 }
 
 #[derive(Deserialize, Default)]
@@ -55,6 +74,9 @@ struct Palette {
     cursor_border: Option<Hex>,
     selection_bg: Option<Hex>,
     selection_fg: Option<Hex>,
+    split: Option<Hex>,
+    #[serde(default)]
+    tab_bar: TabBar,
     ansi: [Hex; 8],
     brights: [Hex; 8],
     #[serde(default)]
@@ -97,16 +119,28 @@ impl Scheme {
             table[usize::from(index)] = color.0;
         }
         let cursor = colors.cursor_bg.map_or(foreground, |color| color.0);
+        let background = colors.background.0;
         table[FOREGROUND] = foreground;
-        table[BACKGROUND] = colors.background.0;
+        table[BACKGROUND] = background;
         table[CURSOR] = cursor;
+        // What a scheme leaves out of the window's chrome is mixed from its foreground and
+        // background: the active tab is the pane's own colors, the rest recede toward the
+        // background.
+        let toward = |share: f32| mix(background, foreground, share);
+        let tab_bar = colors.tab_bar.background.map_or(toward(0.08), |color| color.0);
+        let tab =
+            |tab: Option<Tab>, default| tab.map_or(default, |tab| (tab.fg_color.0, tab.bg_color.0));
         Ok(Scheme {
             name,
             path,
             table,
-            cursor_fg: colors.cursor_fg.map_or(colors.background.0, |color| color.0),
+            cursor_fg: colors.cursor_fg.map_or(background, |color| color.0),
             cursor_border: colors.cursor_border.map_or(cursor, |color| color.0),
             selection: colors.selection_fg.zip(colors.selection_bg).map(|(fg, bg)| (fg.0, bg.0)),
+            split: colors.split.map_or(toward(0.3), |color| color.0),
+            tab_bar,
+            active_tab: tab(colors.tab_bar.active_tab, (foreground, background)),
+            inactive_tab: tab(colors.tab_bar.inactive_tab, (toward(0.55), tab_bar)),
         })
     }
 
@@ -166,6 +200,13 @@ pub fn find(schemes: &[Scheme], name: &str) -> Result<Arc<Scheme>, String> {
 pub fn dim(Rgb(r, g, b): Rgb) -> Rgb {
     let third = |channel: u8| (f32::from(channel) * 0.66) as u8;
     Rgb(third(r), third(g), third(b))
+}
+
+/// `share` of the way from `from` to `to`.
+fn mix(Rgb(r1, g1, b1): Rgb, Rgb(r2, g2, b2): Rgb, share: f32) -> Rgb {
+    let channel =
+        |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * share).round() as u8;
+    Rgb(channel(r1, r2), channel(g1, g2), channel(b1, b2))
 }
 
 /// WCAG relative luminance, 0 for black to 1 for white.
@@ -244,10 +285,27 @@ mod tests {
         assert_eq!(scheme.color(CURSOR), rgb(0xc678dd));
         assert_eq!(scheme.cursor_fg, rgb(0x282c34));
         assert_eq!(scheme.selection, Some((rgb(0xabb2bf), rgb(0xc678dd))));
+        assert_eq!(scheme.tab_bar, rgb(0x282c34));
+        assert_eq!(scheme.active_tab, (rgb(0xc678dd), rgb(0x282c34)));
+        assert_eq!(scheme.inactive_tab, (rgb(0x5c6370), rgb(0x282c34)));
         let schemes = [scheme];
         assert_eq!(find(&schemes, "onedarkpro_onedark").unwrap().name, "onedarkpro_onedark");
         assert_eq!(find(&schemes, "onedarkpro").unwrap().name, "onedarkpro_onedark");
         assert!(find(&schemes, "Gruvbox").unwrap_err().contains("\"Gruvbox\""));
+    }
+
+    #[test]
+    fn chrome_a_scheme_leaves_out_is_mixed_from_its_colors() {
+        let light = find(&load(&[]).unwrap(), "Solarized Light").unwrap();
+        let (fg, bg) = (light.color(FOREGROUND), light.color(BACKGROUND));
+        assert_eq!((fg, bg), (rgb(0x657b83), rgb(0xfdf6e3)));
+        assert_eq!(light.active_tab, (fg, bg));
+        assert_eq!(light.tab_bar, mix(bg, fg, 0.08));
+        assert_eq!(light.inactive_tab, (mix(bg, fg, 0.55), light.tab_bar));
+        assert_eq!(light.split, mix(bg, fg, 0.3));
+        assert_eq!(mix(rgb(0x000000), rgb(0xffffff), 0.5), rgb(0x808080));
+        let split = WEZTERM_FIXTURE.replacen("[colors]\n", "[colors]\nsplit = \"#123456\"\n", 1);
+        assert_eq!(Scheme::parse(&split, None).unwrap().split, rgb(0x123456));
     }
 
     #[test]

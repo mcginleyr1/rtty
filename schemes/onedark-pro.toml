@@ -1,5 +1,5 @@
 # The "onedark" theme of onedarkpro.nvim, from its WezTerm extra
-# (extras/wezterm/onedarkpro_onedark.toml), without the tab bar colors rtty does not draw.
+# (extras/wezterm/onedarkpro_onedark.toml).
 [colors]
 ansi = [
   "#282c34",
@@ -27,6 +27,32 @@ cursor_fg = "#282c34"
 foreground = "#abb2bf"
 selection_bg = "#c678dd"
 selection_fg = "#abb2bf"
+
+[colors.tab_bar]
+inactive_tab_edge = "#282c34"
+background = "#282c34"
+
+[colors.tab_bar.active_tab]
+fg_color = "#c678dd"
+bg_color = "#282c34"
+intensity = "Bold"
+
+[colors.tab_bar.inactive_tab]
+fg_color = "#5c6370"
+bg_color = "#282c34"
+intensity = "Bold"
+
+[colors.tab_bar.inactive_tab_hover]
+fg_color = "#c678dd"
+bg_color = "#282c34"
+
+[colors.tab_bar.new_tab]
+fg_color = "#c678dd"
+bg_color = "#282c34"
+
+[colors.tab_bar.new_tab_hover]
+fg_color = "#282c34"
+bg_color = "#c678dd"
 
 [colors.indexed]
 59 = "#5c6370"
