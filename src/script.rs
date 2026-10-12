@@ -7,7 +7,8 @@
 //! ```text
 //! wait TEXT              until the screen shows TEXT (10 s at most)
 //! sleep MS
-//! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-c ...
+//! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-c ...; each is
+//!                        pressed and released
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS]
 //! drag ROW COL ROW COL   with the left button
@@ -24,11 +25,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AsyncWindowContext, Context, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ScrollDelta, ScrollWheelEvent, TouchPhase, WeakEntity, Window, WindowAppearance,
-    point,
+    AsyncWindowContext, Context, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    WeakEntity, Window, WindowAppearance, point,
 };
 
+use crate::view::PaneView;
 use crate::window::TerminalWindow;
 
 #[derive(Debug)]
@@ -194,8 +196,7 @@ async fn perform(
         Step::Sleep(duration) => cx.background_executor().timer(*duration).await,
         Step::Keys(keystrokes) => {
             for keystroke in keystrokes {
-                cx.update(|window, cx| window.dispatch_keystroke(keystroke.clone(), cx))
-                    .map_err(|err| err.to_string())?;
+                stroke(&pane, keystroke.clone(), cx)?;
             }
         }
         Step::Type(text) => {
@@ -206,8 +207,7 @@ async fn perform(
                     key: c.to_ascii_lowercase().to_string(),
                     key_char: Some(c.to_string()),
                 };
-                cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx))
-                    .map_err(|err| err.to_string())?;
+                stroke(&pane, keystroke, cx)?;
             }
         }
         Step::Click { row, col, button, clicks } => {
@@ -273,6 +273,19 @@ async fn perform(
         Step::Quit => cx.update(|_, cx| cx.quit()).map_err(|err| err.to_string())?,
     }
     Ok(())
+}
+
+/// A key pressed through GPUI's dispatch, then released (to the pane, as GPUI would send it).
+fn stroke(
+    pane: &Entity<PaneView>,
+    keystroke: Keystroke,
+    cx: &mut AsyncWindowContext,
+) -> Result<(), String> {
+    let up = KeyUpEvent { keystroke: keystroke.clone() };
+    cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx))
+        .map_err(|err| err.to_string())?;
+    pane.update_in(cx, |pane, window, cx| pane.key_up(&up, window, cx))
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

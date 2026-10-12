@@ -12,11 +12,11 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, LineLayout, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba, ScrollWheelEvent,
-    ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection, UnderlineStyle,
-    Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill, outline, point,
-    prelude::*, px, size,
+    EventEmitter, FocusHandle, Font, Hsla, KeyDownEvent, KeyUpEvent, LineLayout, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, Rgba,
+    ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
+    outline, point, prelude::*, px, size,
 };
 use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
 
@@ -255,11 +255,22 @@ impl PaneView {
         cx.notify();
     }
 
+    /// How the program asked for keys.
+    fn key_modes(&self) -> keys::Modes {
+        let term = self.pane.lock();
+        let modes = term.modes();
+        keys::Modes {
+            cursor_keys: modes.cursor_keys,
+            modify_other_keys: modes.modify_other_keys,
+            kitty: term.kitty_keyboard(),
+        }
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        let app_cursor = self.pane.lock().modes().cursor_keys;
+        let kind = if event.is_held { keys::Event::Repeat } else { keys::Event::Press };
         // A held key repeats here: the input handler would open the accent picker instead.
-        let bytes = keys::encode(keystroke, app_cursor).or_else(|| {
+        let bytes = keys::encode(keystroke, self.key_modes(), kind).or_else(|| {
             event.is_held.then(|| keystroke.key_char.clone()).flatten().map(String::into_bytes)
         });
         if bytes.is_some() || (keystroke.modifiers.control && !keystroke.modifiers.platform) {
@@ -267,6 +278,14 @@ impl PaneView {
         }
         if let Some(bytes) = bytes {
             self.input(bytes, cx);
+        }
+    }
+
+    /// Releases matter only to a program that asked for kitty's event types.
+    pub fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(bytes) = keys::encode(&event.keystroke, self.key_modes(), keys::Event::Release)
+        {
+            self.pane.write(bytes);
         }
     }
 
@@ -961,6 +980,7 @@ impl Render for PaneView {
             .on_action(cx.listener(Self::increase_font_size))
             .on_action(cx.listener(Self::decrease_font_size))
             .on_key_down(cx.listener(Self::key_down))
+            .on_key_up(cx.listener(Self::key_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))

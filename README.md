@@ -112,6 +112,22 @@ and Ctrl+`[ \ ] ^ _ @ space`, and Option as Alt: an ESC prefix (so Option+B is w
 and Option no longer types `∫`). Application cursor mode (DECCKM) switches the arrows to `ESC O`.
 A held key repeats instead of opening macOS's accent picker.
 
+Programs that ask for more get it:
+
+- **xterm's modifyOtherKeys** (`CSI > 4 ; n m`, which Emacs turns on at level 1). Level 1 sends
+  `CSI 27 ; mod ; code ~` for Ctrl with keys that have no control character (`C-;`, `C-.`,
+  `C-1`) and for Ctrl or Shift with Enter and Tab; every control character stays as it was. Level
+  2 sends it for every key with Ctrl or Alt.
+- **The kitty keyboard protocol** (`CSI > flags u`; Neovim pushes flags 3). Disambiguate: Esc is
+  `CSI 27 u`, keys with Ctrl or Alt are `CSI code ; mod u` (so `C-i` is not Tab and `S-Enter` is
+  not Enter), and the other keys use the `CSI 1 ; mod X` and `CSI n ; mod ~` forms; plain text
+  and unmodified Enter, Tab and Backspace stay as they were. Event types add repeats (`:2`) and
+  releases (`:3`) of those keys. All keys as escape codes, alternate (shifted) keys and associated
+  text are encoded too, though no program checked here uses them.
+
+GPUI does not report keypad keys apart from the main keys, so application keypad mode (DECKPAM)
+has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1`).
+
 ## How it works
 
 - `pane.rs` — one terminal, self-contained: the child on a pty (portable-pty), the rtty-vt
@@ -208,8 +224,8 @@ it stops blinking and stays on after 10 s without a key, so an idle window draws
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback and an emoji may overhang its two cells; no bell, kitty keyboard
-protocol, URL detection, tabs or splits; macOS only.
+CoreText's font fallback and an emoji may overhang its two cells; no bell, URL detection, tabs or
+splits; macOS only.
 
 ## The GPUI pin
 
