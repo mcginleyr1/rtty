@@ -1,4 +1,6 @@
+mod cli;
 mod config;
+mod control;
 mod keys;
 mod layout;
 mod mouse;
@@ -19,7 +21,9 @@ use gpui::{App, Application, BorrowAppContext, FontFeatures, KeyBinding, actions
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
-use config::Config;
+use config::{Config, Keys};
+use control::Response;
+use futures::StreamExt;
 use layout::Direction;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{Copy, Paste, Settings};
@@ -32,6 +36,7 @@ actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize]);
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
+       rtty cli COMMAND...       ask the rtty this pane runs in (`rtty cli` lists the commands)
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
 
@@ -59,6 +64,7 @@ fn main() -> ExitCode {
     let mut options = Options::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "cli" => return cli::run(args.collect()),
             "--smoke" => return smoke(),
             "--bench" => {
                 let command = args.collect::<Vec<_>>().join(" ");
@@ -159,6 +165,10 @@ fn run(options: Options) -> Result<(), String> {
         .as_ref()
         .map(|path| Trace::create(path).map_err(|err| format!("{}: {err}", path.display())));
     let trace = trace.transpose()?;
+    let keys = config.keys.unwrap_or_default();
+    let socket = control::socket_path()?;
+    let requests =
+        control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     Application::new().run(move |cx: &mut App| {
         if !cx.text_system().all_font_names().contains(&family) {
             eprintln!("rtty: no font family named {family:?}");
@@ -180,39 +190,66 @@ fn run(options: Options) -> Result<(), String> {
             KeyBinding::new("cmd-{", PreviousTab, None),
             KeyBinding::new("cmd-}", NextTab, None),
         ]);
-        let arrows = [
-            ("left", Direction::Left),
-            ("right", Direction::Right),
-            ("up", Direction::Up),
-            ("down", Direction::Down),
-        ];
+        // Focus and resize chords: a pane that claims them gets them instead (see
+        // `PaneView::claimed_chord`), so each action carries its keystroke.
+        let focus = |keystroke: String, direction| {
+            KeyBinding::new(&keystroke.clone(), MoveFocus { direction, keystroke }, None)
+        };
+        let resize = |keystroke: String, direction| {
+            KeyBinding::new(&keystroke.clone(), ResizePane { direction, keystroke }, None)
+        };
+        let arrows = Direction::ALL.map(|direction| (direction.name(), direction));
         cx.bind_keys(arrows.into_iter().flat_map(|(key, direction)| {
             [
-                KeyBinding::new(&format!("cmd-alt-{key}"), MoveFocus(direction), None),
-                KeyBinding::new(&format!("cmd-ctrl-{key}"), ResizePane(direction), None),
+                focus(format!("cmd-alt-{key}"), direction),
+                resize(format!("cmd-ctrl-{key}"), direction),
             ]
         }));
+        if keys == Keys::Tutti {
+            let vim = [("h", Direction::Left), ("j", Direction::Down), ("k", Direction::Up)];
+            let vim = vim.into_iter().chain([("l", Direction::Right)]);
+            cx.bind_keys(vim.flat_map(|(key, direction)| {
+                [focus(format!("ctrl-{key}"), direction), resize(format!("alt-{key}"), direction)]
+            }));
+        }
         cx.bind_keys(
             (1..=9)
                 .map(|digit| KeyBinding::new(&format!("cmd-{digit}"), SelectTab(digit - 1), None)),
         );
         cx.on_action(|_: &Quit, cx| cx.quit());
         // Every pane in every window follows the one size, and reflows when it changes.
-        let resize = |step: f32| {
+        let step = |points: f32| {
             move |cx: &mut App| {
                 cx.update_global::<Settings, _>(|settings, _| {
-                    settings.font_size = (settings.font_size + px(step)).clamp(px(6.), px(72.))
+                    settings.font_size = (settings.font_size + px(points)).clamp(px(6.), px(72.))
                 })
             }
         };
         cx.on_action({
-            let grow = resize(1.);
+            let grow = step(1.);
             move |_: &IncreaseFontSize, cx| grow(cx)
         });
         cx.on_action({
-            let shrink = resize(-1.);
+            let shrink = step(-1.);
             move |_: &DecreaseFontSize, cx| shrink(cx)
         });
+        cx.spawn(async move |cx| {
+            let mut requests = requests;
+            while let Some((request, answer)) = requests.next().await {
+                let response = cx.update(|cx| window::answer(request, cx));
+                let _ =
+                    answer.send(response.unwrap_or_else(|err| Response::Error(err.to_string())));
+            }
+        })
+        .detach();
+        cx.on_app_quit({
+            let socket = socket.clone();
+            move |_| {
+                let _ = std::fs::remove_file(&socket);
+                async {}
+            }
+        })
+        .detach();
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit()
@@ -226,7 +263,7 @@ fn run(options: Options) -> Result<(), String> {
             vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
         }));
         let stats = options.stats;
-        cx.set_global(Settings { font, font_size: px(font_size), theme, stats, trace });
+        cx.set_global(Settings { font, font_size: px(font_size), theme, stats, trace, socket });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
             std::process::exit(1);

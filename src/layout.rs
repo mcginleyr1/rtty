@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 pub type PaneId = u64;
 
 /// A block of cells.
@@ -22,7 +24,8 @@ impl Rect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Left,
     Right,
@@ -38,6 +41,18 @@ pub enum Orientation {
 }
 
 impl Direction {
+    pub const ALL: [Direction; 4] =
+        [Direction::Left, Direction::Right, Direction::Up, Direction::Down];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Direction::Left => "left",
+            Direction::Right => "right",
+            Direction::Up => "up",
+            Direction::Down => "down",
+        }
+    }
+
     fn orientation(self) -> Orientation {
         match self {
             Direction::Left | Direction::Right => Orientation::SideBySide,
@@ -49,6 +64,15 @@ impl Direction {
     fn forward(self) -> bool {
         matches!(self, Direction::Right | Direction::Down)
     }
+}
+
+/// How far a resize moves a divider.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Amount {
+    /// A share of the split's cells, at least one: tutti's measure.
+    Fraction(f32),
+    Cells(u16),
 }
 
 /// A divider is one cell thick; no pane gets fewer cells than this across a split.
@@ -213,9 +237,10 @@ impl Layout {
         }
     }
 
-    /// Moves the divider nearest `pane` that runs across `direction` by `cells` that way, as
-    /// tmux's `resize-pane` does: the pane grows or shrinks by what its neighbour gives up.
-    pub fn resize(&mut self, pane: PaneId, direction: Direction, cells: u16, area: Rect) {
+    /// Moves the divider nearest `pane` that runs across `direction` that way by `amount`, as
+    /// tmux's `resize-pane` and tutti's Alt+h/j/k/l do: the pane grows or shrinks by what its
+    /// neighbour gives up.
+    pub fn resize(&mut self, pane: PaneId, direction: Direction, amount: Amount, area: Rect) {
         let Some(path) = self.root.ancestor(pane, direction.orientation()) else { return };
         let Some((extent, _)) = self.split_at(&path, area) else { return };
         let divider = self.dividers(area).into_iter().find(|divider| divider.path == path);
@@ -223,6 +248,12 @@ impl Layout {
         let (start, len, now) = match direction.orientation() {
             Orientation::SideBySide => (extent.col, extent.cols, divider.rect.col),
             Orientation::Stacked => (extent.row, extent.rows, divider.rect.row),
+        };
+        let cells = match amount {
+            Amount::Cells(cells) => cells,
+            Amount::Fraction(share) => {
+                ((f32::from(len.saturating_sub(1)) * share).round() as u16).max(1)
+            }
         };
         let offset = now - start;
         let moved = if direction.forward() {
@@ -236,9 +267,16 @@ impl Layout {
     }
 
     /// The pane nearest `from` in `direction`: of the panes beyond its edge that it overlaps
-    /// across, the closest; then the one last focused; then the one overlapping it most.
-    /// Ignores zoom: it answers for the whole layout.
-    pub fn neighbor(&self, from: PaneId, direction: Direction, area: Rect) -> Option<PaneId> {
+    /// across, the closest; then the one last focused; then the one overlapping it most. With
+    /// `wrap`, when there is none, the farthest of those it overlaps on the other side, as if
+    /// the tab went round. Ignores zoom: it answers for the whole layout.
+    pub fn neighbor(
+        &self,
+        from: PaneId,
+        direction: Direction,
+        area: Rect,
+        wrap: bool,
+    ) -> Option<PaneId> {
         let rects = Layout { zoomed: false, ..self.clone() }.rects(area);
         let (_, here) = *rects.iter().find(|(pane, _)| *pane == from)?;
         let span = |r: Rect| match direction.orientation() {
@@ -255,28 +293,49 @@ impl Layout {
                 Direction::Down => (r.row >= here_bottom).then(|| r.row - here_bottom),
             }
         };
+        // Round the far side: how near a pane comes to the edge `direction` wraps to.
+        let far = |r: Rect| match direction {
+            Direction::Right => r.col,
+            Direction::Left => u16::MAX - (r.col + r.cols),
+            Direction::Down => r.row,
+            Direction::Up => u16::MAX - (r.row + r.rows),
+        };
         let (here_start, here_end) = span(here);
-        rects
-            .iter()
-            .enumerate()
-            .filter(|(_, (pane, _))| *pane != from)
-            .filter_map(|(order, &(pane, rect))| {
-                let (start, end) = span(rect);
-                let overlap = end.min(here_end).saturating_sub(start.max(here_start));
-                let recent = self.focused_at.get(&pane).copied().unwrap_or(0);
-                (overlap > 0).then_some(())?;
-                Some(((gap(rect)?, u64::MAX - recent, u16::MAX - overlap, order), pane))
-            })
-            .min()
-            .map(|(_, pane)| pane)
+        let nearest = |distance: &dyn Fn(Rect) -> Option<u16>| {
+            rects
+                .iter()
+                .enumerate()
+                .filter(|(_, (pane, _))| *pane != from)
+                .filter_map(|(order, &(pane, rect))| {
+                    let (start, end) = span(rect);
+                    let overlap = end.min(here_end).saturating_sub(start.max(here_start));
+                    let recent = self.focused_at.get(&pane).copied().unwrap_or(0);
+                    (overlap > 0).then_some(())?;
+                    Some(((distance(rect)?, u64::MAX - recent, u16::MAX - overlap, order), pane))
+                })
+                .min()
+                .map(|(_, pane)| pane)
+        };
+        nearest(&gap).or_else(|| wrap.then(|| nearest(&|rect| Some(far(rect)))).flatten())
     }
 
-    /// Moves the focus to the neighbour in `direction`, leaving zoom; `false` when there is none.
-    pub fn focus_toward(&mut self, direction: Direction, area: Rect) -> bool {
-        let Some(pane) = self.neighbor(self.focus, direction, area) else { return false };
+    /// Moves the focus from `from` to its neighbour in `direction` (see `neighbor`), leaving
+    /// zoom; the pane it moved to.
+    pub fn focus_toward(
+        &mut self,
+        from: PaneId,
+        direction: Direction,
+        area: Rect,
+        wrap: bool,
+    ) -> Option<PaneId> {
+        let pane = self.neighbor(from, direction, area, wrap)?;
         self.zoomed = false;
         self.set_focus(pane);
-        true
+        Some(pane)
+    }
+
+    pub fn contains(&self, pane: PaneId) -> bool {
+        self.root.contains(pane)
     }
 
     pub fn toggle_zoom(&mut self) {
@@ -491,6 +550,11 @@ impl Tabs {
         self.tabs.insert(self.active, Layout::new(pane));
     }
 
+    /// The tab holding `pane`.
+    pub fn find(&self, pane: PaneId) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.contains(pane))
+    }
+
     /// Shows tab `index` if there is one.
     pub fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
@@ -507,7 +571,7 @@ impl Tabs {
     /// Closes `pane` wherever it is. A tab left empty goes; the tab after it, else before it,
     /// shows if it was showing.
     pub fn close(&mut self, pane: PaneId) -> Option<Closed> {
-        let index = self.tabs.iter().position(|tab| tab.panes().contains(&pane))?;
+        let index = self.find(pane)?;
         if !self.tabs[index].close(pane) {
             return Some(Closed::Pane);
         }
@@ -645,35 +709,66 @@ mod tests {
     #[test]
     fn resizing_moves_the_nearest_divider_across_the_direction() {
         let mut layout = three();
-        // 3 (bottom right) growing up moves the stacked divider up.
-        layout.resize(3, Direction::Up, 3, AREA);
+        // 3 (bottom right) growing up moves the stacked divider up: an eighth of the 24 rows
+        // the right column's divider leaves.
+        layout.resize(3, Direction::Up, Amount::Fraction(0.125), AREA);
         assert_eq!(layout.rects(AREA)[2].1, rect(41, 10, 40, 15));
-        // 3 growing left moves the side-by-side divider, its nearest across that way.
-        layout.resize(3, Direction::Left, 5, AREA);
-        assert_eq!(layout.rects(AREA)[0].1.cols, 35);
+        // 3 growing left moves the side-by-side divider, its nearest across that way: tutti's
+        // step, 5% of 80 columns.
+        layout.resize(3, Direction::Left, Amount::Fraction(0.05), AREA);
+        assert_eq!(layout.rects(AREA)[0].1.cols, 36);
         // 1 has no stacked split above it: nothing moves.
         let before = layout.clone();
-        layout.resize(1, Direction::Down, 4, AREA);
+        layout.resize(1, Direction::Down, Amount::Fraction(0.2), AREA);
         assert_eq!(layout, before);
-        // Right from 1 moves the same divider back.
-        layout.resize(1, Direction::Right, 5, AREA);
+        // Right from 1 moves the same divider back; a sliver of the split is still a cell.
+        layout.resize(1, Direction::Right, Amount::Cells(4), AREA);
         assert_eq!(layout.rects(AREA)[0].1.cols, 40);
+        layout.resize(1, Direction::Right, Amount::Fraction(0.001), AREA);
+        assert_eq!(layout.rects(AREA)[0].1.cols, 41);
     }
 
     #[test]
     fn focus_moves_to_the_nearest_overlapping_pane() {
         let mut layout = three();
-        assert_eq!(layout.neighbor(3, Direction::Up, AREA), Some(2));
-        assert_eq!(layout.neighbor(3, Direction::Left, AREA), Some(1));
-        assert_eq!(layout.neighbor(1, Direction::Left, AREA), None);
-        assert_eq!(layout.neighbor(2, Direction::Down, AREA), Some(3));
+        let neighbor =
+            |layout: &Layout, from, direction| layout.neighbor(from, direction, AREA, false);
+        assert_eq!(neighbor(&layout, 3, Direction::Up), Some(2));
+        assert_eq!(neighbor(&layout, 3, Direction::Left), Some(1));
+        assert_eq!(neighbor(&layout, 1, Direction::Left), None);
+        assert_eq!(neighbor(&layout, 2, Direction::Down), Some(3));
         // From 1 both 2 and 3 are beside it: the last focused wins.
-        assert_eq!(layout.neighbor(1, Direction::Right, AREA), Some(3));
+        assert_eq!(neighbor(&layout, 1, Direction::Right), Some(3));
         layout.set_focus(2);
-        assert_eq!(layout.neighbor(1, Direction::Right, AREA), Some(2));
-        assert!(layout.focus_toward(Direction::Left, AREA));
+        assert_eq!(neighbor(&layout, 1, Direction::Right), Some(2));
+        assert_eq!(layout.focus_toward(2, Direction::Left, AREA, false), Some(1));
         assert_eq!(layout.focus(), 1);
-        assert!(!layout.focus_toward(Direction::Up, AREA));
+        assert_eq!(layout.focus_toward(1, Direction::Up, AREA, false), None);
+        // From any pane, not only the focused one.
+        assert_eq!(layout.focus_toward(3, Direction::Up, AREA, false), Some(2));
+    }
+
+    #[test]
+    fn wrapping_goes_round_to_the_farthest_pane_level_with_it() {
+        // 1 | ((2 | 4) / 3): 2 and 4 share the top of the right column, 3 its bottom.
+        let mut layout = three();
+        layout.split(2, Direction::Right, 4);
+        let wrap = |layout: &Layout, from, direction| layout.neighbor(from, direction, AREA, true);
+        // At the right edge, round to the leftmost pane level with it.
+        assert_eq!(layout.neighbor(4, Direction::Right, AREA, false), None);
+        assert_eq!(wrap(&layout, 4, Direction::Right), Some(1));
+        assert_eq!(wrap(&layout, 3, Direction::Right), Some(1));
+        // Not at an edge: the plain neighbour.
+        assert_eq!(wrap(&layout, 2, Direction::Right), Some(4));
+        // Down from 3 round to the top of its column, where 2 and 4 tie: the last focused, 4;
+        // without that history, the one overlapping it most, 2 (20 columns to 4's 19).
+        assert_eq!(wrap(&layout, 3, Direction::Down), Some(4));
+        let mut fresh = layout.clone();
+        fresh.focused_at.clear();
+        assert_eq!(wrap(&fresh, 3, Direction::Down), Some(2));
+        // Up from 1, which nothing overlaps across: an edge still.
+        assert_eq!(wrap(&layout, 1, Direction::Up), None);
+        assert_eq!(layout.focus_toward(4, Direction::Right, AREA, true), Some(1));
     }
 
     #[test]
@@ -690,15 +785,15 @@ mod tests {
         assert_eq!((rects[&1].rows, rects[&3].rows, rects[&4].rows, rects[&5].rows), (5, 12, 6, 5));
         // From 2 (rows 6–24) to the right: 3 (0–11), 4 (13–18) and 5 (20–24) all overlap it;
         // 5 was focused last of them, so it wins though it overlaps least.
-        assert_eq!(layout.neighbor(2, Direction::Right, AREA), Some(5));
+        assert_eq!(layout.neighbor(2, Direction::Right, AREA, false), Some(5));
         // Without that history, the most overlap, then the first: 3 (6 rows, as 4).
         let mut fresh = layout.clone();
         fresh.focused_at.clear();
-        assert_eq!(fresh.neighbor(2, Direction::Right, AREA), Some(3));
+        assert_eq!(fresh.neighbor(2, Direction::Right, AREA, false), Some(3));
         // From 3 to the left only 1 and 2 overlap; 1 was focused last.
-        assert_eq!(layout.neighbor(3, Direction::Left, AREA), Some(1));
+        assert_eq!(layout.neighbor(3, Direction::Left, AREA, false), Some(1));
         // From 5 to the left only 2 overlaps.
-        assert_eq!(layout.neighbor(5, Direction::Left, AREA), Some(2));
+        assert_eq!(layout.neighbor(5, Direction::Left, AREA, false), Some(2));
     }
 
     #[test]
@@ -713,7 +808,7 @@ mod tests {
         assert_eq!(grids, [(1, rect(0, 0, 40, 25)), (2, rect(41, 0, 40, 12)), (3, AREA)]);
         assert!(grids[1].1.contains(41, 11) && !grids[1].1.contains(41, 12));
         // Focus by direction still sees the whole layout, and leaves zoom.
-        assert!(layout.focus_toward(Direction::Up, AREA));
+        assert_eq!(layout.focus_toward(3, Direction::Up, AREA, false), Some(2));
         assert!(!layout.zoomed());
         layout.toggle_zoom();
         layout.split(2, Direction::Right, 4);

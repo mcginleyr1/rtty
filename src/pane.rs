@@ -10,7 +10,7 @@
 use std::ascii;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
@@ -19,6 +19,7 @@ use std::time::Instant;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use rtty_vt::{ColorScheme, Event, Terminal};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::scheme::{SLOTS, Scheme};
 use crate::selection::Selection;
@@ -224,6 +225,16 @@ impl Pane {
         self.scrolled = (top < term.screen_top()).then_some(top);
     }
 
+    /// The working directory of the process in the pty's foreground: its process group's leader,
+    /// the shell at a prompt, else the program the shell runs.
+    pub fn foreground_cwd(&self) -> Option<PathBuf> {
+        let leader = Pid::from_u32(u32::try_from(self.master.process_group_leader()?).ok()?);
+        let mut system = System::new();
+        let cwd = ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always);
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[leader]), true, cwd);
+        system.process(leader)?.cwd().map(Path::to_path_buf)
+    }
+
     /// The selected text, as it is copied.
     pub fn selected_text(&self) -> Option<String> {
         let term = self.lock();
@@ -364,6 +375,20 @@ mod tests {
         let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("E]11;rgb:2828/2c2c/3434B"), "{screen}");
+    }
+
+    /// No OSC 7: the shell `cd`s and execs a program, which then holds the foreground.
+    #[test]
+    fn the_foreground_process_tells_its_working_directory() {
+        let dir = std::env::temp_dir().join(format!("rtty-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = format!("cd '{}' && printf ready && exec sleep 5", dir.display());
+        let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None).unwrap();
+        wait_for(&pane, "ready");
+        let cwd = pane.foreground_cwd().unwrap();
+        assert_eq!(cwd.canonicalize().unwrap(), dir.canonicalize().unwrap());
+        drop(pane);
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

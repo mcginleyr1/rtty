@@ -42,6 +42,19 @@ pub fn encode(keystroke: &Keystroke, modes: Modes, event: Event) -> Option<Vec<u
     (event != Event::Release).then(|| legacy(keystroke, modes)).flatten()
 }
 
+/// A chord rtty acts on (Cmd+Opt+arrows, or tutti's Ctrl+h and Alt+h), for a program that
+/// claimed them: as `encode` sends the key, Cmd as the kitty protocol's super modifier. `None`
+/// when the program's encoding cannot say it: Cmd has no xterm form that Emacs or others decode
+/// (Emacs reads `CSI 1 ; 11 D` as an undefined `M-[ 1 ; 1`), so outside the kitty protocol a Cmd
+/// chord stays rtty's.
+pub fn encode_chord(keystroke: &Keystroke, modes: Modes) -> Option<Vec<u8>> {
+    if !keystroke.modifiers.platform {
+        return encode(keystroke, modes, Event::Press);
+    }
+    let kitty_keys = modes.kitty & (DISAMBIGUATE | ALL_KEYS) != 0;
+    kitty_keys.then(|| kitty(keystroke, modes.kitty, Event::Press)).flatten()
+}
+
 /// xterm's encodings: control characters, an ESC prefix for Alt, `CSI 1 ; m X` and `CSI n ; m ~`
 /// with modifier parameters, and `CSI 27 ; m ; code ~` for what modifyOtherKeys asks for.
 fn legacy(keystroke: &Keystroke, modes: Modes) -> Option<Vec<u8>> {
@@ -129,7 +142,10 @@ fn legacy(keystroke: &Keystroke, modes: Modes) -> Option<Vec<u8>> {
 /// Backspace stay legacy without modifiers, as the protocol has it.
 fn kitty(keystroke: &Keystroke, flags: u8, event: Event) -> Option<Vec<u8>> {
     let mods = &keystroke.modifiers;
-    let bits = u8::from(mods.shift) + 2 * u8::from(mods.alt) + 4 * u8::from(mods.control);
+    let bits = u8::from(mods.shift)
+        + 2 * u8::from(mods.alt)
+        + 4 * u8::from(mods.control)
+        + 8 * u8::from(mods.platform);
     let all = flags & ALL_KEYS != 0;
     let events = flags & EVENT_TYPES != 0;
     if event == Event::Release && !events {
@@ -430,6 +446,25 @@ mod tests {
         assert_eq!(event("a", rich, Event::Press).unwrap(), "\x1b[97;;97u");
         assert_eq!(event("ctrl-a", rich, Event::Press).unwrap(), "\x1b[97;5u");
         assert_eq!(event("escape", rich, Event::Press).unwrap(), "\x1b[27u");
+    }
+
+    /// Probed with nvim 0.12 (kitty flags 3): `CSI 1;11D` reads as `<M-D-Left>`, `CSI 1;13A` as
+    /// `<C-D-Up>`. Emacs -nw decodes no Cmd form, so its claim covers tutti's keys alone.
+    #[test]
+    fn claimed_chords_carry_cmd_only_in_the_kitty_protocol() {
+        let kitty = Modes { kitty: DISAMBIGUATE | EVENT_TYPES, ..Modes::default() };
+        let emacs = Modes { modify_other_keys: 1, ..Modes::default() };
+        let chord = |source, modes| text(encode_chord(&Keystroke::parse(source).unwrap(), modes));
+        assert_eq!(chord("cmd-alt-left", kitty).unwrap(), "\x1b[1;11D");
+        assert_eq!(chord("cmd-ctrl-up", kitty).unwrap(), "\x1b[1;13A");
+        assert_eq!(chord("cmd-alt-left", Modes::default()), None);
+        assert_eq!(chord("cmd-alt-left", emacs), None);
+        assert_eq!(chord("ctrl-h", emacs).unwrap(), "\x08");
+        assert_eq!(chord("alt-l", emacs).unwrap(), "\x1bl");
+        assert_eq!(chord("ctrl-h", kitty).unwrap(), "\x1b[104;5u");
+        assert_eq!(chord("alt-k", kitty).unwrap(), "\x1b[107;3u");
+        // Unclaimed, Cmd stays the app's whatever the mode.
+        assert_eq!(press("cmd-alt-left", kitty), None);
     }
 
     #[test]

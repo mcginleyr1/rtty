@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,7 +21,9 @@ use gpui::{
 use portable_pty::CommandBuilder;
 use rtty_vt::BACKGROUND;
 
-use crate::layout::{Closed, Direction, Orientation, PaneId, Rect, Tabs};
+use crate::cli::RESIZE_STEP;
+use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
+use crate::layout::{Amount, Closed, Direction, Orientation, PaneId, Rect, Tabs};
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::scheme::Scheme;
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
@@ -30,23 +33,27 @@ actions!(
     [NewWindow, NewTab, ClosePane, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab]
 );
 
-/// Moves the keyboard to the nearest pane that way.
+/// Moves the keyboard to the nearest pane that way. `keystroke` is the chord bound to it, which
+/// goes to the pane instead when the pane claimed the keys (`PaneView::claimed_chord`).
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = rtty, no_json)]
-pub struct MoveFocus(pub Direction);
+pub struct MoveFocus {
+    pub direction: Direction,
+    pub keystroke: String,
+}
 
-/// Moves the focused pane's nearest divider across that way.
+/// Moves the focused pane's nearest divider across that way; claimable as `MoveFocus` is.
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = rtty, no_json)]
-pub struct ResizePane(pub Direction);
+pub struct ResizePane {
+    pub direction: Direction,
+    pub keystroke: String,
+}
 
 /// Shows the tab at this index.
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = rtty, no_json)]
 pub struct SelectTab(pub usize);
-
-/// The cells one Cmd+Ctrl+arrow moves a divider.
-const RESIZE_STEP: u16 = 2;
 
 /// Above and below a tab's title.
 const TAB_PADDING: Pixels = px(6.);
@@ -81,23 +88,71 @@ pub fn open(command: CommandBuilder, cx: &mut App) -> Result<WindowHandle<Termin
     .map_err(|err| format!("cannot open a window: {err}"))
 }
 
+/// The user's login shell, started in `cwd`, else (or where that is gone) in their home
+/// directory.
+fn shell(cwd: Option<PathBuf>) -> CommandBuilder {
+    let mut command = CommandBuilder::new_default_prog();
+    if let Some(dir) = cwd {
+        command.cwd(dir);
+    }
+    command
+}
+
 /// Pane ids are unique across windows, so `--trace` lines name one pane.
 fn next_pane_id() -> PaneId {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Starts pane `id`'s program, which finds its pane and the way to `rtty cli` in `RTTY_PANE` and
+/// `RTTY_SOCKET`.
 fn spawn(
-    command: CommandBuilder,
+    mut command: CommandBuilder,
     id: PaneId,
     rows: u16,
     cols: u16,
     scheme: &Scheme,
     cx: &App,
 ) -> Result<(Pane, UnboundedReceiver<Notice>), String> {
-    let trace = cx.global::<Settings>().trace.as_ref().map(|trace| trace.for_pane(id));
+    let settings = cx.global::<Settings>();
+    command.env("RTTY_PANE", id.to_string());
+    command.env("RTTY_SOCKET", &settings.socket);
+    let trace = settings.trace.as_ref().map(|trace| trace.for_pane(id));
     Pane::spawn(command, rows, cols, Some(scheme), trace)
         .map_err(|err| format!("cannot start the shell: {err}"))
+}
+
+/// Answers `rtty cli` in the window holding the request's pane, or for none, the active window
+/// (else the first) at its focused pane.
+pub fn answer(request: Request, cx: &mut App) -> Response {
+    let windows: Vec<WindowHandle<TerminalWindow>> =
+        cx.windows().into_iter().filter_map(|window| window.downcast()).collect();
+    if request == Request::List {
+        let info = windows
+            .iter()
+            .filter_map(|handle| handle.update(cx, |this, window, cx| this.info(window, cx)).ok());
+        return Response::Windows(info.collect());
+    }
+    let pane = match request {
+        Request::Focus { pane } => Some(pane),
+        Request::FocusToward { from, .. } | Request::Resize { from, .. } => from,
+        Request::Split { pane, .. } | Request::Zoom { pane } => pane,
+        Request::List => None,
+    };
+    let holds = |handle: &&WindowHandle<TerminalWindow>, cx: &App| match pane {
+        Some(pane) => handle.read(cx).is_ok_and(|this| this.views.contains_key(&pane)),
+        None => cx.active_window().map(|active| active.window_id()) == Some(handle.window_id()),
+    };
+    let target = windows.iter().find(|handle| holds(handle, cx)).or(match pane {
+        Some(_) => None,
+        None => windows.first(),
+    });
+    let Some(target) = target else {
+        return Response::Error(pane.map_or("no window".into(), |pane| format!("no pane {pane}")));
+    };
+    target
+        .update(cx, |this, window, cx| this.answer(request, window, cx))
+        .unwrap_or_else(|err| Response::Error(err.to_string()))
 }
 
 impl TerminalWindow {
@@ -143,14 +198,9 @@ impl TerminalWindow {
         self.views.get(&self.tabs.active().focus()).cloned()
     }
 
-    /// The user's login shell, started where the focused pane's shell last said it was (OSC 7),
-    /// else in their home directory.
-    fn shell(&self, cx: &App) -> CommandBuilder {
-        let mut command = CommandBuilder::new_default_prog();
-        if let Some(dir) = self.focused().and_then(|view| view.read(cx).cwd()) {
-            command.cwd(dir);
-        }
-        command
+    /// The focused pane's working directory (`PaneView::cwd`), for a new pane, tab or window.
+    fn focused_cwd(&self, cx: &App) -> Option<PathBuf> {
+        self.focused().and_then(|view| view.read(cx).cwd())
     }
 
     /// The cells the panes share, the size of a cell, and the height of the tab bar above them
@@ -260,27 +310,116 @@ impl TerminalWindow {
         }
     }
 
-    /// Splits the focused pane, the new one starting in its working directory.
-    fn split(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+    /// Splits `from`, showing its tab; the new pane starts in `from`'s working directory and
+    /// takes the keyboard.
+    fn split(
+        &mut self,
+        from: PaneId,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<PaneId, String> {
+        self.tabs.select(self.tabs.find(from).ok_or(format!("no pane {from}"))?);
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
         let mut layout = self.tabs.active().clone();
-        layout.split(layout.focus(), direction, id);
+        layout.split(from, direction, id);
         let rects = layout.rects(area);
-        let Some((_, rect)) = rects.iter().find(|(pane, _)| *pane == id) else { return };
-        match spawn(self.shell(cx), id, rect.rows, rect.cols, &self.scheme, cx) {
-            Ok((pane, notices)) => {
-                *self.tabs.active_mut() = layout;
-                self.add(id, pane, notices, window, cx);
+        let (_, rect) =
+            rects.iter().find(|(pane, _)| *pane == id).expect("the new pane is laid out");
+        let cwd = self.views.get(&from).and_then(|view| view.read(cx).cwd());
+        let (pane, notices) = spawn(shell(cwd), id, rect.rows, rect.cols, &self.scheme, cx)?;
+        *self.tabs.active_mut() = layout;
+        self.add(id, pane, notices, window, cx);
+        Ok(id)
+    }
+
+    fn split_focused(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(err) = self.split(self.tabs.active().focus(), direction, window, cx) {
+            eprintln!("rtty: {err}");
+        }
+    }
+
+    /// Shows `pane`'s tab and gives it the keyboard.
+    fn show(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.find(pane) {
+            self.tabs.select(tab);
+            self.tabs.active_mut().set_focus(pane);
+            self.focus_shown(window, cx);
+        }
+    }
+
+    /// `rtty cli`'s request, for a pane in this window (or with none, the focused pane).
+    fn answer(
+        &mut self,
+        request: Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Response {
+        let focused = self.tabs.active().focus();
+        match request {
+            Request::List => Response::Windows(vec![self.info(window, cx)]),
+            Request::Focus { pane } => {
+                self.show(pane, window, cx);
+                Response::Done
             }
-            Err(err) => eprintln!("rtty: {err}"),
+            Request::FocusToward { from, direction, wrap } => {
+                let from = from.unwrap_or(focused);
+                match self.focus_toward(from, direction, wrap, window, cx) {
+                    Some(pane) => Response::Pane(pane),
+                    None => Response::Edge { from, direction },
+                }
+            }
+            Request::Resize { from, direction, amount } => {
+                self.resize(from.unwrap_or(focused), direction, amount, window, cx);
+                Response::Done
+            }
+            Request::Split { pane, direction } => self
+                .split(pane.unwrap_or(focused), direction, window, cx)
+                .map_or_else(Response::Error, Response::Pane),
+            Request::Zoom { pane } => {
+                self.show(pane.unwrap_or(focused), window, cx);
+                self.tabs.active_mut().toggle_zoom();
+                cx.notify();
+                Response::Done
+            }
+        }
+    }
+
+    /// The window's tabs and panes, for `rtty cli list`.
+    fn info(&self, window: &Window, cx: &App) -> WindowInfo {
+        let tabs = self.tabs.all().iter().enumerate().map(|(index, tab)| TabInfo {
+            active: index == self.tabs.index(),
+            zoomed: tab.zoomed(),
+            panes: tab
+                .panes()
+                .into_iter()
+                .filter_map(|id| {
+                    let view = self.views.get(&id)?.read(cx);
+                    let (rows, cols) = view.size();
+                    Some(PaneInfo {
+                        id,
+                        focused: id == tab.focus(),
+                        title: view.title(),
+                        cwd: view.cwd(),
+                        rows,
+                        cols,
+                        claims_keys: view.claims_keys(),
+                    })
+                })
+                .collect(),
+        });
+        WindowInfo {
+            id: window.window_handle().window_id().as_u64(),
+            active: window.is_window_active(),
+            tabs: tabs.collect(),
         }
     }
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
-        match spawn(self.shell(cx), id, area.rows, area.cols, &self.scheme, cx) {
+        match spawn(shell(self.focused_cwd(cx)), id, area.rows, area.cols, &self.scheme, cx) {
             Ok((pane, notices)) => {
                 self.tabs.open(id);
                 self.add(id, pane, notices, window, cx);
@@ -290,7 +429,7 @@ impl TerminalWindow {
     }
 
     fn new_window(&mut self, _: &NewWindow, _: &mut Window, cx: &mut Context<Self>) {
-        let command = self.shell(cx);
+        let command = shell(self.focused_cwd(cx));
         // Opened once this window's update is done, so it cascades from this one.
         cx.defer(move |cx| {
             if let Err(err) = open(command, cx) {
@@ -299,28 +438,39 @@ impl TerminalWindow {
         });
     }
 
-    /// Moves the keyboard to the pane nearest the focused one in `direction`, as Cmd+Opt+arrows
-    /// do; `false` when there is none that way. One call for anything that navigates, such as an
-    /// editor moving past its own last split into the terminal's.
+    /// Moves the keyboard from `from` to the nearest pane in `direction` (with `wrap`, round to
+    /// the farthest on the other side), showing their tab; the pane it went to, or `None` at an
+    /// edge. The one call for everything that navigates: Cmd+Opt+arrows, `rtty cli pane focus`,
+    /// and so an editor moving on past its own last window.
     pub fn focus_toward(
         &mut self,
+        from: PaneId,
         direction: Direction,
+        wrap: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> Option<PaneId> {
+        self.tabs.select(self.tabs.find(from)?);
         let (area, ..) = self.area(window, cx);
-        let moved = self.tabs.active_mut().focus_toward(direction, area);
-        if moved {
-            self.focus_shown(window, cx);
-        }
+        let moved = self.tabs.active_mut().focus_toward(from, direction, area, wrap);
+        self.focus_shown(window, cx);
         moved
     }
 
-    fn resize_pane(&mut self, action: &ResizePane, window: &mut Window, cx: &mut Context<Self>) {
+    /// Moves the divider nearest `from` across `direction` by `amount`.
+    fn resize(
+        &mut self,
+        from: PaneId,
+        direction: Direction,
+        amount: Amount,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.find(from) else { return };
+        self.tabs.select(tab);
         let (area, ..) = self.area(window, cx);
-        let layout = self.tabs.active_mut();
-        layout.resize(layout.focus(), action.0, RESIZE_STEP, area);
-        cx.notify();
+        self.tabs.active_mut().resize(from, direction, amount, area);
+        self.focus_shown(window, cx);
     }
 
     fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -500,18 +650,20 @@ impl Render for TerminalWindow {
             .size_full()
             .bg(hsla(self.scheme.color(BACKGROUND)))
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
-                this.split(Direction::Right, window, cx)
+                this.split_focused(Direction::Right, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
-                this.split(Direction::Down, window, cx)
+                this.split_focused(Direction::Down, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
                 this.close(this.tabs.active().focus(), window, cx)
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {
-                this.focus_toward(action.0, window, cx);
+                this.focus_toward(this.tabs.active().focus(), action.direction, false, window, cx);
             }))
-            .on_action(cx.listener(Self::resize_pane))
+            .on_action(cx.listener(|this, action: &ResizePane, window, cx| {
+                this.resize(this.tabs.active().focus(), action.direction, RESIZE_STEP, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| {
                 this.tabs.active_mut().toggle_zoom();
                 cx.notify();

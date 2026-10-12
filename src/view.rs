@@ -13,13 +13,13 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, LineLayout,
+    EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
     Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun,
     UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
     div, fill, outline, point, prelude::*, px, size,
 };
-use rtty_vt::{Event, FOREGROUND, MouseEncoding, MouseMode, Rgb, Underline};
+use rtty_vt::{Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline};
 
 use crate::config::Theme;
 use crate::keys;
@@ -28,6 +28,7 @@ use crate::pane::{Notice, Pane, Trace};
 use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
+use crate::window::{MoveFocus, ResizePane};
 
 actions!(rtty, [Copy, Paste]);
 
@@ -47,6 +48,8 @@ pub struct Settings {
     pub theme: Theme,
     pub stats: bool,
     pub trace: Option<Trace>,
+    /// Where `rtty cli` reaches this rtty; each pane's `RTTY_SOCKET`.
+    pub socket: PathBuf,
 }
 
 impl Global for Settings {}
@@ -66,6 +69,11 @@ pub struct PaneView {
     mouse_cell: Option<(u16, u16)>,
     /// A button went down in this pane and has not come up: the drag is this pane's.
     pressed: bool,
+    /// The program claimed rtty's navigation and resize chords (user var `RTTY_KEYS=pane`),
+    /// until it clears the var or a shell draws its next prompt (OSC 133;A).
+    claims_keys: bool,
+    /// Keys whose press went to the program and whose release has not.
+    keys_down: Vec<String>,
     /// The grid and cell size in pixels the window last gave the pane.
     grid: (u16, u16, (u16, u16)),
     /// The pane has the keyboard in the active window, as last reported to the program.
@@ -198,6 +206,8 @@ impl PaneView {
             scroll_remainder: px(0.),
             mouse_cell: None,
             pressed: false,
+            claims_keys: false,
+            keys_down: Vec::new(),
             grid: (rows, cols, (0, 0)),
             focused: window.is_window_active(),
             sync_since: None,
@@ -237,9 +247,34 @@ impl PaneView {
         self.pane.lock().title().to_owned()
     }
 
-    /// The directory the shell last reported (OSC 7).
+    /// The grid, as rows and columns.
+    pub fn size(&self) -> (u16, u16) {
+        (self.grid.0, self.grid.1)
+    }
+
+    pub fn claims_keys(&self) -> bool {
+        self.claims_keys
+    }
+
+    /// The directory the shell last reported (OSC 7), else the foreground process's: most
+    /// shells on macOS send OSC 7 only in Terminal.app.
     pub fn cwd(&self) -> Option<PathBuf> {
-        self.pane.lock().cwd().map(PathBuf::from)
+        let reported = self.pane.lock().cwd().map(PathBuf::from);
+        reported.or_else(|| self.pane.foreground_cwd())
+    }
+
+    /// A navigation or resize chord: the program's when it claimed them and its encoding can say
+    /// the chord (`keys::encode_chord`), else the window's to act on.
+    fn claimed_chord(&mut self, keystroke: &str, cx: &mut Context<Self>) {
+        let keystroke = Keystroke::parse(keystroke).expect("bound chords parse");
+        let modes = self.key_modes();
+        match self.claims_keys.then(|| keys::encode_chord(&keystroke, modes)).flatten() {
+            Some(bytes) => {
+                self.keys_down.push(keystroke.key);
+                self.input(bytes, cx)
+            }
+            None => cx.propagate(),
+        }
     }
 
     /// The OS switched between light and dark: repaint with the other scheme (cells keep color
@@ -260,6 +295,12 @@ impl PaneView {
         match notice {
             Notice::Output | Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
             Notice::Event(Event::Title(_)) => cx.emit(PaneEvent::Title),
+            Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
+                self.claims_keys = value == "pane"
+            }
+            Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
+                self.claims_keys = false
+            }
             Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -302,12 +343,18 @@ impl PaneView {
             cx.stop_propagation();
         }
         if let Some(bytes) = bytes {
+            self.keys_down.push(keystroke.key.clone());
             self.input(bytes, cx);
         }
     }
 
-    /// Releases matter only to a program that asked for kitty's event types.
+    /// Releases matter only to a program that asked for kitty's event types, and only for keys
+    /// whose press it got: a chord that moved the focus here is released here too.
     pub fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        if !self.keys_down.contains(&event.keystroke.key) {
+            return;
+        }
+        self.keys_down.retain(|key| *key != event.keystroke.key);
         if let Some(bytes) = keys::encode(&event.keystroke, self.key_modes(), keys::Event::Release)
         {
             self.pane.write(bytes);
@@ -1016,6 +1063,12 @@ impl Render for PaneView {
             .key_context("Terminal")
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(|view, action: &MoveFocus, _, cx| {
+                view.claimed_chord(&action.keystroke, cx)
+            }))
+            .on_action(cx.listener(|view, action: &ResizePane, _, cx| {
+                view.claimed_chord(&action.keystroke, cx)
+            }))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))

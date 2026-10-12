@@ -15,9 +15,21 @@ pub struct Config {
     pub font: Option<String>,
     pub size: Option<f32>,
     pub ligatures: Option<bool>,
+    pub keys: Option<Keys>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
+}
+
+/// Which keys move between panes and resize them.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Keys {
+    /// Cmd+Opt+arrows and Cmd+Ctrl+arrows: every Ctrl key stays with the programs.
+    #[default]
+    Rtty,
+    /// Also tutti's direct keys, Ctrl+h/j/k/l and Alt+h/j/k/l, unless the pane claims them.
+    Tutti,
 }
 
 /// The scheme for each window appearance.
@@ -118,5 +130,15 @@ mod tests {
         assert_eq!(config.font.as_deref(), Some("FiraCode Nerd Font"));
         assert_eq!(config.size, Some(12.));
         assert_eq!(config.ligatures, Some(false));
+    }
+
+    #[test]
+    fn keys_are_rttys_or_tuttis() {
+        let keys = |source| toml::from_str::<Config>(source).map(|config| config.keys);
+        assert_eq!(keys("").unwrap(), None);
+        assert_eq!(keys("keys = 'rtty'").unwrap(), Some(Keys::Rtty));
+        assert_eq!(keys("keys = 'tutti'").unwrap(), Some(Keys::Tutti));
+        let err = keys("keys = 'vim'").unwrap_err().to_string();
+        assert!(err.contains("unknown variant `vim`, expected `rtty` or `tutti`"), "{err}");
     }
 }
