@@ -61,6 +61,31 @@ fn a_narrow_cluster_widens_as_wcwidth_sums_it() {
     assert_eq!(term.cursor_position(), (1, 2));
 }
 
+/// Widening a cluster gives it and its spacer a side entry each. The row
+/// can compact its side entries in between — due here when the spacer's is
+/// interned: 31 written, the 32nd new — and the cluster keeps its own.
+#[test]
+fn a_widened_cluster_keeps_its_side_entry_through_a_compaction() {
+    // Each an `x` in the last column, underlined in a colour of its own.
+    let fillers = |colours: std::ops::Range<u32>| -> String {
+        colours.map(|colour| format!("\x1b[1;8H\x1b[58:5:{colour}mx")).collect()
+    };
+    let term = fed(
+        8,
+        &format!(
+            "{}\x1b[1;1H\x1b[58:5:7ma{}\x1b[1;3H\x1b[58:5:7ml🏽",
+            fillers(100..123),
+            fillers(200..207)
+        ),
+    );
+    let row = term.screen_row(0);
+    assert_eq!(row.cluster(2), Some("l🏽"));
+    assert!(row.cells()[2].is_wide() && row.cells()[3].is_spacer());
+    let colours: Vec<_> = (0..4).map(|col| row.underline_color(col)).collect();
+    let seven = rtty_vt::Color::Indexed(7);
+    assert_eq!(colours, [seven, rtty_vt::Color::Default, seven, seven]);
+}
+
 #[test]
 fn variation_selector_16_joins_without_widening() {
     let term = fed(10, "\u{2764}\u{FE0F}x");

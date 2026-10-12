@@ -668,10 +668,12 @@ impl Terminal {
         let mut wide = cell;
         wide.extra = extra.map_or(0, |extra| line.intern(extra));
         wide.set_wide();
+        // In the row before the spacer's entry is interned: interning can
+        // compact the entries, renumbering only the cells the row holds.
+        line.cells[col] = wide;
         let mut spacer =
             Cell::new(' ', cell.fg, cell.bg, cell.attrs(), line.pen_extra(underline, &link));
         spacer.set_spacer();
-        line.cells[col] = wide;
         line.cells[col + 1] = spacer;
         line.touch(col + 2);
         line.wrapped &= col + 2 < cols;
