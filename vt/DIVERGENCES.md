@@ -36,6 +36,7 @@ cover those features instead.
 | A row's soft wrap after DCH then an insert | any insert or delete ends the soft wrap | the flag lives on the last cell and travels with it, so an insert can move it back to the end and wrap the row again | `Oracle` veto (alacritty has a wrap flag away from a row's end) |
 | Blink, overline | kept | not kept | not compared |
 | `vte` 0.15 dropping a character after a UTF-8 character split across reads | split characters are held back until whole | the character after a split one can be lost | alacritty is fed on character boundaries |
+| An OSC string longer than `OSC_MAX` (1 MiB) | dropped whole, its terminator too (an `ESC` that ends it starts what follows): `vte`'s buffer never holds more | buffered without bound until it ends, then dispatched | not compared: the grammar's strings are short |
 
 ## alacritty_terminal bugs found by the comparison
 

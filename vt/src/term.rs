@@ -99,11 +99,32 @@ const KITTY_STACK_MAX: usize = 16;
 const TITLE_STACK_MAX: usize = 16;
 const EVENTS_MAX: usize = 4096;
 
+/// The longest OSC string kept, in bytes. `vte` buffers a string whole
+/// until it ends; one that runs past this is dropped, nothing dispatched,
+/// so a program that never ends one cannot grow the buffer without bound.
+/// Room for an OSC 52 copy of 768 KiB of text.
+pub const OSC_MAX: usize = 1 << 20;
+
+/// Where the bytes fed so far stand against `OSC_MAX`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Osc {
+    /// Outside an OSC string.
+    #[default]
+    Out,
+    /// Just after an `ESC`, before the byte that says what it starts.
+    Esc,
+    /// Inside one, that many bytes in.
+    In(usize),
+    /// Inside one that ran past the limit: skipped up to its end.
+    Skip,
+}
+
 /// A terminal's state, fed the bytes a program writes. It does no IO:
 /// `advance` mutates the grid and queues events — replies for the pty among
 /// them — that the host drains with `take_events`.
 pub struct Terminal {
     parser: vte::Parser,
+    osc: Osc,
     /// The start of a UTF-8 character the last `advance` ended in.
     held: Vec<u8>,
     /// The printed characters gathered for one write, kept for its
@@ -147,6 +168,7 @@ impl Terminal {
         let (rows, cols) = (rows.max(1), cols.max(1));
         Terminal {
             parser: vte::Parser::new(),
+            osc: Osc::Out,
             held: Vec::new(),
             run: Vec::new(),
             grid: Grid::new(rows, cols, scrollback),
@@ -177,9 +199,10 @@ impl Terminal {
     ///
     /// A UTF-8 character split across calls is held back until it is whole:
     /// `vte` 0.15 resumes one itself, but can then swallow the character
-    /// after it.
+    /// after it. An OSC string longer than `OSC_MAX` is dropped.
     pub fn advance(&mut self, mut bytes: &[u8]) {
         let mut parser = std::mem::take(&mut self.parser);
+        let mut osc = std::mem::take(&mut self.osc);
         let held = if let Some(&lead) = self.held.first() {
             let take = (utf8_len(lead) - self.held.len()).min(bytes.len());
             self.held.extend_from_slice(&bytes[..take]);
@@ -195,13 +218,14 @@ impl Terminal {
         let whole = whole_chars(bytes);
         let run = std::mem::take(&mut self.run);
         let mut performer = Performer(self, run);
-        parser.advance(&mut performer, &held);
-        parser.advance(&mut performer, &bytes[..whole]);
+        feed(&mut parser, &mut osc, &mut performer, &held);
+        feed(&mut parser, &mut osc, &mut performer, &bytes[..whole]);
         performer.flush();
         let Performer(term, run) = performer;
         term.run = run;
         term.held.extend_from_slice(&bytes[whole..]);
         term.parser = parser;
+        term.osc = osc;
     }
 
     /// The events queued since the last call, in stream order. Drain after
@@ -1205,6 +1229,88 @@ impl Row {
     }
 }
 
+/// Feed `bytes` to `parser`, dropping each OSC string that runs past
+/// `OSC_MAX`: where the limit falls the parser starts afresh, out of the
+/// string with nothing dispatched, and the rest of the string is skipped up
+/// to the BEL, CAN or SUB that ends it (dropped too) or the `ESC` (fed: it
+/// starts what follows).
+fn feed(parser: &mut vte::Parser, osc: &mut Osc, performer: &mut Performer, mut bytes: &[u8]) {
+    loop {
+        if let Osc::Skip = osc {
+            let Some(end) = bytes.iter().position(|&b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
+            else {
+                return;
+            };
+            bytes = &bytes[end + usize::from(bytes[end] != 0x1b)..];
+            *osc = Osc::Out;
+        }
+        let Some(at) = past_limit(osc, bytes) else {
+            return parser.advance(performer, bytes);
+        };
+        parser.advance(performer, &bytes[..at]);
+        *parser = vte::Parser::new();
+        // Something came between the text on either side.
+        performer.flush();
+        performer.0.joinable = false;
+        *osc = Osc::Skip;
+        bytes = &bytes[at..];
+    }
+}
+
+/// Step `osc` over `bytes`, as `vte` enters and leaves OSC strings: the
+/// offset of the first byte past `OSC_MAX` in one, if a string runs that
+/// far, with `osc` left where it stands there.
+fn past_limit(osc: &mut Osc, bytes: &[u8]) -> Option<usize> {
+    // C0 controls but CAN, SUB and ESC, DEL and high bytes leave vte's
+    // escape state as it was; so an `ESC` and then any of them leave it
+    // escaped.
+    let stays = |b: u8| matches!(b, 0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff);
+    let escaped = |bytes: &[u8]| bytes.iter().rev().find(|&&b| !stays(b)) == Some(&0x1b);
+    let mut i = 0;
+    while i < bytes.len() {
+        match *osc {
+            // A string opens at a `]` with an `ESC` before it: searching
+            // for the `]`s leaves the many `ESC [` of a busy stream be.
+            Osc::Out => {
+                let Some(at) = memchr::memchr(b']', &bytes[i..]).map(|at| i + at) else {
+                    if escaped(&bytes[i..]) {
+                        *osc = Osc::Esc;
+                    }
+                    return None;
+                };
+                if escaped(&bytes[i..at]) {
+                    *osc = Osc::In(0);
+                }
+                i = at + 1;
+            }
+            Osc::Esc => {
+                *osc = match bytes[i] {
+                    b']' => Osc::In(0),
+                    b if b == 0x1b || stays(b) => Osc::Esc,
+                    _ => Osc::Out,
+                };
+                i += 1;
+            }
+            Osc::In(len) => {
+                let window = &bytes[i..bytes.len().min(i + OSC_MAX - len + 1)];
+                match window.iter().position(|&b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b)) {
+                    Some(end) => {
+                        *osc = if window[end] == 0x1b { Osc::Esc } else { Osc::Out };
+                        i += end + 1;
+                    }
+                    None if len + window.len() > OSC_MAX => return Some(i + OSC_MAX - len),
+                    None => {
+                        *osc = Osc::In(len + window.len());
+                        return None;
+                    }
+                }
+            }
+            Osc::Skip => unreachable!("skipped before stepping"),
+        }
+    }
+    None
+}
+
 /// The length of the UTF-8 sequence `lead` starts; 1 for anything that
 /// starts none.
 fn utf8_len(lead: u8) -> usize {
@@ -1255,4 +1361,44 @@ fn regional_indicator(c: char) -> bool {
 
 fn emoji_modifier(c: char) -> bool {
     ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// `vte`'s way into and out of OSC strings, a byte at a time.
+    fn step(osc: Osc, b: u8) -> Osc {
+        match (osc, b) {
+            (Osc::In(_), 0x07 | 0x18 | 0x1a) => Osc::Out,
+            (_, 0x1b) => Osc::Esc,
+            (Osc::In(len), _) => Osc::In(len + 1),
+            (Osc::Esc, b']') => Osc::In(0),
+            (Osc::Esc, 0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff) => Osc::Esc,
+            _ => Osc::Out,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 5000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        #[test]
+        fn osc_strings_open_and_close_as_vte_finds_them(
+            stream in prop::collection::vec(
+                prop::sample::select(b"\x1b\x1b]]\x07\x18\x1a\x00\x7f\xc3\xa9[Pa;\\".to_vec()),
+                0..200,
+            ),
+            cut in 0usize..200,
+        ) {
+            let want = stream.iter().fold(Osc::Out, |osc, &b| step(osc, b));
+            let (head, tail) = stream.split_at(cut.min(stream.len()));
+            let mut got = Osc::Out;
+            for read in [head, tail] {
+                prop_assert_eq!(past_limit(&mut got, read), None);
+            }
+            prop_assert_eq!(got, want);
+        }
+    }
 }

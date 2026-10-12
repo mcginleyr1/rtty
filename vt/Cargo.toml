@@ -8,6 +8,7 @@ description = "A terminal state engine: VT parser dispatch, grid, scrollback, mo
 [workspace]
 
 [dependencies]
+memchr = "2.7"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 vte = "0.15"

@@ -427,6 +427,7 @@ name = "rtty-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "memchr",
  "proptest",
  "serde_json",
  "unicode-segmentation",

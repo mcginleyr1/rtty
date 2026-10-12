@@ -61,4 +61,4 @@ pub use dispatch::XTERM_VERSION;
 pub use event::{Event, Mark, MarkKind, ModeChange};
 pub use modes::{CursorShape, CursorStyle, Modes, MouseEncoding, MouseMode};
 pub use row::{Hyperlink, Row};
-pub use term::{BACKGROUND, CURSOR, ColorScheme, FOREGROUND, Rgb, Terminal};
+pub use term::{BACKGROUND, CURSOR, ColorScheme, FOREGROUND, OSC_MAX, Rgb, Terminal};

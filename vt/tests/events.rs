@@ -2,13 +2,55 @@
 //! clipboard, shell integration, user vars, program status, links, modes.
 
 use rtty_vt::{
-    CursorShape, CursorStyle, Event, Mark, MarkKind, ModeChange, MouseEncoding, MouseMode, Terminal,
+    Attrs, CursorShape, CursorStyle, Event, Mark, MarkKind, ModeChange, MouseEncoding, MouseMode,
+    OSC_MAX, Terminal,
 };
 
 fn events(bytes: &str) -> Vec<Event> {
     let mut term = Terminal::new(24, 80, 100);
     term.advance(bytes.as_bytes());
     term.take_events()
+}
+
+/// An OSC string is kept up to `OSC_MAX` bytes. One longer is dropped
+/// whole, whatever ends it and however the reads cut it, and the stream
+/// after it parses as ever: a BEL, CAN or SUB that ends it goes with it, an
+/// `ESC` that ends it starts what follows.
+#[test]
+fn an_osc_string_past_the_limit_is_dropped() {
+    let title = |len: usize| format!("\x1b]2;{}", "t".repeat(len - 2));
+    let feed = |stream: &[u8], chunk: usize| {
+        let mut term = Terminal::new(2, 20, 0);
+        for read in stream.chunks(chunk) {
+            term.advance(read);
+        }
+        term
+    };
+    let kept = [title(OSC_MAX).as_bytes(), b"\x07after"].concat();
+    for chunk in [4093, 65_536, kept.len()] {
+        let mut term = feed(&kept, chunk);
+        assert_eq!(term.title().len(), OSC_MAX - 2, "{chunk}-byte reads");
+        assert_eq!(term.take_events().len(), 1);
+        assert_eq!(term.screen_row(0).text(), "after");
+    }
+    for end in ["\x07", "\x1b\\", "\x18", "\x1a", "\x1b[1m", "\x07\x1b]2;next\x07"] {
+        let dropped = [title(OSC_MAX + 1).as_bytes(), end.as_bytes(), b"after"].concat();
+        for chunk in [1, 4093, 65_536, dropped.len()] {
+            // A byte at a time only near the limit: it is slow in a debug build.
+            let mut term = Terminal::new(2, 20, 0);
+            let (head, tail) = dropped.split_at(if chunk == 1 { OSC_MAX - 8 } else { 0 });
+            term.advance(head);
+            for read in tail.chunks(chunk) {
+                term.advance(read);
+            }
+            let next = end.ends_with("next\x07").then(|| Event::Title("next".into()));
+            assert_eq!(term.take_events(), next.into_iter().collect::<Vec<_>>(), "{end:?}");
+            assert_eq!(term.title(), if end.ends_with("next\x07") { "next" } else { "" });
+            assert_eq!(term.screen_row(0).text(), "after", "{end:?}, {chunk}-byte reads");
+            let bold = term.screen_row(0).cells()[0].attrs().contains(Attrs::BOLD);
+            assert_eq!(bold, end == "\x1b[1m", "{end:?}");
+        }
+    }
 }
 
 #[test]
