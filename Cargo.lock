@@ -4435,6 +4435,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-user-notifications",
  "portable-pty",
+ "raw-window-handle",
  "regex",
  "rtty-vt",
  "serde",

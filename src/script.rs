@@ -11,6 +11,9 @@
 //! sleep MS
 //! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-d ...; each is
 //!                        pressed and released
+//! nskey KEYSTROKE...     the same, as AppKit events to the window, which go the way a key
+//!                        pressed on the keyboard does (key equivalent, text input context, key
+//!                        down); only keys of a US layout's keyboard
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
 //! drag ROW COL ROW COL   with the left button
@@ -28,7 +31,9 @@
 //! quit
 //! ```
 
+use std::ffi::c_void;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -36,6 +41,9 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
     WeakEntity, Window, WindowAppearance, point,
 };
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
+use objc2_foundation::{NSPoint, NSString};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::tabbar::Hit;
 use crate::window::TerminalWindow;
@@ -45,6 +53,7 @@ pub enum Step {
     Wait(String),
     Sleep(Duration),
     Keys(Vec<Keystroke>),
+    NsKeys(Vec<Keystroke>),
     Type(String),
     Click { row: u16, col: u16, button: MouseButton, clicks: usize, cmd: bool },
     Drag { from: (u16, u16), to: (u16, u16) },
@@ -105,11 +114,19 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             "wait" if !rest.is_empty() => Step::Wait(rest.to_owned()),
             "type" if !rest.is_empty() => Step::Type(rest.to_owned()),
             "sleep" => Step::Sleep(Duration::from_millis(numbers(1)?[0].into())),
-            "keys" => Step::Keys(
-                args.iter()
+            "keys" | "nskey" => {
+                let keystrokes = args
+                    .iter()
                     .map(|key| Keystroke::parse(key).map_err(|_| error("unknown keystroke")))
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                if command == "keys" {
+                    Step::Keys(keystrokes)
+                } else if keystrokes.iter().all(|keystroke| key_code(&keystroke.key).is_some()) {
+                    Step::NsKeys(keystrokes)
+                } else {
+                    return Err(error("a key a US keyboard has expected"));
+                }
+            }
             "click" => {
                 let cell = numbers(2)?;
                 let button = match args.get(2).copied() {
@@ -244,6 +261,20 @@ async fn perform(
                 stroke(this, keystroke.clone(), cx)?;
             }
         }
+        Step::NsKeys(keystrokes) => {
+            let view = cx
+                .update(|window, _| match window.window_handle().map(|handle| handle.as_raw()) {
+                    Ok(RawWindowHandle::AppKit(handle)) => Some(handle.ns_view),
+                    _ => None,
+                })
+                .map_err(|err| err.to_string())?
+                .ok_or("the window has no AppKit view")?;
+            for keystroke in keystrokes {
+                // Outside any update, as AppKit calls GPUI.
+                appkit_stroke(view, keystroke)?;
+                cx.background_executor().timer(Duration::from_millis(20)).await;
+            }
+        }
         Step::Type(text) => {
             for c in text.chars() {
                 let shift = c.is_ascii_uppercase();
@@ -366,6 +397,67 @@ fn stroke(
     }
 }
 
+/// A key pressed as AppKit delivers it from the keyboard: a chord with Cmd or Ctrl is offered to
+/// the window as a key equivalent first, and only if that is not taken comes as a key down; then
+/// the key comes up.
+fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), String> {
+    // SAFETY: GPUI's window handle is its live NSView, used on the main thread.
+    let view: &NSView = unsafe { view.cast().as_ref() };
+    let window = view.window().ok_or("the view is in no window")?;
+    let code = key_code(&keystroke.key).expect("parsed keys have a code");
+    let held = keystroke.modifiers;
+    let flags = [
+        (held.platform, NSEventModifierFlags::Command),
+        (held.control, NSEventModifierFlags::Control),
+        (held.alt, NSEventModifierFlags::Option),
+        (held.shift, NSEventModifierFlags::Shift),
+    ];
+    let flags = flags
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .fold(NSEventModifierFlags::empty(), |flags, (_, flag)| flags | flag);
+    let text = keystroke.key_char.clone().unwrap_or_else(|| match keystroke.key.as_str() {
+        key if key.chars().count() == 1 && held.shift => key.to_uppercase(),
+        key if key.chars().count() == 1 => key.to_owned(),
+        _ => String::new(),
+    });
+    let text = NSString::from_str(&text);
+    let event = |kind| {
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            kind, NSPoint::ZERO, flags, 0., window.windowNumber(), None, &text, &text, false, code,
+        )
+        .ok_or("AppKit made no key event")
+    };
+    let down = event(NSEventType::KeyDown)?;
+    if !((held.platform || held.control) && window.performKeyEquivalent(&down)) {
+        window.sendEvent(&down);
+    }
+    let up = event(NSEventType::KeyUp)?;
+    window.sendEvent(&up);
+    Ok(())
+}
+
+/// The key's virtual key code on a US keyboard.
+fn key_code(key: &str) -> Option<u16> {
+    // Codes 0 to 50, by the character the key types; return and tab stand in as \n and \t.
+    const CHARACTERS: &str = "asdfhgzxcv§bqweryt123465=97-80]ou[ip\nlj'k;\\,/nm.\t `";
+    let named = match key {
+        "enter" => Some(36),
+        "tab" => Some(48),
+        "space" => Some(49),
+        "backspace" => Some(51),
+        "escape" => Some(53),
+        "left" => Some(123),
+        "right" => Some(124),
+        "down" => Some(125),
+        "up" => Some(126),
+        _ => None,
+    };
+    let mut chars = key.chars();
+    let single = chars.next().filter(|_| chars.next().is_none());
+    named.or_else(|| CHARACTERS.chars().position(|c| Some(c) == single).map(|code| code as u16))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +494,13 @@ mod tests {
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
         assert!(parse("keys a-b").unwrap_err().contains("unknown keystroke"));
+        let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
+        assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
+        assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));
+        assert_eq!([key_code("d"), key_code("f"), key_code("t")], [Some(2), Some(3), Some(17)]);
+        assert_eq!(
+            [key_code("`"), key_code("enter"), key_code("up")],
+            [Some(50), Some(36), Some(126)]
+        );
     }
 }
