@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
@@ -58,6 +59,9 @@ pub struct SelectTab(pub usize);
 
 /// Above and below a tab's title.
 const TAB_PADDING: Pixels = px(6.);
+
+/// How often panes look at their foreground process and directory for their titles.
+const TITLE_REFRESH: Duration = Duration::from_secs(1);
 
 /// A divider being dragged, by its path in the layout.
 struct DividerDrag(Vec<bool>);
@@ -172,6 +176,17 @@ impl TerminalWindow {
         .detach();
         // The font size sets the cells the layout shares out.
         cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
+        // Nothing tells a terminal that a command started or the shell changed directory, short
+        // of the shell's own reports: look, cheaply, once a second.
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TITLE_REFRESH).await;
+                if this.update_in(cx, |this, window, cx| this.refresh_titles(window, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
         let mut this = TerminalWindow {
             tabs: Tabs::new(id),
@@ -268,8 +283,20 @@ impl TerminalWindow {
     }
 
     fn title(&self, id: PaneId, cx: &App) -> String {
-        let title = self.views.get(&id).map(|view| view.read(cx).title()).unwrap_or_default();
-        if title.is_empty() { "rtty".into() } else { title }
+        self.views.get(&id).map_or("rtty".into(), |view| view.read(cx).title().text.clone())
+    }
+
+    /// Every pane, shown or not, looks again at what it is called (a command started or ended,
+    /// the shell changed directory); the bar and the window title follow.
+    fn refresh_titles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for view in self.views.values() {
+            changed |= view.update(cx, |view, _| view.refresh_title());
+        }
+        if changed {
+            window.set_window_title(&self.title(self.tabs.active().focus(), cx));
+            cx.notify();
+        }
     }
 
     /// The keyboard goes to the shown tab's focused pane, whose title names the window.
@@ -417,6 +444,7 @@ impl TerminalWindow {
     fn info(&self, window: &Window, cx: &App) -> WindowInfo {
         let tabs = self.tabs.all().iter().enumerate().map(|(index, tab)| TabInfo {
             active: index == self.tabs.index(),
+            title: self.title(tab.focus(), cx),
             zoomed: tab.zoomed(),
             panes: tab
                 .panes()
@@ -427,7 +455,7 @@ impl TerminalWindow {
                     Some(PaneInfo {
                         id,
                         focused: id == tab.focus(),
-                        title: view.title(),
+                        title: view.title().text.clone(),
                         cwd: view.cwd(),
                         rows,
                         cols,

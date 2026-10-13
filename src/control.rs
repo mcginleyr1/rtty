@@ -74,6 +74,8 @@ pub struct WindowInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TabInfo {
     pub active: bool,
+    /// Its focused pane's title, as the tab shows it.
+    pub title: String,
     pub zoomed: bool,
     pub panes: Vec<PaneInfo>,
 }

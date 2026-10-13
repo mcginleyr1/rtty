@@ -8,21 +8,24 @@
 //! waiter reports the child's exit.
 
 use std::ascii;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
+use std::{mem, ptr};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use rtty_vt::{ColorScheme, Event, MarkKind, Terminal};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::scheme::{SLOTS, Scheme};
 use crate::selection::Selection;
+use crate::title::Foreground;
 
 pub const SCROLLBACK: usize = 10_000;
 
@@ -76,6 +79,8 @@ pub struct Pane {
     output_pending: Arc<AtomicBool>,
     pub reader: Option<JoinHandle<()>>,
     pub waiter: Option<JoinHandle<Option<u32>>>,
+    /// The login shell's pid, when the pane runs one rather than a program of its own (`-e`).
+    shell: Option<libc::pid_t>,
     /// The absolute row at the top of the view while it is scrolled back; `None` follows the
     /// output.
     scrolled: Option<u64>,
@@ -104,9 +109,11 @@ impl Pane {
         for outer in ["TMUX", "TMUX_PANE", "STY", "ZELLIJ", "TUTTI_PANE", "TUTTI_SESSION"] {
             command.env_remove(outer);
         }
+        let login_shell = command.is_default_prog();
         let mut child = pty.slave.spawn_command(command).map_err(io::Error::other)?;
         // The child holds the only other end, so reads end when it and its children are gone.
         drop(pty.slave);
+        let shell = child.process_id().filter(|_| login_shell).and_then(|pid| pid.try_into().ok());
         let killer = child.clone_killer();
         let output = pty.master.try_clone_reader().map_err(io::Error::other)?;
         let mut writer = pty.master.take_writer().map_err(io::Error::other)?;
@@ -152,6 +159,7 @@ impl Pane {
             output_pending,
             reader: Some(reader),
             waiter: Some(waiter),
+            shell,
             scrolled: None,
             selection: None,
         };
@@ -260,14 +268,16 @@ impl Pane {
         self.scrolled = (top < screen_top).then_some(top);
     }
 
-    /// The working directory of the process in the pty's foreground: its process group's leader,
-    /// the shell at a prompt, else the program the shell runs.
-    pub fn foreground_cwd(&self) -> Option<PathBuf> {
-        let leader = Pid::from_u32(u32::try_from(self.master.process_group_leader()?).ok()?);
-        let mut system = System::new();
-        let cwd = ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always);
-        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[leader]), true, cwd);
-        system.process(leader)?.cwd().map(Path::to_path_buf)
+    /// The process in the pty's foreground: its process group's leader (`tcgetpgrp`), the shell
+    /// at a prompt, else the program the shell runs. Its arguments and working directory are
+    /// asked of the kernel for that one process, never the whole process table.
+    pub fn foreground(&self) -> Option<Foreground> {
+        let pid = self.master.process_group_leader()?;
+        Some(Foreground {
+            shell: self.shell == Some(pid),
+            argv: process_args(pid).unwrap_or_default(),
+            cwd: process_cwd(pid),
+        })
     }
 
     /// The selected text, as it is copied.
@@ -333,6 +343,56 @@ fn read(
     }
 }
 
+/// A process's working directory: the path of its current directory's vnode
+/// (`PROC_PIDVNODEPATHINFO`).
+fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
+    // SAFETY: proc_vnodepathinfo is plain data, for which zeroes are a value.
+    let mut info: libc::proc_vnodepathinfo = unsafe { mem::zeroed() };
+    let size = mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: the buffer is a proc_vnodepathinfo of the size passed.
+    let filled = unsafe {
+        libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size)
+    };
+    if filled != size {
+        return None;
+    }
+    let path = info.pvi_cdir.vip_path.as_flattened().iter().map(|&c| c as u8);
+    let path: Vec<u8> = path.take_while(|&byte| byte != 0).collect();
+    (!path.is_empty()).then(|| PathBuf::from(OsString::from_vec(path)))
+}
+
+/// A process's arguments, from the kernel's copy of its argument area (`KERN_PROCARGS2`).
+fn process_args(pid: libc::pid_t) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let query = |buffer: *mut u8, size: &mut libc::size_t, mib: &mut [libc::c_int; 3]| {
+        // SAFETY: `buffer` is null (a size query) or holds `size` bytes, as many as sysctl may
+        // write; it says how many it did.
+        unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buffer.cast(), size, ptr::null_mut(), 0) }
+    };
+    let mut size = 0;
+    if query(ptr::null_mut(), &mut size, &mut mib) != 0 {
+        return None;
+    }
+    let mut area = vec![0; size];
+    if query(area.as_mut_ptr(), &mut size, &mut mib) != 0 {
+        return None;
+    }
+    area.truncate(size);
+    procargs(&area)
+}
+
+/// The arguments in a `KERN_PROCARGS2` area: argc, the executable's path, NULs up to the
+/// arguments, then argc NUL-terminated arguments (and the environment after them).
+fn procargs(area: &[u8]) -> Option<Vec<String>> {
+    let (argc, rest) = area.split_first_chunk::<4>()?;
+    let argc = usize::try_from(i32::from_ne_bytes(*argc)).ok()?;
+    let after_path = rest.iter().position(|&byte| byte == 0)?;
+    let rest = &rest[after_path..];
+    let args = &rest[rest.iter().position(|&byte| byte != 0)?..];
+    let args = args.split(|&byte| byte == 0).take(argc);
+    Some(args.map(|arg| String::from_utf8_lossy(arg).into_owned()).collect())
+}
+
 /// `/bin/sh -c command`.
 pub fn shell_command(command: &str) -> CommandBuilder {
     let mut builder = CommandBuilder::new("/bin/sh");
@@ -349,7 +409,8 @@ mod tests {
     fn wait_for(pane: &Pane, text: &str) {
         let started = Instant::now();
         while !pane.lock().contents().contains(text) {
-            assert!(started.elapsed() < Duration::from_secs(5), "never saw {text:?}");
+            let screen = pane.lock().contents();
+            assert!(started.elapsed() < Duration::from_secs(5), "never saw {text:?} in {screen:?}");
             thread::sleep(Duration::from_millis(10));
         }
     }
@@ -441,18 +502,60 @@ mod tests {
         assert!(!pane.jump_to_prompt(false));
     }
 
-    /// No OSC 7: the shell `cd`s and execs a program, which then holds the foreground.
+    /// No OSC 7: `sh -c` (not a login shell) `cd`s and execs a program, which then holds the
+    /// foreground and tells its arguments and working directory.
     #[test]
-    fn the_foreground_process_tells_its_working_directory() {
+    fn the_foreground_process_tells_its_command_and_working_directory() {
         let dir = std::env::temp_dir().join(format!("rtty-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = format!("cd '{}' && printf ready && exec sleep 5", dir.display());
         let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None).unwrap();
         wait_for(&pane, "ready");
-        let cwd = pane.foreground_cwd().unwrap();
-        assert_eq!(cwd.canonicalize().unwrap(), dir.canonicalize().unwrap());
+        let foreground = pane.foreground().unwrap();
+        assert!(!foreground.shell);
+        assert_eq!(foreground.argv, ["sleep", "5"]);
+        assert_eq!(foreground.cwd.unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
         drop(pane);
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn an_argument_area_reads_as_its_arguments_without_the_environment() {
+        let mut area = 3i32.to_ne_bytes().to_vec();
+        area.extend_from_slice(
+            b"/usr/local/bin/cargo\0\0\0\0cargo\0run\0--release\0HOME=/Users/me\0",
+        );
+        assert_eq!(procargs(&area).unwrap(), ["cargo", "run", "--release"]);
+        assert_eq!(procargs(&area[..2]), None);
+    }
+
+    /// A login shell (dash, with a home of its own so no one's profile runs) holds the
+    /// foreground at its prompt; a command it runs takes it, in a process group of its own.
+    #[test]
+    fn the_login_shell_holds_the_foreground_until_it_runs_a_command() {
+        let home = std::env::temp_dir().join(format!("rtty-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut shell = CommandBuilder::new_default_prog();
+        shell.env("SHELL", "/bin/dash");
+        shell.env("HOME", &home);
+        shell.cwd(&home);
+        let (pane, _) = Pane::spawn(shell, 24, 80, None, None).unwrap();
+        wait_for(&pane, "$");
+        let at_prompt = pane.foreground().unwrap();
+        assert!(at_prompt.shell, "{at_prompt:?}");
+        assert_eq!(at_prompt.cwd.unwrap().canonicalize().unwrap(), home.canonicalize().unwrap());
+        pane.write(b"sleep 5\n".to_vec());
+        let started = Instant::now();
+        let running = loop {
+            match pane.foreground() {
+                Some(foreground) if !foreground.shell => break foreground,
+                _ => assert!(started.elapsed() < Duration::from_secs(5), "sleep never ran"),
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(running.argv, ["sleep", "5"]);
+        drop(pane);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

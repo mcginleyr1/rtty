@@ -149,10 +149,14 @@ default every Ctrl key stays with the programs.
 Focus by direction picks, among the panes beyond the focused one's edge that overlap it across,
 the nearest; then the one focused last; then the one overlapping it most, as tmux and WezTerm do.
 
-The window title is the focused pane's title, and each tab is titled by its focused pane. The tab
-bar shows while a window has more than one tab. The focused pane draws the focused cursor and the
-others a hollow one; focus reports (mode 1004) go to the pane gaining and the pane losing the
-keyboard.
+**Titles.** A pane is called by the title its program set (OSC 0 or 2); else, while a program
+runs in its foreground (the pty's process group, `tcgetpgrp`), by that program's command line
+(`cargo run --release`); else, with the shell at its prompt, by the shell's directory (OSC 7 when
+the shell reports it, else the shell's own working directory), home written `~`. A pane looks at
+its foreground process and directory once a second, and at once when its program sets a title or
+its shell reports a directory. A tab is titled by its focused pane, the window by its shown tab,
+and `rtty cli list` reports both. The focused pane draws the focused cursor and the others a
+hollow one; focus reports (mode 1004) go to the pane gaining and the pane losing the keyboard.
 
 **Search.** `Cmd+F` opens a bar at the pane's top right, which takes the keyboard until `Esc`. The
 query searches every row the pane holds, scrollback and screen, as lines: a match runs on across a
@@ -261,6 +265,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   clipboard, cursor style, mode changes) and the exit. The pane also keeps the view state a
   window needs per terminal: where the view sits in the scrollback (an absolute row, so it stays
   on its text while output arrives) and the selection.
+- `title.rs` — what a pane is called: its program's title, else the command line of the process
+  in its foreground (`Pane::foreground`), else its shell's directory; unit tested.
 - `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
   and text runs with their resolved colors and decorations, and the cursor. A program's colors
   (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the defaults.
@@ -396,7 +402,7 @@ Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
 machine that has not fetched it. The cost is a shader compile at startup.
 
-Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty and sysinfo are MIT. rtty takes nothing
+Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT. rtty takes nothing
 from Zed's GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap

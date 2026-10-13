@@ -12,6 +12,7 @@ mod scheme;
 mod script;
 mod search;
 mod selection;
+mod title;
 mod view;
 mod window;
 

@@ -34,6 +34,7 @@ use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
+use crate::title::{self, Title};
 use crate::window::{MoveFocus, ResizePane};
 
 actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt]);
@@ -111,6 +112,8 @@ pub struct PaneView {
     followed: Vec<String>,
     /// When the last bell flashed the pane.
     flashed: Option<Instant>,
+    /// What the pane is called, as of the last look (`refresh_title`).
+    title: Title,
     stats: Option<FrameStats>,
 }
 
@@ -247,7 +250,7 @@ impl PaneView {
         })
         .detach();
         let (rows, cols) = pane.lock().size();
-        Self {
+        let mut view = Self {
             pane,
             focus,
             scheme,
@@ -269,8 +272,11 @@ impl PaneView {
             link: None,
             followed: Vec::new(),
             flashed: None,
+            title: Title::default(),
             stats,
-        }
+        };
+        view.refresh_title();
+        view
     }
 
     /// The keyboard came to or left this pane, or the window was activated or deactivated: draw
@@ -404,8 +410,22 @@ impl PaneView {
         scene.current_match = search.current.and_then(|index| search.matches.get(index).copied());
     }
 
-    pub fn title(&self) -> String {
-        self.pane.lock().title().to_owned()
+    /// What the tab and the window call this pane (`title::title`).
+    pub fn title(&self) -> &Title {
+        &self.title
+    }
+
+    /// Looks again at what the pane should be called: the program's title, else its foreground
+    /// process, else its directory. Whether that changed.
+    pub fn refresh_title(&mut self) -> bool {
+        let term = self.pane.lock();
+        let (program, reported) = (term.title().to_owned(), term.cwd().map(PathBuf::from));
+        drop(term);
+        let foreground = self.pane.foreground();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let title =
+            title::title(&program, reported.as_deref(), foreground.as_ref(), home.as_deref());
+        mem::replace(&mut self.title, title) != self.title
     }
 
     /// The grid, as rows and columns.
@@ -421,7 +441,7 @@ impl PaneView {
     /// shells on macOS send OSC 7 only in Terminal.app.
     pub fn cwd(&self) -> Option<PathBuf> {
         let reported = self.pane.lock().cwd().map(PathBuf::from);
-        reported.or_else(|| self.pane.foreground_cwd())
+        reported.or_else(|| self.pane.foreground()?.cwd)
     }
 
     /// A navigation or resize chord: the program's when it claimed them and its encoding can say
@@ -459,7 +479,11 @@ impl PaneView {
                 cx.notify()
             }
             Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
-            Notice::Event(Event::Title(_)) => cx.emit(PaneEvent::Title),
+            Notice::Event(Event::Title(_) | Event::Cwd(_)) => {
+                if self.refresh_title() {
+                    cx.emit(PaneEvent::Title)
+                }
+            }
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
                 self.claims_keys = value == "pane"
             }
