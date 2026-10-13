@@ -183,6 +183,62 @@ fn shell_marks_land_on_absolute_rows_and_travel_with_them() {
     assert_eq!(all.len(), 5);
 }
 
+/// nvim killed with SIGKILL, as its shell's integration marks it: with the
+/// host's say-so, the reports and key encodings it left on go off at the
+/// command's end, however reads cut the stream, and what the shell sets after
+/// the mark stays. Bracketed paste, DECCKM, DECKPAM and the alternate screen
+/// stay too.
+#[test]
+fn a_commands_end_turns_off_what_it_left_on() {
+    let left = "\x1b]133;C\x07\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2031h\x1b[?2004h\
+                \x1b[?1h\x1b=\x1b[>4;2m\x1b[>1u";
+    let stream = format!("{left}\x1b]133;D;137\x1b\\\x1b]133;A\x07\x1b[?2031h$ ");
+    for cut in 0..=stream.len() {
+        let mut term = Terminal::new(3, 20, 0);
+        term.set_command_end_reset(true);
+        term.advance(&stream.as_bytes()[..cut]);
+        term.advance(&stream.as_bytes()[cut..]);
+        let modes = term.modes();
+        assert_eq!((modes.mouse, modes.mouse_encoding), (MouseMode::None, MouseEncoding::Default));
+        assert!(!modes.focus_reports, "cut at {cut}");
+        assert_eq!((modes.modify_other_keys, term.kitty_keyboard()), (0, 0), "cut at {cut}");
+        assert!(modes.color_scheme_reports, "the prompt's own, after the mark");
+        assert!(modes.bracketed_paste && modes.cursor_keys && modes.keypad && modes.alt_screen);
+    }
+    // The mark's event comes first, then each mode that went off.
+    let mut term = Terminal::new(3, 20, 0);
+    term.set_command_end_reset(true);
+    term.advance(b"\x1b[?1000h\x1b[>1u");
+    term.take_events();
+    term.advance(b"\x1b]133;D\x07");
+    let events = term.take_events();
+    assert!(matches!(events[0], Event::Mark(Mark { kind: MarkKind::CommandEnd { .. }, .. })));
+    assert_eq!(
+        events[1..],
+        [
+            Event::Mode(ModeChange::Mouse(MouseMode::None)),
+            Event::Mode(ModeChange::KittyKeyboard(0))
+        ]
+    );
+}
+
+/// Only the first of a run of ends turns anything off: zsh marks one from
+/// PROMPT_SP and another from precmd, and what a hook between them turns on
+/// is the shell's. A host that never asked keeps everything.
+#[test]
+fn only_a_commands_first_end_turns_anything_off() {
+    let mut term = Terminal::new(3, 20, 0);
+    term.set_command_end_reset(true);
+    term.advance(b"\x1b]133;D;0\x07\x1b[?1004h\x1b]133;D;0\x07$ ");
+    assert!(term.modes().focus_reports, "a hook's, between two ends");
+    term.advance(b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;0\x07");
+    assert!(!term.modes().focus_reports, "a command ran since");
+
+    let mut term = Terminal::new(3, 20, 0);
+    term.advance(b"\x1b]133;C\x07\x1b[?1000h\x1b]133;D;0\x07");
+    assert_eq!(term.modes().mouse, MouseMode::Click);
+}
+
 #[test]
 fn hyperlinks_are_shared_by_their_cells() {
     let mut term = Terminal::new(2, 20, 0);

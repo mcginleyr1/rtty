@@ -7,7 +7,7 @@ use crate::cell::{Attrs, Cell, Color};
 use crate::dispatch::Performer;
 use crate::event::{Event, Mark, MarkKind, ModeChange};
 use crate::grid::Grid;
-use crate::modes::{CursorStyle, Modes};
+use crate::modes::{CursorStyle, Modes, MouseEncoding, MouseMode};
 use crate::row::{CLUSTER_MAX, Extra, Hyperlink, Row};
 
 /// An RGB colour from or for the palette.
@@ -162,6 +162,11 @@ pub struct Terminal {
     /// An OSC 99 notification still arriving in chunks: its id, title and
     /// body so far.
     pub(crate) kitty_notification: Option<(String, Option<String>, Option<String>)>,
+    /// The host asked for what a command left on to go off at its end
+    /// (`set_command_end_reset`).
+    command_end_reset: bool,
+    /// The last shell mark was a command's end.
+    command_ended: bool,
 }
 
 impl Terminal {
@@ -196,7 +201,24 @@ impl Terminal {
             joinable: false,
             dcs: None,
             kitty_notification: None,
+            command_end_reset: false,
+            command_ended: false,
         }
+    }
+
+    /// With `on`, a shell's mark of a command's end (OSC 133;D) turns off,
+    /// right there in the stream, what a program can leave on that the shell
+    /// after it never asked for: the mouse's reports (every tracking mode and
+    /// encoding), focus reports (1004), light/dark reports (2031) and the key
+    /// encodings (modifyOtherKeys, the current screen's kitty flags). A
+    /// program killed with SIGKILL turns none of them off, and the shell then
+    /// gets reports it takes for typing. Bracketed paste and the cursor and
+    /// keypad modes stay: shells set those themselves. Only the first of a
+    /// run of ends: zsh marks one from PROMPT_SP and another from precmd, and
+    /// what a hook between them turns on is the shell's. Mode events follow
+    /// the mark's.
+    pub fn set_command_end_reset(&mut self, on: bool) {
+        self.command_end_reset = on;
     }
 
     /// Feed the program's output. A sequence split across calls is resumed.
@@ -1180,6 +1202,25 @@ impl Terminal {
             }
         }
         self.push_event(Event::Mark(Mark { kind, row: index, col }));
+        let ended = matches!(kind, MarkKind::CommandEnd { .. });
+        if ended && !self.command_ended && self.command_end_reset {
+            self.reset_left_on();
+        }
+        self.command_ended = ended;
+    }
+
+    /// `set_command_end_reset`'s reset.
+    fn reset_left_on(&mut self) {
+        let old = self.modes.clone();
+        self.modes.mouse = MouseMode::None;
+        self.modes.mouse_encoding = MouseEncoding::Default;
+        self.modes.focus_reports = false;
+        self.modes.color_scheme_reports = false;
+        self.modes.modify_other_keys = 0;
+        self.announce_mode_resets(&old);
+        if self.kitty_keyboard() != 0 {
+            self.kitty_pop(u16::MAX);
+        }
     }
 
     pub(crate) fn set_hyperlink(&mut self, link: Option<Hyperlink>) {

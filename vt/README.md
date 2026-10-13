@@ -17,6 +17,10 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
 - Rows: every row the primary screen ever showed has an absolute index;
   `screen_top()` and `oldest_row()` never go backwards; `rows(from, to)` reads
   scrollback and screen; OSC 133 marks travel with their rows.
+- `set_command_end_reset(true)`: at a shell's mark of a command's end
+  (OSC 133;D, the first of a run), the reports and key encodings a killed
+  program left on go off, there in the stream (mouse, 1004, 2031,
+  modifyOtherKeys, kitty's flags; bracketed paste, DECCKM and DECKPAM stay).
 - Resize reflows the primary screen (scrollback included); the alternate
   screen is cut or padded.
 - Unicode: `unicode-width` per character, grapheme clusters by
