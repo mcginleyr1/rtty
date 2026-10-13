@@ -7,6 +7,7 @@ use std::mem;
 use rtty_vt::{Attrs, BACKGROUND, CURSOR, Color, CursorShape as Shape, FOREGROUND, Rgb, Row};
 use rtty_vt::{Terminal, Underline};
 
+use crate::glyphs;
 use crate::scheme::{self, SLOTS, Scheme};
 use crate::search::Match;
 use crate::selection::Point;
@@ -45,11 +46,21 @@ impl Palette {
     }
 }
 
-/// One row as drawn: backgrounds where they differ from the default, and the text.
+/// One row as drawn: backgrounds where they differ from the default, the text, and the
+/// characters rtty draws itself (`glyphs::drawn`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     pub backgrounds: Vec<Background>,
     pub runs: Vec<Run>,
+    pub drawn: Vec<Drawn>,
+}
+
+/// A box drawing, block or powerline character on its cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drawn {
+    pub col: u16,
+    pub c: char,
+    pub fg: Rgb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -248,6 +259,10 @@ impl<'a> Scene<'a> {
             text.clear();
             row.push_grapheme(usize::from(col), &mut text);
             let single_width = cell.width() == 1 && row.cluster(usize::from(col)).is_none();
+            if let Some(c) = text.chars().next().filter(|&c| single_width && glyphs::drawn(c)) {
+                line.drawn.push(Drawn { col, c, fg });
+                continue;
+            }
             match line.runs.last_mut() {
                 Some(run)
                     if single_width
@@ -366,6 +381,17 @@ mod tests {
         assert_eq!(texts(&lines[0]), [(0, "ab"), (2, "日"), (4, "e\u{301}"), (5, "cd")]);
         let cells: Vec<_> = lines[0].runs.iter().map(|run| (run.cells, run.single_width)).collect();
         assert_eq!(cells, [(2, true), (2, false), (1, false), (2, true)]);
+    }
+
+    /// Box drawing, blocks and powerline separators leave the text runs, in their own colors;
+    /// the text either side shapes alone.
+    #[test]
+    fn box_blocks_and_powerline_are_drawn_apart_from_the_text() {
+        let (lines, _) = draw(&term("a─b\x1b[31m▀\u{e0b0}\x1b[0mcd\u{e0a0}".as_bytes()));
+        assert_eq!(texts(&lines[0]), [(0, "a"), (2, "b"), (5, "cd\u{e0a0}")]);
+        let drawn: Vec<_> =
+            lines[0].drawn.iter().map(|drawn| (drawn.col, drawn.c, drawn.fg)).collect();
+        assert_eq!(drawn, [(1, '─', rgb(FG)), (3, '▀', rgb(RED)), (4, '\u{e0b0}', rgb(RED))]);
     }
 
     #[test]

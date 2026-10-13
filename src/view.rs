@@ -13,11 +13,11 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, Div, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Font, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task,
-    TextRun, UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions,
-    canvas, div, fill, outline, point, prelude::*, px, size,
+    EventEmitter, FocusHandle, Font, FontId, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke,
+    LineLayout, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine,
+    ShapedRun, Size, Task, TextRun, UTF16Selection, UnderlineStyle, Window, WindowAppearance,
+    WindowTextSystem, actions, canvas, div, fill, outline, point, prelude::*, px, size,
 };
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
@@ -26,11 +26,12 @@ use rtty_vt::{
 };
 
 use crate::config::{Bell, Theme};
+use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
 use crate::links::{self, Link};
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
-use crate::render::{self, CursorShape, Line, Palette, Run, Scene};
+use crate::render::{self, CursorShape, Drawn, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
@@ -160,7 +161,21 @@ struct Geometry {
 /// A row as drawn, its runs shaped (`shaped[i]` is `line.runs[i]`).
 struct ShapedRow {
     line: Line,
-    shaped: Vec<ShapedLine>,
+    shaped: Vec<Shaped>,
+}
+
+/// A run shaped, and where and how big to draw each glyph that would not keep to its cells
+/// (`fit`).
+struct Shaped {
+    line: ShapedLine,
+    fits: Option<Vec<Option<Fit>>>,
+}
+
+/// A glyph drawn at a share of the font size, moved from where the shaper put it.
+#[derive(Clone, Copy, Debug)]
+struct Fit {
+    scale: f32,
+    offset: Point<Pixels>,
 }
 
 /// Rows shaped by earlier frames, by absolute index. A row is shaped again when the engine
@@ -616,7 +631,18 @@ impl PaneView {
     }
 
     /// What the next frame draws, as text, with the state it is drawn from: `--script`'s `dump`.
-    pub fn dump(&self, window: &Window) -> String {
+    pub fn dump(&self, window: &Window, cx: &App) -> String {
+        let font = cx.global::<Settings>().font.clone();
+        let text_system = window.text_system();
+        let mut out = String::new();
+        let fallbacks = font.fallbacks.iter().flat_map(|fallbacks| fallbacks.fallback_list());
+        let fallbacks: Vec<String> = fallbacks
+            .map(|family| {
+                format!("{family:?} {:?}", text_system.resolve_font(&gpui::font(family.clone())))
+            })
+            .collect();
+        let primary = text_system.resolve_font(&font);
+        let _ = writeln!(out, "font {:?} {primary:?} fallbacks {fallbacks:?}", font.family);
         let term = self.pane.lock();
         let palette = Palette::new(&term, &self.scheme);
         let (rows, cols) = term.size();
@@ -626,7 +652,6 @@ impl PaneView {
         let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);
         self.highlight(&mut scene, top, rows);
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
-        let mut out = String::new();
         let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
         if let Some(at) = self.flashed {
             let _ = writeln!(out, "bell flashed {} ms ago", at.elapsed().as_millis());
@@ -672,7 +697,7 @@ impl PaneView {
         }
         for (index, row) in term.rows(top, top + u64::from(rows)) {
             let line = scene.line(row, index);
-            if line.backgrounds.is_empty() && line.runs.is_empty() {
+            if line.backgrounds.is_empty() && line.runs.is_empty() && line.drawn.is_empty() {
                 continue;
             }
             let _ = writeln!(out, "row {} {:?}", index - top, row.text());
@@ -706,17 +731,36 @@ impl PaneView {
                 }
                 let _ = writeln!(out);
             }
-            // As the last frame shaped the row: each glyph and the cell it sits on.
+            // As the last frame shaped the row: each glyph, the cell it sits on, the font it came
+            // from when that is not the run's own, and the size it is drawn at when smaller.
             if let (Some(shaped), Some(grid)) = (self.cache.rows.get(&index), self.geometry) {
-                for (run, line) in shaped.line.runs.iter().zip(&shaped.shaped) {
-                    let glyphs = line.runs.iter().flat_map(|run| &run.glyphs);
+                for (run, shaped) in shaped.line.runs.iter().zip(&shaped.shaped) {
+                    let own =
+                        text_system.resolve_font(&styled(&font, run.style.bold, run.style.italic));
+                    let glyphs = shaped.line.runs.iter().flat_map(|glyphs| {
+                        let from = match glyphs.font_id {
+                            id if id == own => String::new(),
+                            id => format!(" from {id:?}"),
+                        };
+                        glyphs.glyphs.iter().map(move |glyph| (glyph, from.clone()))
+                    });
                     let glyphs: Vec<String> = glyphs
-                        .map(|glyph| {
-                            format!("{:?}@{:.2}", glyph.id, glyph.position.x / grid.cell.width)
+                        .enumerate()
+                        .map(|(index, (glyph, from))| {
+                            let at = glyph.position.x / grid.cell.width;
+                            let fit = shaped.fits.as_ref().and_then(|fits| fits[index]);
+                            let fit = fit.map_or(String::new(), |fit| {
+                                let (x, y) = (fit.offset.x / grid.cell.width, fit.offset.y);
+                                format!(" fitted {:.2} moved {x:.2},{:.1}", fit.scale, f32::from(y))
+                            });
+                            format!("{:?}@{at:.2}{from}{fit}", glyph.id)
                         })
                         .collect();
                     let _ = writeln!(out, "  glyphs {} {}", run.col, glyphs.join(" "));
                 }
+            }
+            for drawn in &line.drawn {
+                let _ = writeln!(out, "  drawn {} {:?} {}", drawn.col, drawn.c, hex(drawn.fg));
             }
         }
         if let Some((start, end)) = selection {
@@ -1001,7 +1045,7 @@ impl PaneView {
             let shaped = line
                 .runs
                 .iter()
-                .map(|run| shape(&text_system, &font, font_size, cell.width, run))
+                .map(|run| shape(&text_system, &font, font_size, cell, run))
                 .collect();
             cache.rows.insert(index, Rc::new(ShapedRow { line, shaped }));
         }
@@ -1102,13 +1146,26 @@ impl PaneView {
                 ));
             }
         }
+        let scale = window.scale_factor();
+        let light = (f32::from(frame.thickness) * scale).round().max(1.);
         for (row, shaped) in &frame.rows {
-            for (run, line) in shaped.line.runs.iter().zip(&shaped.shaped) {
+            for (run, shaped) in shaped.line.runs.iter().zip(&shaped.shaped) {
                 let origin = at(*row, run.col);
-                if let Err(err) = line.paint(origin, cell.height, window, cx) {
+                let line = &shaped.line;
+                let painted = match &shaped.fits {
+                    None => line.paint(origin, cell.height, window, cx),
+                    Some(fits) => {
+                        let color = hsla(run.style.fg);
+                        paint_fitted(line, fits, origin, cell.height, color, window)
+                    }
+                };
+                if let Err(err) = painted {
                     eprintln!("rtty: painting {:?} failed: {err}", line.text);
                 }
                 decorate(run, origin, &frame, window);
+            }
+            for drawn in &shaped.line.drawn {
+                paint_drawn(drawn, at(*row, drawn.col), cell, scale, light, window);
             }
         }
         if let Some(cursor) = frame.cursor {
@@ -1178,6 +1235,48 @@ fn decorate(run: &Run, origin: Point<Pixels>, frame: &Frame, window: &mut Window
     }
 }
 
+/// A character rtty draws itself (`glyphs`), over its cell with the cell's edges on device
+/// pixels, so that its lines meet the next cell's.
+fn paint_drawn(
+    drawn: &Drawn,
+    origin: Point<Pixels>,
+    cell: Size<Pixels>,
+    scale: f32,
+    light: f32,
+    window: &mut Window,
+) {
+    let device = |at: Pixels| (f32::from(at) * scale).round();
+    let (left, top) = (device(origin.x), device(origin.y));
+    let (width, height) =
+        (device(origin.x + cell.width) - left, device(origin.y + cell.height) - top);
+    let at = |(x, y): (f32, f32)| point(px((left + x) / scale), px((top + y) / scale));
+    let color = hsla(drawn.fg);
+    for shape in glyphs::shapes(drawn.c, width, height, light) {
+        let (mut path, segs, closed) = match shape {
+            Shape::Rect { x, y, w, h, alpha } => {
+                let bounds = Bounds::new(at((x, y)), size(px(w / scale), px(h / scale)));
+                window.paint_quad(fill(bounds, color.opacity(alpha)));
+                continue;
+            }
+            Shape::Fill(segs) => (PathBuilder::fill(), segs, true),
+            Shape::Stroke(thick, segs) => (PathBuilder::stroke(px(thick / scale)), segs, false),
+        };
+        for seg in segs {
+            match seg {
+                Seg::Move(x, y) => path.move_to(at((x, y))),
+                Seg::Line(x, y) => path.line_to(at((x, y))),
+                Seg::Curve { to, c1, c2 } => path.cubic_bezier_to(at(to), at(c1), at(c2)),
+            }
+        }
+        if closed {
+            path.close();
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    }
+}
+
 fn blinked_off(blinking: Duration) -> bool {
     blinking.as_millis() / BLINK_MS % 2 == 1
 }
@@ -1207,26 +1306,116 @@ pub fn metrics(text_system: &WindowTextSystem, font: &Font, font_size: Pixels) -
     Metrics { cell: size(width, (ascent + descent).ceil()), ascent, descent }
 }
 
-/// The run shaped as one string, every glyph on its cell.
+/// The run shaped as one string, every glyph on its cell and kept to it.
 fn shape(
     text_system: &WindowTextSystem,
     font: &Font,
     font_size: Pixels,
-    cell_width: Pixels,
+    cell: Size<Pixels>,
     run: &Run,
-) -> ShapedLine {
+) -> Shaped {
     let style = &run.style;
     let text_run = text_run(font, run.text.len(), style.fg, style.bold, style.italic);
+    let own = text_system.resolve_font(&text_run.font);
     let mut line = text_system.shape_line(run.text.clone().into(), font_size, &[text_run], None);
+    let fits = fit(text_system, own, &line, run, cell);
     if run.single_width
-        && let Some(snapped) = snap_to_cells(&line, &line.text, cell_width)
+        && let Some(snapped) = snap_to_cells(&line, &line.text, cell.width)
     {
         *line = Arc::new(snapped);
     }
-    line
+    Shaped { line, fits }
 }
 
-fn text_run(font: &Font, len: usize, fg: Rgb, bold: bool, italic: bool) -> TextRun {
+/// Where and how big to draw each glyph whose ink would not keep to the cells its characters
+/// take (a wide character's two) and the line: one from another font, or an icon from the
+/// private use areas, which a Nerd Font that is not its Mono variant draws past its cell. Each
+/// is scaled down to fit and centered there. The font's own glyphs stay as drawn, so a
+/// ligature still reaches over the cells after it. `None` when nothing moves.
+fn fit(
+    text_system: &WindowTextSystem,
+    own: FontId,
+    layout: &LineLayout,
+    run: &Run,
+    cell: Size<Pixels>,
+) -> Option<Vec<Option<Fit>>> {
+    let text = &run.text;
+    let glyphs: Vec<(FontId, &ShapedGlyph)> = layout
+        .runs
+        .iter()
+        .flat_map(|shaped| shaped.glyphs.iter().map(move |glyph| (shaped.font_id, glyph)))
+        .collect();
+    let next = glyphs.iter().skip(1).map(|(_, glyph)| (glyph.index, glyph.position.x));
+    let next = next.chain(iter::once((text.len(), layout.width)));
+    let baseline = (cell.height - layout.ascent - layout.descent) / 2. + layout.ascent;
+    let fits: Vec<Option<Fit>> = glyphs
+        .iter()
+        .zip(next)
+        .map(|(&(font_id, glyph), (end, next_x))| {
+            let c = text.get(glyph.index..)?.chars().next()?;
+            let icon = matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{10FFFF}');
+            // A mark over the character before it has no advance, and stays.
+            if !(font_id != own || icon) || next_x <= glyph.position.x {
+                return None;
+            }
+            let cells = match run.single_width {
+                true => text.get(glyph.index..end).map_or(1, |chars| chars.chars().count()),
+                false => usize::from(run.cells),
+            };
+            let ink = text_system.typographic_bounds(font_id, layout.font_size, c).ok()?;
+            fit_ink(ink, cell.width * cells.max(1) as f32, cell.height, baseline)
+        })
+        .collect();
+    fits.iter().any(Option::is_some).then_some(fits)
+}
+
+/// Where a glyph whose `ink` (from its origin on the baseline, y up) is wider than `room` or
+/// taller than the line goes: scaled down to fit both and centered in them. One that fits but
+/// sticks out sideways moves over. `None` when it keeps to them already. `baseline` is from the
+/// line's top.
+fn fit_ink(ink: Bounds<Pixels>, room: Pixels, height: Pixels, baseline: Pixels) -> Option<Fit> {
+    let (left, bottom, width, tall) = (ink.origin.x, ink.origin.y, ink.size.width, ink.size.height);
+    let scale = (room / width).min(height / tall);
+    let inside = left >= px(0.) && left + width <= room;
+    // Past a hundredth is past rounding.
+    if scale > 0.99 && inside {
+        return None;
+    }
+    let scale = scale.min(1.);
+    let x = (room - width * scale) / 2. - left * scale;
+    let y = match scale < 0.99 {
+        true => height / 2. + (bottom + tall / 2.) * scale - baseline,
+        false => px(0.),
+    };
+    Some(Fit { scale, offset: point(x, y) })
+}
+
+/// The run's glyphs, those `fit` moved where it put them.
+fn paint_fitted(
+    layout: &LineLayout,
+    fits: &[Option<Fit>],
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    color: Hsla,
+    window: &mut Window,
+) -> gpui::Result<()> {
+    let baseline = origin.y + (line_height - layout.ascent - layout.descent) / 2. + layout.ascent;
+    let glyphs = layout.runs.iter().flat_map(|run| run.glyphs.iter().map(|g| (run.font_id, g)));
+    for ((font_id, glyph), fit) in glyphs.zip(fits) {
+        let fit = fit.unwrap_or(Fit { scale: 1., offset: point(px(0.), px(0.)) });
+        let at = point(origin.x + glyph.position.x, baseline) + fit.offset;
+        let font_size = layout.font_size * fit.scale;
+        if glyph.is_emoji {
+            window.paint_emoji(at, font_id, glyph.id, font_size)?;
+        } else {
+            window.paint_glyph(at, font_id, glyph.id, font_size, color)?;
+        }
+    }
+    Ok(())
+}
+
+/// The font in the weight and slant of a run's style.
+fn styled(font: &Font, bold: bool, italic: bool) -> Font {
     let mut font = font.clone();
     if bold {
         font = font.bold();
@@ -1234,9 +1423,13 @@ fn text_run(font: &Font, len: usize, fg: Rgb, bold: bool, italic: bool) -> TextR
     if italic {
         font = font.italic();
     }
+    font
+}
+
+fn text_run(font: &Font, len: usize, fg: Rgb, bold: bool, italic: bool) -> TextRun {
     TextRun {
         len,
-        font,
+        font: styled(font, bold, italic),
         color: hsla(fg),
         background_color: None,
         underline: None,
@@ -1526,6 +1719,24 @@ impl EntityInputHandler for PaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An icon twice a 10×20 cell's width, its ink from 0 to 20 across and from the baseline up
+    /// 10, in a line whose baseline is 15 down: it draws at half size, centered in the cell.
+    #[test]
+    fn an_icon_too_wide_for_its_cell_is_scaled_into_the_middle_of_it() {
+        let ink =
+            |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let fit = fit_ink(ink(0., 0., 20., 10.), px(10.), px(20.), px(15.)).unwrap();
+        assert_eq!(fit.scale, 0.5);
+        // Its ink, 10×5 now, from 0 to 10 across and 7.5 to 12.5 down the line.
+        assert_eq!(fit.offset, point(px(0.), px(-2.5)));
+        // In two cells it fits whole; one that fits but starts left of its cell moves over.
+        assert!(fit_ink(ink(0., 0., 20., 10.), px(20.), px(20.), px(15.)).is_none());
+        let moved = fit_ink(ink(-2., 0., 8., 10.), px(10.), px(20.), px(15.)).unwrap();
+        assert_eq!((moved.scale, moved.offset), (1., point(px(3.), px(0.))));
+        // Too tall for the line, a narrow one shrinks too.
+        assert_eq!(fit_ink(ink(0., -10., 5., 40.), px(10.), px(20.), px(15.)).unwrap().scale, 0.5);
+    }
 
     #[test]
     fn a_ligature_keeps_the_glyphs_after_it_on_their_cells() {

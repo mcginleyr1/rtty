@@ -799,7 +799,7 @@ impl TerminalWindow {
         }
         for (id, _) in &rects {
             if let Some(view) = self.views.get(id) {
-                let _ = write!(out, "\n== pane {id}\n{}", view.read(cx).dump(window));
+                let _ = write!(out, "\n== pane {id}\n{}", view.read(cx).dump(window, cx));
             }
         }
         out

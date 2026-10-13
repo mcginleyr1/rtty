@@ -13,6 +13,8 @@ use crate::scheme::{self, Scheme};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub font: Option<String>,
+    /// Families for what `font` lacks (icons, symbols), in order; unset, an installed Nerd Font.
+    pub fallback: Option<Vec<String>>,
     pub size: Option<f32>,
     pub ligatures: Option<bool>,
     pub keys: Option<Keys>,
@@ -136,11 +138,15 @@ mod tests {
 
     #[test]
     fn font_settings_read_as_written() {
-        let config: Config =
-            toml::from_str("font = 'FiraCode Nerd Font'\nsize = 12\nligatures = false").unwrap();
-        assert_eq!(config.font.as_deref(), Some("FiraCode Nerd Font"));
+        let source = "font = 'Menlo'\nfallback = ['Symbols Nerd Font Mono', 'Hack Nerd Font Mono']\n\
+                      size = 12\nligatures = false";
+        let config: Config = toml::from_str(source).unwrap();
+        assert_eq!(config.font.as_deref(), Some("Menlo"));
+        let fallback = config.fallback.unwrap();
+        assert_eq!(fallback, ["Symbols Nerd Font Mono", "Hack Nerd Font Mono"]);
         assert_eq!(config.size, Some(12.));
         assert_eq!(config.ligatures, Some(false));
+        assert!(toml::from_str::<Config>("fallback = 'Hack'").is_err(), "a list, not a name");
     }
 
     #[test]

@@ -64,6 +64,7 @@ and rtty does not start.
 
 ```toml
 font = "FiraCode Nerd Font"
+fallback = ["Symbols Nerd Font Mono"]  # for what `font` lacks, in order (Fonts, below)
 size = 12
 ligatures = true
 scheme_dark = "OneDark Pro"       # the default
@@ -72,6 +73,22 @@ scheme_light = "Solarized Light"  # the default
 keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
 bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
 ```
+
+**Fonts.** A character `font` lacks comes from the `fallback` families, in order, then from
+macOS's own fallback (emoji, CJK). macOS's knows no font with Nerd Font icons, so with no
+`fallback` key rtty adds an installed Nerd Font: Symbols Nerd Font Mono, else Symbols Nerd Font,
+else the first `… Nerd Font Mono` family by name, else the first `… Nerd Font`. rtty bundles no
+font; with no Nerd Font installed the icons stay missing. An unknown family, in `font` or in
+`fallback`, is an error.
+
+rtty draws box drawing (U+2500–257F), block elements (U+2580–259F) and the powerline separators
+(U+E0B0–E0BF) itself, filling each cell exactly: lines meet the next cell's, blocks tile, and the
+separators fit the cell's height whatever the font, Menlo included. An icon (a private use area
+character) or any glyph from another font whose ink is wider than its cell, or than its two cells
+when it is a wide character, or taller than the line, is drawn smaller and centered there instead
+of covering its neighbours; a Nerd Font that is not its Mono variant draws its icons wider than a
+cell, so they come out smaller than that font draws them elsewhere. The font's own glyphs are left
+alone, so a ligature still reaches over the cells after it.
 
 ## Color schemes
 
@@ -301,8 +318,11 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `title.rs` — what a pane is called: its program's title, else the command line of the process
   in its foreground (`Pane::foreground`), else its shell's directory; unit tested.
 - `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
-  and text runs with their resolved colors and decorations, and the cursor. A program's colors
-  (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the defaults.
+  and text runs with their resolved colors and decorations, the characters rtty draws itself, and
+  the cursor. A program's colors (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the
+  defaults.
+- `glyphs.rs` — box drawing, block elements and the powerline separators as rectangles and paths
+  on a cell's device pixels, from the Unicode charts; unit tested.
 - `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
   `Terminal::text`.
 - `mouse.rs` — mouse reports in every encoding, unit tested.
@@ -425,7 +445,9 @@ it stops blinking and stays on after 10 s without a key, so an idle window draws
 
 Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
 candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback and an emoji may overhang its two cells; notifications need the `.app`
+CoreText's font fallback (an emoji wider than its two cells is drawn smaller to fit them); the
+drawn box, block and powerline characters are checked by their geometry and the `--script`
+dump, not yet by eye on screen; notifications need the `.app`
 above, and posting from it and clicking one are not yet checked on screen; a selection drag stops
 at its pane's edge rather than scrolling; macOS only.
 

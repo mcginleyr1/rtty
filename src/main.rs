@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod control;
+mod glyphs;
 mod keys;
 mod layout;
 mod links;
@@ -20,13 +21,16 @@ mod window;
 use std::backtrace::Backtrace;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::iter;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Application, BorrowAppContext, FontFeatures, KeyBinding, actions, font, px};
+use gpui::{
+    App, Application, BorrowAppContext, FontFallbacks, FontFeatures, KeyBinding, actions, font, px,
+};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
@@ -171,6 +175,19 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The fallback when the config names none: an installed Nerd Font, for the icons prompts and
+/// file listers print. Symbols Nerd Font Mono has nothing but the icons; else a whole family's
+/// Mono variant, the one whose icons keep to a cell of its own.
+fn nerd_font(installed: &[String]) -> Option<String> {
+    let named = |name: &str| installed.iter().find(|family| *family == name);
+    let ending = |suffix: &str| installed.iter().filter(|family| family.ends_with(suffix)).min();
+    named("Symbols Nerd Font Mono")
+        .or_else(|| named("Symbols Nerd Font"))
+        .or_else(|| ending(" Nerd Font Mono"))
+        .or_else(|| ending(" Nerd Font"))
+        .cloned()
+}
+
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("rtty: {message}\n{USAGE}");
     ExitCode::from(2)
@@ -226,6 +243,7 @@ fn run(options: Options) -> Result<(), String> {
     let trace = trace.transpose()?;
     let keys = config.keys.unwrap_or_default();
     let bell = config.bell.unwrap_or_default();
+    let fallback = config.fallback;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
@@ -233,8 +251,12 @@ fn run(options: Options) -> Result<(), String> {
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
-        if !cx.text_system().all_font_names().contains(&family) {
-            eprintln!("rtty: no font family named {family:?}");
+        let installed = cx.text_system().all_font_names();
+        let fallbacks = fallback.unwrap_or_else(|| nerd_font(&installed).into_iter().collect());
+        if let Some(missing) =
+            iter::once(&family).chain(&fallbacks).find(|name| !installed.contains(name))
+        {
+            eprintln!("rtty: no font family named {missing:?}");
             std::process::exit(2);
         }
         cx.bind_keys([
@@ -345,6 +367,8 @@ fn run(options: Options) -> Result<(), String> {
         } else {
             vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
         }));
+        // Ahead of macOS's own cascade, which knows no font with Nerd Font icons.
+        font.fallbacks = (!fallbacks.is_empty()).then(|| FontFallbacks::from_fonts(fallbacks));
         let stats = options.stats;
         cx.set_global(Settings {
             font,
@@ -428,4 +452,29 @@ fn bench(command: &str) -> ExitCode {
     let same = term.contents() == pane.lock().contents();
     println!("  pipeline screen matches the in-memory parse: {same}");
     if same { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_fallback_is_symbols_nerd_font_else_a_mono_nerd_font() {
+        let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        let families = names(&[
+            "Menlo",
+            "Iosevka Nerd Font Propo",
+            "Iosevka Nerd Font",
+            "Iosevka Nerd Font Mono",
+            "Hack Nerd Font Mono",
+            "Symbols Nerd Font",
+        ]);
+        assert_eq!(nerd_font(&families).as_deref(), Some("Symbols Nerd Font"));
+        let mut more = families.clone();
+        more.push("Symbols Nerd Font Mono".into());
+        assert_eq!(nerd_font(&more).as_deref(), Some("Symbols Nerd Font Mono"));
+        assert_eq!(nerd_font(&families[..5]).as_deref(), Some("Hack Nerd Font Mono"));
+        assert_eq!(nerd_font(&families[..3]).as_deref(), Some("Iosevka Nerd Font"));
+        assert_eq!(nerd_font(&families[..2]), None);
+    }
 }
