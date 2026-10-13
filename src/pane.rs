@@ -36,8 +36,8 @@ pub enum Notice {
     Output,
     /// Something the stream asked of the host other than a reply, which the reader already sent.
     Event(Event),
-    /// The child exited.
-    Exit,
+    /// The child exited, as its status says ("Exited with code 1", "Terminated by Hangup").
+    Exit(String),
 }
 
 /// The terminal's size until the window has laid out its first frame.
@@ -150,9 +150,10 @@ impl Pane {
             move || read(output, &term, &replies, &notices, &pending, trace)
         })?;
         let waiter = thread::Builder::new().name("child waiter".into()).spawn(move || {
-            let code = child.wait().ok().map(|status| status.exit_code());
-            let _ = notices.unbounded_send(Notice::Exit);
-            code
+            let status = child.wait();
+            let told = status.as_ref().map_or_else(ToString::to_string, ToString::to_string);
+            let _ = notices.unbounded_send(Notice::Exit(told));
+            status.ok().map(|status| status.exit_code())
         })?;
         let pane = Pane {
             term,

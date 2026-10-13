@@ -170,8 +170,13 @@ fn spawn(
     command.env("RTTY_PANE", id.to_string());
     command.env("RTTY_SOCKET", &settings.socket);
     let trace = settings.trace.as_ref().map(|trace| trace.for_pane(id));
-    Pane::spawn(command, rows, cols, Some(scheme), trace)
-        .map_err(|err| format!("cannot start the shell: {err}"))
+    let spawned = Pane::spawn(command, rows, cols, Some(scheme), trace)
+        .map_err(|err| format!("cannot start the shell: {err}"));
+    match &spawned {
+        Ok(_) => crate::note(&format!("pane {id}: started at {rows}x{cols}")),
+        Err(err) => crate::note(&format!("pane {id}: {err}")),
+    }
+    spawned
 }
 
 /// Answers `rtty cli` in the window holding the request's pane, or for none, the active window
@@ -404,7 +409,10 @@ impl TerminalWindow {
                 self.attention
                     .push(format!("notification from pane {id} {title:?} {body:?}: {fate}"));
             }
-            PaneEvent::Exited => self.close(id, window, cx),
+            PaneEvent::Exited(status) => {
+                crate::note(&format!("pane {id}: its program exited: {status}"));
+                self.close(id, window, cx)
+            }
         }
     }
 
@@ -413,6 +421,12 @@ impl TerminalWindow {
     fn close(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(closed) = self.tabs.close(id) else { return };
         self.views.remove(&id);
+        let with = match closed {
+            Closed::Pane => "",
+            Closed::Tab => ", and its tab",
+            Closed::Window => ", and its window",
+        };
+        crate::note(&format!("pane {id}: closed{with}"));
         match closed {
             Closed::Window => window.remove_window(),
             Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
@@ -422,6 +436,8 @@ impl TerminalWindow {
     /// Closes tab `index` and hangs up on every program in it; the last tab closes the window.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some((panes, closed)) = self.tabs.close_tab(index) else { return };
+        let with = if closed == Closed::Window { ", and its window" } else { "" };
+        crate::note(&format!("tab {}: its close button closed panes {panes:?}{with}", index + 1));
         for pane in panes {
             self.views.remove(&pane);
         }
@@ -532,6 +548,7 @@ impl TerminalWindow {
         let (_, rect) =
             rects.iter().find(|(pane, _)| *pane == id).expect("the new pane is laid out");
         let cwd = self.views.get(&from).and_then(|view| view.read(cx).cwd());
+        crate::note(&format!("pane {from}: splitting {} into pane {id}", direction.name()));
         let (pane, notices) = spawn(shell(cwd), id, rect.rows, rect.cols, &self.scheme, cx)?;
         *self.tabs.active_mut() = layout;
         self.add(id, pane, notices, window, cx);
@@ -989,6 +1006,7 @@ impl Render for TerminalWindow {
                 this.split_focused(Direction::Down, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
+                crate::note(&format!("pane {}: Cmd+W", this.tabs.active().focus()));
                 this.close(this.tabs.active().focus(), window, cx)
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {

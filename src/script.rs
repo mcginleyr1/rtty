@@ -339,7 +339,10 @@ async fn perform(
                 .map_err(|err| err.to_string())?;
             std::fs::write(path, dump).map_err(|err| format!("{}: {err}", path.display()))?;
         }
-        Step::Quit => cx.update(|_, cx| cx.quit()).map_err(|err| err.to_string())?,
+        Step::Quit => {
+            crate::note("quitting: the script's quit");
+            cx.update(|_, cx| cx.quit()).map_err(|err| err.to_string())?
+        }
     }
     Ok(())
 }

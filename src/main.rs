@@ -17,9 +17,13 @@ mod title;
 mod view;
 mod window;
 
+use std::backtrace::Backtrace;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Application, BorrowAppContext, FontFeatures, KeyBinding, actions, font, px};
@@ -47,6 +51,55 @@ const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--li
 
 // macOS seq prints 1e+06 past a million without the explicit format.
 const BENCH_COMMAND: &str = "seq -f %.0f 1 2000000";
+
+/// `rtty.log`, beside the socket: when each rtty started and quit, its panes' lives, and panics
+/// with their backtraces. Never what a pane shows or is sent.
+static LOG: OnceLock<PathBuf> = OnceLock::new();
+
+/// The log starts over (keeping the last as `rtty.log.old`) past this size.
+const LOG_LIMIT: u64 = 1 << 20;
+
+/// Appends a line to the log, after the local time and this rtty's pid.
+pub fn note(line: &str) {
+    let Some(path) = LOG.get() else { return };
+    // SAFETY: time and localtime_r only write the struct they are given.
+    let tm = unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        tm
+    };
+    let entry = format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02} pid {} {line}\n",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        std::process::id()
+    );
+    let file = OpenOptions::new().create(true).append(true).mode(0o600).open(path);
+    let _ = file.and_then(|mut file| file.write_all(entry.as_bytes()));
+}
+
+/// Starts the log in `dir` and has every panic, on any thread, written to it before Rust's own
+/// report on stderr.
+fn start_log(dir: &std::path::Path) {
+    let path = dir.join("rtty.log");
+    if fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_LIMIT) {
+        let _ = fs::rename(&path, dir.join("rtty.log.old"));
+    }
+    LOG.get_or_init(|| path);
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed");
+        note(&format!("panic on thread {name}: {info}\n{}", Backtrace::force_capture()));
+        report(info);
+    }));
+    note(&format!("rtty {} started", env!("CARGO_PKG_VERSION")));
+}
 
 /// The command line; `font`, `size` and `ligatures` override the config file's.
 #[derive(Default)]
@@ -174,7 +227,9 @@ fn run(options: Options) -> Result<(), String> {
     let keys = config.keys.unwrap_or_default();
     let bell = config.bell.unwrap_or_default();
     let socket = control::socket_path()?;
-    control::sweep(socket.parent().expect("the socket is in its directory"));
+    let dir = socket.parent().expect("the socket is in its directory");
+    start_log(dir);
+    control::sweep(dir);
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
@@ -227,7 +282,10 @@ fn run(options: Options) -> Result<(), String> {
             (1..=9)
                 .map(|digit| KeyBinding::new(&format!("cmd-{digit}"), SelectTab(digit - 1), None)),
         );
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Quit, cx| {
+            note("quitting: Cmd+Q");
+            cx.quit()
+        });
         // Every pane in every window follows the one size, and reflows when it changes.
         let step = |points: f32| {
             move |cx: &mut App| {
@@ -269,12 +327,14 @@ fn run(options: Options) -> Result<(), String> {
             let socket = socket.clone();
             move |_| {
                 let _ = std::fs::remove_file(&socket);
+                note("quit");
                 async {}
             }
         })
         .detach();
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
+                note("quitting: the last window closed");
                 cx.quit()
             }
         })

@@ -49,6 +49,13 @@ variables that would tell a program it runs inside a multiplexer rtty was starte
 its undercurl probe inside tmux. `RTTY_PANE` and `RTTY_SOCKET` tell a pane's program which pane it
 is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 
+**The log.** rtty appends to `$TMPDIR/rtty-<uid>/rtty.log`, next to its socket (`echo
+$TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
+why, each pane's start, split, `Cmd+W` and its program's exit status, a tab's close button, and
+every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
+keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
+why) or panicked (and where).
+
 ## Configuration
 
 `~/.config/rtty/config.toml` (`$XDG_CONFIG_HOME/rtty/config.toml` when that is set). Every key is

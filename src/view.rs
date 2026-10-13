@@ -139,11 +139,9 @@ pub enum PaneEvent {
     /// BEL.
     Bell,
     /// OSC 9, OSC 777;notify or OSC 99.
-    Notification {
-        title: Option<String>,
-        body: Option<String>,
-    },
-    Exited,
+    Notification { title: Option<String>, body: Option<String> },
+    /// The program exited, as its status says.
+    Exited(String),
 }
 
 impl EventEmitter<PaneEvent> for PaneView {}
@@ -509,11 +507,11 @@ impl PaneView {
                 cx.emit(PaneEvent::Notification { title, body })
             }
             Notice::Event(_) => {}
-            Notice::Exit => {
+            Notice::Exit(status) => {
                 if let Some(stats) = self.stats.as_mut() {
                     stats.report();
                 }
-                cx.emit(PaneEvent::Exited)
+                cx.emit(PaneEvent::Exited(status))
             }
         }
     }
