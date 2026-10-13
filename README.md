@@ -84,11 +84,14 @@ font; with no Nerd Font installed the icons stay missing. An unknown family, in 
 rtty draws box drawing (U+2500–257F), block elements (U+2580–259F) and the powerline separators
 (U+E0B0–E0BF) itself, filling each cell exactly: lines meet the next cell's, blocks tile, and the
 separators fit the cell's height whatever the font, Menlo included. An icon (a private use area
-character) or any glyph from another font whose ink is wider than its cell, or than its two cells
-when it is a wide character, or taller than the line, is drawn smaller and centered there instead
-of covering its neighbours; a Nerd Font that is not its Mono variant draws its icons wider than a
-cell, so they come out smaller than that font draws them elsewhere. The font's own glyphs are left
-alone, so a ligature still reaches over the cells after it.
+character) or any glyph from another font whose ink is wider than its cell (a Nerd Font that is
+not its Mono variant draws its icons about two cells wide) takes the next cell too when that one
+is blank, as prompts leave one after each icon, and is centered across both, shrunk only if it is
+wider still, as WezTerm and Ghostty draw them; with no blank after it, it is drawn smaller and
+centered in its own cell instead of covering its neighbour. A wide character keeps to its two
+cells, and anything taller than the line shrinks to it. This is drawing only: the cells stay as
+the terminal has them. The font's own glyphs are left alone, so a ligature still reaches over the
+cells after it.
 
 ## Color schemes
 

@@ -1329,9 +1329,11 @@ fn shape(
 
 /// Where and how big to draw each glyph whose ink would not keep to the cells its characters
 /// take (a wide character's two) and the line: one from another font, or an icon from the
-/// private use areas, which a Nerd Font that is not its Mono variant draws past its cell. Each
-/// is scaled down to fit and centered there. The font's own glyphs stay as drawn, so a
-/// ligature still reaches over the cells after it. `None` when nothing moves.
+/// private use areas, which a Nerd Font that is not its Mono variant draws wider than its cell.
+/// Followed by a blank cell, as prompts put one after each icon, it takes that cell too, as
+/// WezTerm and Ghostty let it; else it is scaled down to its own cells. Either way it is
+/// centered there. The font's own glyphs stay as drawn, so a ligature still reaches over the
+/// cells after it. `None` when nothing moves.
 fn fit(
     text_system: &WindowTextSystem,
     own: FontId,
@@ -1358,30 +1360,42 @@ fn fit(
             if !(font_id != own || icon) || next_x <= glyph.position.x {
                 return None;
             }
-            let cells = match run.single_width {
-                true => text.get(glyph.index..end).map_or(1, |chars| chars.chars().count()),
-                false => usize::from(run.cells),
+            let (cells, blank_after) = match run.single_width {
+                true => {
+                    let cells = text.get(glyph.index..end).map_or(1, |chars| chars.chars().count());
+                    let after = text.get(end..).and_then(|rest| rest.chars().next());
+                    (cells, after.map_or(run.blank_after, |c| c == ' '))
+                }
+                false => (usize::from(run.cells), false),
             };
             let ink = text_system.typographic_bounds(font_id, layout.font_size, c).ok()?;
-            fit_ink(ink, cell.width * cells.max(1) as f32, cell.height, baseline)
+            let room = cell.width * cells.max(1) as f32;
+            let spare = if blank_after { cell.width } else { px(0.) };
+            fit_ink(ink, room, spare, cell.height, baseline)
         })
         .collect();
     fits.iter().any(Option::is_some).then_some(fits)
 }
 
 /// Where a glyph whose `ink` (from its origin on the baseline, y up) is wider than `room` or
-/// taller than the line goes: scaled down to fit both and centered in them. One that fits but
-/// sticks out sideways moves over. `None` when it keeps to them already. `baseline` is from the
-/// line's top.
-fn fit_ink(ink: Bounds<Pixels>, room: Pixels, height: Pixels, baseline: Pixels) -> Option<Fit> {
+/// taller than the line goes: into `room` and the `spare` blank after it, scaled down to fit
+/// them and the line and centered there. One that fits but sticks out sideways moves over.
+/// `None` when it keeps to `room` and the line already. `baseline` is from the line's top.
+fn fit_ink(
+    ink: Bounds<Pixels>,
+    room: Pixels,
+    spare: Pixels,
+    height: Pixels,
+    baseline: Pixels,
+) -> Option<Fit> {
     let (left, bottom, width, tall) = (ink.origin.x, ink.origin.y, ink.size.width, ink.size.height);
-    let scale = (room / width).min(height / tall);
     let inside = left >= px(0.) && left + width <= room;
     // Past a hundredth is past rounding.
-    if scale > 0.99 && inside {
+    if (room / width).min(height / tall) > 0.99 && inside {
         return None;
     }
-    let scale = scale.min(1.);
+    let room = room + spare;
+    let scale = (room / width).min(height / tall).min(1.);
     let x = (room - width * scale) / 2. - left * scale;
     let y = match scale < 0.99 {
         true => height / 2. + (bottom + tall / 2.) * scale - baseline,
@@ -1720,22 +1734,39 @@ impl EntityInputHandler for PaneView {
 mod tests {
     use super::*;
 
+    fn ink(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
     /// An icon twice a 10×20 cell's width, its ink from 0 to 20 across and from the baseline up
-    /// 10, in a line whose baseline is 15 down: it draws at half size, centered in the cell.
+    /// 10, in a line whose baseline is 15 down, with no blank cell after it: it draws at half
+    /// size, centered in its cell.
     #[test]
     fn an_icon_too_wide_for_its_cell_is_scaled_into_the_middle_of_it() {
-        let ink =
-            |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
-        let fit = fit_ink(ink(0., 0., 20., 10.), px(10.), px(20.), px(15.)).unwrap();
+        let fit = fit_ink(ink(0., 0., 20., 10.), px(10.), px(0.), px(20.), px(15.)).unwrap();
         assert_eq!(fit.scale, 0.5);
         // Its ink, 10×5 now, from 0 to 10 across and 7.5 to 12.5 down the line.
         assert_eq!(fit.offset, point(px(0.), px(-2.5)));
-        // In two cells it fits whole; one that fits but starts left of its cell moves over.
-        assert!(fit_ink(ink(0., 0., 20., 10.), px(20.), px(20.), px(15.)).is_none());
-        let moved = fit_ink(ink(-2., 0., 8., 10.), px(10.), px(20.), px(15.)).unwrap();
+        // A wide character's two cells hold it whole; one that fits but starts left of its cell
+        // moves over.
+        assert!(fit_ink(ink(0., 0., 20., 10.), px(20.), px(0.), px(20.), px(15.)).is_none());
+        let moved = fit_ink(ink(-2., 0., 8., 10.), px(10.), px(0.), px(20.), px(15.)).unwrap();
         assert_eq!((moved.scale, moved.offset), (1., point(px(3.), px(0.))));
         // Too tall for the line, a narrow one shrinks too.
-        assert_eq!(fit_ink(ink(0., -10., 5., 40.), px(10.), px(20.), px(15.)).unwrap().scale, 0.5);
+        let tall = fit_ink(ink(0., -10., 5., 40.), px(10.), px(0.), px(20.), px(15.));
+        assert_eq!(tall.unwrap().scale, 0.5);
+    }
+
+    /// The same icon, 17 across, with a blank cell after it (a prompt's space): it keeps its
+    /// size and centers across both cells. Wider than two cells, it shrinks to fit them.
+    #[test]
+    fn an_icon_followed_by_a_blank_draws_across_both_cells() {
+        let fit = fit_ink(ink(0., 0., 17., 10.), px(10.), px(10.), px(20.), px(15.)).unwrap();
+        assert_eq!((fit.scale, fit.offset), (1., point(px(1.5), px(0.))));
+        let wider = fit_ink(ink(0., 0., 40., 10.), px(10.), px(10.), px(20.), px(15.)).unwrap();
+        assert_eq!((wider.scale, wider.offset.x), (0.5, px(0.)));
+        // One that keeps to its own cell stays as drawn, blank after it or not.
+        assert!(fit_ink(ink(1., 0., 8., 10.), px(10.), px(10.), px(20.), px(15.)).is_none());
     }
 
     #[test]

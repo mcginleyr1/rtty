@@ -81,6 +81,8 @@ pub struct Run {
     pub text: String,
     pub style: Style,
     pub single_width: bool,
+    /// The cell after the run is a blank, which an icon at the run's end may draw across.
+    pub blank_after: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +282,7 @@ impl<'a> Scene<'a> {
                     text: text.clone(),
                     style,
                     single_width,
+                    blank_after: false,
                 }),
             }
         }
@@ -289,6 +292,14 @@ impl<'a> Scene<'a> {
             run.text.truncate(kept);
         }
         line.runs.retain(|run| !run.text.trim().is_empty() || run.style.decorated());
+        let blank = |col: usize| {
+            let cell = row.cells().get(col);
+            cell.is_some_and(|cell| cell.ch() == ' ' && !cell.is_spacer())
+                && row.cluster(col).is_none()
+        };
+        for run in &mut line.runs {
+            run.blank_after = blank(usize::from(run.col + run.cells));
+        }
         line
     }
 }
@@ -392,6 +403,19 @@ mod tests {
         let drawn: Vec<_> =
             lines[0].drawn.iter().map(|drawn| (drawn.col, drawn.c, drawn.fg)).collect();
         assert_eq!(drawn, [(1, '─', rgb(FG)), (3, '▀', rgb(RED)), (4, '\u{e0b0}', rgb(RED))]);
+    }
+
+    /// Whether the cell after a run is blank, for an icon at its end to draw across.
+    #[test]
+    fn a_run_knows_whether_a_blank_cell_follows_it() {
+        let (lines, _) =
+            draw(&term("\x1b[34m\u{f015}\x1b[0m ab\x1b[31mc\x1b[0md\u{f07c}".as_bytes()));
+        let after: Vec<_> =
+            lines[0].runs.iter().map(|run| (run.text.as_str(), run.blank_after)).collect();
+        assert_eq!(after, [("\u{f015}", true), (" ab", false), ("c", false), ("d\u{f07c}", true)]);
+        // At the row's end there is no cell to take.
+        let (lines, _) = draw(&term("\x1b[1;12H\u{f015}".as_bytes()));
+        assert!(!lines[0].runs[0].blank_after);
     }
 
     #[test]
