@@ -37,7 +37,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes), clicks, drags and the wheel at window cells (to the pane under them), focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes), clicks, drags and the wheel at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -71,11 +71,17 @@ bell = "visual"                   # the default: BEL flashes the pane (and the d
 Schemes are WezTerm's TOML format, so WezTerm scheme files work unchanged: `[colors]` with
 `foreground`, `background`, `ansi` (8), `brights` (8), optionally `cursor_bg`, `cursor_fg`,
 `cursor_border`, `selection_bg`, `selection_fg`, `split` (the line between panes),
-`[colors.tab_bar]` (`background`, and `fg_color` and `bg_color` of `active_tab` and
-`inactive_tab`) and `[colors.indexed]` (index → color), and `[metadata] name`. What a scheme
-leaves out of the tab bar and the split line is mixed from its foreground and background: the
-active tab is the pane's own colors, the bar and the other tabs recede toward the background. Keys
-rtty does not draw (`scrollbar_thumb`, the tab bar's hover and new-tab colors, …) are ignored.
+`[colors.tab_bar]` (`background`, and `fg_color` and `bg_color` of `active_tab`, `inactive_tab`,
+`inactive_tab_hover`, `new_tab` and `new_tab_hover`: the shown tab, the others, one under the
+pointer, and the `+` button plain and under the pointer) and `[colors.indexed]` (index → color),
+and `[metadata] name`. What a scheme leaves out of the tab bar and the split line is mixed from
+its foreground and background: the bar is the background, a shade darker in a light scheme; the
+shown tab is the pane's own colors, the other tabs dim their titles on the bar, and the `+` is
+drawn as they are. A tab that should stand out (the shown one, one under the pointer, the `+`
+under it) but has the bar's own background, as in WezTerm's flat tab bars, is lifted from the
+bar, toward the foreground in a dark scheme and toward white in a light one, so it is lighter
+either way. The folder before a lone tab's title is the scheme's blue. Keys rtty does not draw
+(`scrollbar_thumb`, the tab bar's `inactive_tab_edge`, a tab's `intensity`, …) are ignored.
 Colors are `#rgb`, `#rrggbb` or `#rrggbbaa` (alpha ignored).
 
 rtty looks for a scheme name in this order, first match wins:
@@ -132,7 +138,8 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | mouse drag | select (double click: word, triple click: line), within the pane; Shift+drag when a program takes the mouse |
 | mouse buttons | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
 | divider drag | resize the panes on either side |
-| tab click | show that tab |
+| tab click | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
+| double click on the bar | zoom the window, as on any titlebar (System Settings decides what a double click does) |
 | wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
 New panes, tabs and windows run the login shell in the focused pane's working directory: as its
@@ -148,6 +155,17 @@ too, as tutti's direct keys are, at the cost of those keys in programs that do n
 default every Ctrl key stays with the programs.
 Focus by direction picks, among the panes beyond the focused one's edge that overlap it across,
 the nearest; then the one focused last; then the one overlapping it most, as tmux and WezTerm do.
+
+**The tab bar.** rtty draws its own titlebar, a bar 36 points tall across the window's top with
+the traffic lights at its left, the way Ghostty looks on macOS. With one tab it shows the tab's
+title, centered, after a folder while the pane's directory is known, dimmed while the window is in
+the background. With more, it holds a rounded pill per tab, equal widths filling the row after
+the traffic lights: the shown tab's pill is lighter, the others recede with dimmed titles; each
+title is centered, each of the first nine pills shows its `Cmd+1`–`9` at its right end, and the
+pill under the pointer shows a close × at its left end. A round `+` ends the row. The bar keeps
+its height whatever the number of tabs, so opening or closing a tab resizes no pane; in full
+screen, where macOS hides the titlebar, a lone tab has no bar and a row of tabs starts at the
+window's edge. Its colors are the scheme's (below), so it follows the light/dark flip.
 
 **Titles.** A pane is called by the title its program set (OSC 0 or 2); else, while a program
 runs in its foreground (the pty's process group, `tcgetpgrp`), by that program's command line
@@ -290,7 +308,10 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
   gets fewer than two across a split), split and close with the cascade to tab and window, a
   divider dragged to a cell or moved by a resize, focus by direction, zoom.
-- `window.rs` — `TerminalWindow`: one window's tabs, the tab bar and the dividers, and the Cmd
+- `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
+  for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
+- `window.rs` — `TerminalWindow`: one window's tabs, the bar (drawn where `tabbar` puts it, in a
+  transparent titlebar, the traffic lights moved to its middle) and the dividers, and the Cmd
   chords as GPUI actions. It shares the window's cells out with `layout`, and every pane's grid
   and pty, shown or not, follow its cells on every resize. Each pane draws as a cached GPUI view,
   so output in one pane redraws that pane alone. `focus_toward` is the one call for moving focus
@@ -370,8 +391,9 @@ font's `calt`, `liga` and `dlig` features.
 Works: windows, tabs and splits (above), each pane running a shell or `-e` program with colors,
 attributes, wide chars, ligatures, every underline style (single, double, curly, dotted, dashed;
 SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline,
-selection and copy/paste, scrollback, resize with reflow, mouse reports, window and tab titles
-from OSC 0/2, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
+selection and copy/paste, scrollback, resize with reflow, mouse reports, a Ghostty-style tab bar
+in the titlebar, window and tab titles from OSC 0/2, the foreground process or the shell's
+directory, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
 the window is activated and deactivated and as the pane gains and loses the keyboard), the
 keyboard protocols above, scrollback search, prompt jumps, links, the bell, notifications (from
 an app bundle), a config file, and WezTerm-format color schemes that follow the macOS

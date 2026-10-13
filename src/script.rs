@@ -17,6 +17,11 @@
 //! move ROW COL [cmd]     with no button; `cmd` holds Cmd, as over a link
 //! wheel ROW COL LINES    positive scrolls up
 //! focus in|out           the keyboard comes to the focused pane or leaves the window's elements
+//! bar click tab N        in the titlebar's bar: the pointer onto tab N's pill (from 1), then a
+//!                        press and release there
+//! bar click close N      ... on tab N's close button
+//! bar click new          ... on the +
+//! bar hover tab N|new|none   the pointer onto tab N's pill or the +, or off the bar
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -32,6 +37,7 @@ use gpui::{
     WeakEntity, Window, WindowAppearance, point,
 };
 
+use crate::tabbar::Hit;
 use crate::window::TerminalWindow;
 
 #[derive(Debug)]
@@ -45,6 +51,8 @@ pub enum Step {
     Move { row: u16, col: u16, cmd: bool },
     Wheel { row: u16, col: u16, lines: f32 },
     Focus(bool),
+    BarClick(Hit),
+    BarHover(Option<Hit>),
     Appearance(WindowAppearance),
     Resize { rows: u16, cols: u16 },
     Dump(PathBuf),
@@ -133,6 +141,21 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 "out" => Step::Focus(false),
                 _ => return Err(error("in or out expected")),
             },
+            "bar" => {
+                let tab = || match args.get(2).and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) if n > 0 => Ok(n - 1),
+                    _ => Err(error("a tab number from 1 expected")),
+                };
+                match (args.first().copied(), args.get(1).copied()) {
+                    (Some("click"), Some("tab")) => Step::BarClick(Hit::Tab(tab()?)),
+                    (Some("click"), Some("close")) => Step::BarClick(Hit::Close(tab()?)),
+                    (Some("click"), Some("new")) => Step::BarClick(Hit::New),
+                    (Some("hover"), Some("tab")) => Step::BarHover(Some(Hit::Tab(tab()?))),
+                    (Some("hover"), Some("new")) => Step::BarHover(Some(Hit::New)),
+                    (Some("hover"), Some("none")) => Step::BarHover(None),
+                    _ => return Err(error("bar click|hover tab N, close N, new or none expected")),
+                }
+            }
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
                 "light" => Step::Appearance(WindowAppearance::Light),
@@ -278,6 +301,28 @@ async fn perform(
         Step::Focus(false) => {
             cx.update(|window, _| window.blur()).map_err(|err| err.to_string())?
         }
+        // Through the bar's own handlers and hit testing, at the middle of what the step names.
+        Step::BarClick(hit) => this
+            .update_in(cx, |this, window, cx| {
+                let at = this.bar_point(*hit, window).ok_or(format!("no {hit:?} in the bar"))?;
+                this.bar_move(Some(at), window, cx);
+                this.bar_down(at, 1, window, cx);
+                this.bar_up(at, window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|err| err.to_string())??,
+        Step::BarHover(hit) => this
+            .update_in(cx, |this, window, cx| {
+                let at = match hit {
+                    Some(hit) => {
+                        Some(this.bar_point(*hit, window).ok_or(format!("no {hit:?} in the bar"))?)
+                    }
+                    None => None,
+                };
+                this.bar_move(at, window, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|err| err.to_string())??,
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -340,6 +385,17 @@ mod tests {
         let cmd = parse("click 3 4 left 1 cmd\nmove 5 6 cmd").unwrap();
         assert!(matches!(&cmd[0].1, Step::Click { row: 3, col: 4, clicks: 1, cmd: true, .. }));
         assert!(matches!(&cmd[1].1, Step::Move { row: 5, col: 6, cmd: true }));
+        let bar = parse(
+            "bar click tab 2\nbar click close 1\nbar click new\nbar hover tab 3\nbar hover none",
+        );
+        let bar: Vec<Step> = bar.unwrap().into_iter().map(|(_, step)| step).collect();
+        assert!(matches!(bar[0], Step::BarClick(Hit::Tab(1))));
+        assert!(matches!(bar[1], Step::BarClick(Hit::Close(0))));
+        assert!(matches!(bar[2], Step::BarClick(Hit::New)));
+        assert!(matches!(bar[3], Step::BarHover(Some(Hit::Tab(2)))));
+        assert!(matches!(bar[4], Step::BarHover(None)));
+        assert!(parse("bar click tab 0").unwrap_err().contains("a tab number from 1"));
+        assert!(parse("bar wave").unwrap_err().contains("bar click|hover"));
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
         assert!(parse("keys a-b").unwrap_err().contains("unknown keystroke"));

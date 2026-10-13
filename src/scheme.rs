@@ -32,14 +32,18 @@ pub struct Scheme {
     pub selection: Option<(Rgb, Rgb)>,
     /// The line between split panes.
     pub split: Rgb,
-    /// The tab bar's background, and the foreground and background of its tabs.
+    /// The tab bar's background, and the foreground and background of its tabs: the one shown,
+    /// the others, another under the pointer, and the + button, plain and under the pointer.
     pub tab_bar: Rgb,
     pub active_tab: (Rgb, Rgb),
     pub inactive_tab: (Rgb, Rgb),
+    pub inactive_tab_hover: (Rgb, Rgb),
+    pub new_tab: (Rgb, Rgb),
+    pub new_tab_hover: (Rgb, Rgb),
 }
 
-/// WezTerm's color scheme file. Keys rtty does not draw (`scrollbar_thumb`, the tab bar's hover
-/// and new-tab colors, …) are ignored so WezTerm's files load unchanged.
+/// WezTerm's color scheme file. Keys rtty does not draw (`scrollbar_thumb`, the tab bar's
+/// `inactive_tab_edge`, …) are ignored so WezTerm's files load unchanged.
 #[derive(Deserialize)]
 struct SchemeFile {
     colors: Palette,
@@ -52,6 +56,9 @@ struct TabBar {
     background: Option<Hex>,
     active_tab: Option<Tab>,
     inactive_tab: Option<Tab>,
+    inactive_tab_hover: Option<Tab>,
+    new_tab: Option<Tab>,
+    new_tab_hover: Option<Tab>,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -124,12 +131,30 @@ impl Scheme {
         table[BACKGROUND] = background;
         table[CURSOR] = cursor;
         // What a scheme leaves out of the window's chrome is mixed from its foreground and
-        // background: the active tab is the pane's own colors, the rest recede toward the
-        // background.
+        // background: the bar is the background, a shade darker in a light scheme; the active
+        // tab is the pane's own colors, the others recede. A tab that should stand out (the one
+        // shown, one under the pointer) but has the bar's own background, as in WezTerm's flat
+        // tab bars, is lifted from the bar: toward the foreground in a dark scheme, toward white
+        // in a light one, so it is lighter either way.
+        let dark = is_dark(background);
         let toward = |share: f32| mix(background, foreground, share);
-        let tab_bar = colors.tab_bar.background.map_or(toward(0.08), |color| color.0);
+        let bar = colors.tab_bar;
+        let tab_bar =
+            bar.background.map_or(if dark { background } else { toward(0.08) }, |color| color.0);
         let tab =
             |tab: Option<Tab>, default| tab.map_or(default, |tab| (tab.fg_color.0, tab.bg_color.0));
+        let lift = |(fg, bg): (Rgb, Rgb), strength: f32| {
+            let lifted = if dark {
+                mix(bg, foreground, 0.12 * strength)
+            } else {
+                mix(bg, Rgb(255, 255, 255), 0.7 * strength)
+            };
+            (fg, if bg == tab_bar { lifted } else { bg })
+        };
+        let active_tab = lift(tab(bar.active_tab, (foreground, background)), 1.);
+        let inactive_tab = tab(bar.inactive_tab, (toward(0.55), tab_bar));
+        let hover = (inactive_tab.0, mix(inactive_tab.1, active_tab.1, 0.5));
+        let inactive_tab_hover = lift(tab(bar.inactive_tab_hover, hover), 0.5);
         Ok(Scheme {
             name,
             path,
@@ -139,8 +164,11 @@ impl Scheme {
             selection: colors.selection_fg.zip(colors.selection_bg).map(|(fg, bg)| (fg.0, bg.0)),
             split: colors.split.map_or(toward(0.3), |color| color.0),
             tab_bar,
-            active_tab: tab(colors.tab_bar.active_tab, (foreground, background)),
-            inactive_tab: tab(colors.tab_bar.inactive_tab, (toward(0.55), tab_bar)),
+            active_tab,
+            inactive_tab,
+            inactive_tab_hover,
+            new_tab: tab(bar.new_tab, inactive_tab),
+            new_tab_hover: lift(tab(bar.new_tab_hover, inactive_tab_hover), 0.5),
         })
     }
 
@@ -149,12 +177,16 @@ impl Scheme {
         self.table[index]
     }
 
-    /// Dark when its background contrasts more with white than with black: relative luminance
-    /// `l` against white is 1.05 / (l + 0.05), against black (l + 0.05) / 0.05.
     pub fn is_dark(&self) -> bool {
-        let l = luminance(self.table[BACKGROUND]) + 0.05;
-        1.05 / l > l / 0.05
+        is_dark(self.table[BACKGROUND])
     }
+}
+
+/// Dark when a background contrasts more with white than with black: relative luminance `l`
+/// against white is 1.05 / (l + 0.05), against black (l + 0.05) / 0.05.
+fn is_dark(background: Rgb) -> bool {
+    let l = luminance(background) + 0.05;
+    1.05 / l > l / 0.05
 }
 
 /// The built-ins, then every `*.toml` in each directory in order; a missing directory is skipped,
@@ -285,9 +317,15 @@ mod tests {
         assert_eq!(scheme.color(CURSOR), rgb(0xc678dd));
         assert_eq!(scheme.cursor_fg, rgb(0x282c34));
         assert_eq!(scheme.selection, Some((rgb(0xabb2bf), rgb(0xc678dd))));
-        assert_eq!(scheme.tab_bar, rgb(0x282c34));
-        assert_eq!(scheme.active_tab, (rgb(0xc678dd), rgb(0x282c34)));
-        assert_eq!(scheme.inactive_tab, (rgb(0x5c6370), rgb(0x282c34)));
+        // A flat tab bar: the shown tab and the hovered one are lifted from it, lighter; the
+        // + under the pointer keeps the scheme's own colors.
+        let (bar, fg) = (rgb(0x282c34), rgb(0xabb2bf));
+        assert_eq!(scheme.tab_bar, bar);
+        assert_eq!(scheme.active_tab, (rgb(0xc678dd), mix(bar, fg, 0.12)));
+        assert_eq!(scheme.inactive_tab, (rgb(0x5c6370), bar));
+        assert_eq!(scheme.inactive_tab_hover, (rgb(0xc678dd), mix(bar, fg, 0.06)));
+        assert_eq!(scheme.new_tab, (rgb(0xc678dd), bar));
+        assert_eq!(scheme.new_tab_hover, (bar, rgb(0xc678dd)));
         let schemes = [scheme];
         assert_eq!(find(&schemes, "onedarkpro_onedark").unwrap().name, "onedarkpro_onedark");
         assert_eq!(find(&schemes, "onedarkpro").unwrap().name, "onedarkpro_onedark");
@@ -296,13 +334,25 @@ mod tests {
 
     #[test]
     fn chrome_a_scheme_leaves_out_is_mixed_from_its_colors() {
+        // Light: the bar a shade darker than the pane, the shown tab the pane's own colors.
         let light = find(&load(&[]).unwrap(), "Solarized Light").unwrap();
         let (fg, bg) = (light.color(FOREGROUND), light.color(BACKGROUND));
         assert_eq!((fg, bg), (rgb(0x657b83), rgb(0xfdf6e3)));
+        let bar = mix(bg, fg, 0.08);
+        assert_eq!(light.tab_bar, bar);
         assert_eq!(light.active_tab, (fg, bg));
-        assert_eq!(light.tab_bar, mix(bg, fg, 0.08));
-        assert_eq!(light.inactive_tab, (mix(bg, fg, 0.55), light.tab_bar));
+        assert_eq!(light.inactive_tab, (mix(bg, fg, 0.55), bar));
+        assert_eq!(light.inactive_tab_hover, (mix(bg, fg, 0.55), mix(bar, bg, 0.5)));
+        assert_eq!(light.new_tab, light.inactive_tab);
+        assert_eq!(light.new_tab_hover, light.inactive_tab_hover);
         assert_eq!(light.split, mix(bg, fg, 0.3));
+        // Dark: the bar is the pane's background, so the shown tab is lifted, lighter.
+        let dark = find(&load(&[]).unwrap(), "Solarized Dark").unwrap();
+        let (fg, bg) = (dark.color(FOREGROUND), dark.color(BACKGROUND));
+        assert_eq!(dark.tab_bar, bg);
+        assert_eq!(dark.active_tab, (fg, mix(bg, fg, 0.12)));
+        assert_eq!(dark.inactive_tab, (mix(bg, fg, 0.55), bg));
+        assert_eq!(dark.inactive_tab_hover.1, mix(bg, mix(bg, fg, 0.12), 0.5));
         assert_eq!(mix(rgb(0x000000), rgb(0xffffff), 0.5), rgb(0x808080));
         let split = WEZTERM_FIXTURE.replacen("[colors]\n", "[colors]\nsplit = \"#123456\"\n", 1);
         assert_eq!(Scheme::parse(&split, None).unwrap().split, rgb(0x123456));

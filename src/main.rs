@@ -12,6 +12,7 @@ mod scheme;
 mod script;
 mod search;
 mod selection;
+mod tabbar;
 mod title;
 mod view;
 mod window;
@@ -176,7 +177,7 @@ fn run(options: Options) -> Result<(), String> {
     control::sweep(socket.parent().expect("the socket is in its directory"));
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
         if !cx.text_system().all_font_names().contains(&family) {
             eprintln!("rtty: no font family named {family:?}");
             std::process::exit(2);

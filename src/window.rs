@@ -1,10 +1,11 @@
-//! A window: its tabs, each a tree of split panes (`layout.rs` does the arithmetic), the tab bar
-//! while there is more than one tab, and the dividers between panes. Cmd chords arrive here as
+//! A window: its tabs, each a tree of split panes (`layout.rs` does the arithmetic), the bar in
+//! its titlebar (`tabbar.rs` places it), and the dividers between panes. Cmd chords arrive here as
 //! actions; panes tell the window their titles, their focus, and that their programs exited.
 //!
 //! The layout is in cells, and every pane's grid and pty follow the cells it gets, shown or not.
 //! Each pane draws as a cached view, so output in one pane redraws that pane alone.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -14,13 +15,14 @@ use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    Action, AnyView, App, AppContext, Bounds, Context, Div, DragMoveEvent, EmptyView, Entity,
-    MouseButton, Pixels, Point, Render, Size, StyleRefinement, TitlebarOptions, Window,
+    Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
+    EmptyView, Entity, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Render, SharedString, Size, Stateful, StyleRefinement, TitlebarOptions, Window,
     WindowAppearance, WindowBounds, WindowHandle, WindowOptions, actions, div, point, prelude::*,
-    px, size,
+    px, size, svg,
 };
 use portable_pty::CommandBuilder;
-use rtty_vt::BACKGROUND;
+use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
 
 use crate::cli::RESIZE_STEP;
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
@@ -28,6 +30,7 @@ use crate::layout::{Amount, Closed, Direction, Orientation, PaneId, Rect, Tabs};
 use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::scheme::Scheme;
+use crate::tabbar::{self, Bar, Hit};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
 actions!(
@@ -57,11 +60,41 @@ pub struct ResizePane {
 #[action(namespace = rtty, no_json)]
 pub struct SelectTab(pub usize);
 
-/// Above and below a tab's title.
-const TAB_PADDING: Pixels = px(6.);
-
 /// How often panes look at their foreground process and directory for their titles.
 const TITLE_REFRESH: Duration = Duration::from_secs(1);
+
+/// The bar's text is the system's, as a titlebar's is.
+const UI_FONT: &str = ".SystemUIFont";
+
+/// The bar's icons, drawn for rtty on a 16-unit grid; GPUI tints them with the text color.
+const ICONS: [(&str, &str); 3] = [
+    (
+        "folder.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1 3.75A1.25 1.25 0 0 1 2.25 2.5h3.7a1.25 1.25 0 0 1 .9.38L8 4h5.75A1.25 1.25 0 0 1 15 5.25v7A1.25 1.25 0 0 1 13.75 13.5H2.25A1.25 1.25 0 0 1 1 12.25z"/></svg>"#,
+    ),
+    (
+        "close.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="black" stroke-width="2.2" stroke-linecap="round"/></svg>"#,
+    ),
+    (
+        "plus.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M2.5 8h11" stroke="black" stroke-width="1.8" stroke-linecap="round"/></svg>"#,
+    ),
+];
+
+/// Serves `ICONS` to GPUI's `svg()`.
+pub struct Icons;
+
+impl AssetSource for Icons {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        let icon = ICONS.iter().find(|(name, _)| *name == path);
+        Ok(icon.map(|(_, svg)| Cow::Borrowed(svg.as_bytes())))
+    }
+
+    fn list(&self, _: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(ICONS.iter().map(|(name, _)| SharedString::from(*name)).collect())
+    }
+}
 
 /// A divider being dragged, by its path in the layout.
 struct DividerDrag(Vec<bool>);
@@ -71,6 +104,10 @@ pub struct TerminalWindow {
     views: HashMap<PaneId, Entity<PaneView>>,
     /// The theme's scheme for the window's appearance, for the tab bar and dividers.
     scheme: Arc<Scheme>,
+    /// What in the bar the pointer is over, and what a press there began on: a close button or
+    /// the + acts on a release over the same thing, as a button does.
+    bar_hover: Option<Hit>,
+    bar_press: Option<Hit>,
     /// What bells and notifications asked of macOS, and what came of it, for `--script`'s dump.
     attention: Vec<String>,
 }
@@ -86,7 +123,15 @@ pub fn open(command: CommandBuilder, cx: &mut App) -> Result<WindowHandle<Termin
     let options = WindowOptions {
         window_bounds: first
             .then(|| WindowBounds::Windowed(Bounds::centered(None, size(px(900.), px(600.)), cx))),
-        titlebar: Some(TitlebarOptions { title: Some("rtty".into()), ..Default::default() }),
+        // The window draws its own titlebar, the bar, under the traffic lights.
+        titlebar: Some(TitlebarOptions {
+            title: Some("rtty".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(point(
+                px(tabbar::TRAFFIC_LIGHTS.0),
+                px(tabbar::TRAFFIC_LIGHTS.1),
+            )),
+        }),
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
@@ -188,17 +233,22 @@ impl TerminalWindow {
         })
         .detach();
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
+        // The title dims while the window is in the background, as macOS's do.
+        cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
         let mut this = TerminalWindow {
             tabs: Tabs::new(id),
             views: HashMap::new(),
             scheme,
+            bar_hover: None,
+            bar_press: None,
             attention: Vec::new(),
         };
         this.add(id, pane, notices, window, cx);
         this
     }
 
-    /// Shows a new pane; it takes the keyboard.
+    /// Shows a new pane, which the layout already focuses; it takes the keyboard and names the
+    /// window.
     fn add(
         &mut self,
         id: PaneId,
@@ -213,7 +263,7 @@ impl TerminalWindow {
         })
         .detach();
         self.views.insert(id, view);
-        cx.notify();
+        self.focus_shown(window, cx);
     }
 
     /// The pane with the keyboard, in the tab that shows.
@@ -226,12 +276,17 @@ impl TerminalWindow {
         self.focused().and_then(|view| view.read(cx).cwd())
     }
 
-    /// The cells the panes share, the size of a cell, and the height of the tab bar above them
-    /// (none with one tab).
+    /// The bar in the titlebar, for the window's width and tabs.
+    fn bar(&self, window: &Window) -> Bar {
+        let width = f32::from(window.viewport_size().width);
+        Bar::new(width, self.tabs.all().len(), window.is_fullscreen())
+    }
+
+    /// The cells the panes share, the size of a cell, and the height of the bar above them.
     fn area(&self, window: &Window, cx: &App) -> (Rect, Size<Pixels>, Pixels) {
         let settings = cx.global::<Settings>();
         let cell = metrics(window.text_system(), &settings.font, settings.font_size).cell;
-        let bar = if self.tabs.all().len() > 1 { cell.height + TAB_PADDING * 2. } else { px(0.) };
+        let bar = px(self.bar(window).height);
         let viewport = window.viewport_size();
         // Half a pixel short of a cell still counts: window sizes round.
         let fit = |pixels: Pixels, cell: Pixels| ((pixels + px(0.5)) / cell).max(1.) as u16;
@@ -361,6 +416,101 @@ impl TerminalWindow {
         match closed {
             Closed::Window => window.remove_window(),
             Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
+        }
+    }
+
+    /// Closes tab `index` and hangs up on every program in it; the last tab closes the window.
+    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((panes, closed)) = self.tabs.close_tab(index) else { return };
+        for pane in panes {
+            self.views.remove(&pane);
+        }
+        match closed {
+            Closed::Window => window.remove_window(),
+            Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
+        }
+    }
+
+    /// A press in the bar: a tab shows at once, a close button or the + waits for the release,
+    /// and a double click on the bare bar zooms the window, as a titlebar's does.
+    pub fn bar_down(
+        &mut self,
+        position: Point<Pixels>,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hit = self.bar(window).hit(f32::from(position.x), f32::from(position.y));
+        match hit {
+            Some(Hit::Tab(index)) => self.select_tab(index, window, cx),
+            None if clicks == 2 => window.titlebar_double_click(),
+            _ => {}
+        }
+        self.bar_press = hit;
+    }
+
+    /// A release in the bar over what the press began on: close that tab, or open a new one.
+    pub fn bar_up(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let hit = self.bar(window).hit(f32::from(position.x), f32::from(position.y));
+        if self.bar_press.take() != hit {
+            return;
+        }
+        match hit {
+            Some(Hit::Close(index)) => self.close_tab(index, window, cx),
+            Some(Hit::New) => self.new_tab(&NewTab, window, cx),
+            _ => return,
+        }
+        // The pills moved under the pointer.
+        self.bar_move(Some(position), window, cx);
+    }
+
+    /// The middle of what `hit` names in the bar, for `--script`.
+    pub fn bar_point(&self, hit: Hit, window: &Window) -> Option<Point<Pixels>> {
+        let bar = self.bar(window);
+        let (x, y) = match hit {
+            Hit::Tab(index) => bar.tabs.get(index)?.center(),
+            Hit::Close(index) => bar.tabs.get(index).map(|_| bar.close(index).center())?,
+            Hit::New => bar.new?.center(),
+        };
+        Some(point(px(x), px(y)))
+    }
+
+    /// The pointer is over tab `index`'s pill, which shows its close button.
+    fn pill_hovered(&self, index: usize) -> bool {
+        matches!(self.bar_hover, Some(Hit::Tab(i) | Hit::Close(i)) if i == index)
+    }
+
+    /// Tab `index`'s pill's text and fill: the shown tab's, else one under the pointer's, else
+    /// the others'.
+    fn pill_colors(&self, index: usize) -> (Rgb, Rgb) {
+        match (index == self.tabs.index(), self.pill_hovered(index)) {
+            (true, _) => self.scheme.active_tab,
+            (false, true) => self.scheme.inactive_tab_hover,
+            (false, false) => self.scheme.inactive_tab,
+        }
+    }
+
+    fn new_tab_colors(&self) -> (Rgb, Rgb) {
+        if self.bar_hover == Some(Hit::New) {
+            self.scheme.new_tab_hover
+        } else {
+            self.scheme.new_tab
+        }
+    }
+
+    /// The pointer moved over the bar, or (`None`) left it: a pill under it shows its close
+    /// button, and the + its own color.
+    pub fn bar_move(
+        &mut self,
+        position: Option<Point<Pixels>>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bar = self.bar(window);
+        let hit = position.and_then(|at| bar.hit(f32::from(at.x), f32::from(at.y)));
+        if hit != self.bar_hover {
+            self.bar_hover = hit;
+            cx.notify();
         }
     }
 
@@ -584,6 +734,44 @@ impl TerminalWindow {
             (0..self.tabs.all().len()).map(|index| self.tab_label(index, cx)).collect();
         let bundled = if notify::bundled() { "an app bundle" } else { "no app bundle" };
         let _ = writeln!(out, "windows {} tabs {labels:?} in {bundled}", cx.windows().len());
+        // The bar as the next frame draws it, and the title macOS has (the Window menu's).
+        let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
+        let bar = self.bar(window);
+        let _ = writeln!(
+            out,
+            "bar {}px bg {} hover {:?} window title {:?}",
+            bar.height,
+            hex(self.scheme.tab_bar),
+            self.bar_hover,
+            window.window_title()
+        );
+        if bar.tabs.is_empty() && bar.height > 0. {
+            let title = self.views.get(&layout.focus()).map(|view| view.read(cx).title().clone());
+            let folder = title.as_ref().is_some_and(|title| title.dir.is_some());
+            let text = title.map(|title| title.text);
+            let _ = writeln!(out, "bar title {text:?} folder {folder}");
+        }
+        for (index, pill) in bar.tabs.iter().enumerate() {
+            let (fg, bg) = self.pill_colors(index);
+            let close = self.pill_hovered(index);
+            let _ = writeln!(
+                out,
+                "bar tab {} at {},{} {}x{} {:?} fg {} bg {}{}",
+                index + 1,
+                pill.x,
+                pill.y,
+                pill.w,
+                pill.h,
+                self.title(self.tabs.all()[index].focus(), cx),
+                hex(fg),
+                hex(bg),
+                if close { " close shown" } else { "" },
+            );
+        }
+        if let Some(new) = bar.new {
+            let (fg, bg) = self.new_tab_colors();
+            let _ = writeln!(out, "bar new at {},{} fg {} bg {}", new.x, new.y, hex(fg), hex(bg));
+        }
         for asked in &self.attention {
             let _ = writeln!(out, "attention: {asked}");
         }
@@ -605,42 +793,105 @@ impl TerminalWindow {
         format!("{}: {}", index + 1, self.title(self.tabs.all()[index].focus(), cx))
     }
 
-    fn tab_bar(&self, height: Pixels, cx: &mut Context<Self>) -> Div {
-        let settings = cx.global::<Settings>();
-        let (font, font_size) = (settings.font.clone(), settings.font_size);
-        let tabs = (0..self.tabs.all().len()).map(|index| {
-            let (fg, bg) = if index == self.tabs.index() {
-                self.scheme.active_tab
+    /// The bar in the titlebar, where `Bar` puts its parts: one tab's title, centered, with a
+    /// folder when its directory is known; or a pill for each tab, its title centered, its
+    /// Cmd+digit at its right end and, under the pointer, a close button at its left; and the +.
+    fn bar_view(&self, bar: &Bar, window: &Window, cx: &App) -> Stateful<Div> {
+        let scheme = &self.scheme;
+        let at = |rect: tabbar::Rect| {
+            div().absolute().left(px(rect.x)).top(px(rect.y)).w(px(rect.w)).h(px(rect.h))
+        };
+        let label = |text: String| div().min_w_0().truncate().child(text);
+        let mut parts: Vec<AnyElement> = Vec::new();
+        if bar.tabs.is_empty() {
+            let title =
+                self.views.get(&self.tabs.active().focus()).map(|view| view.read(cx).title());
+            let fg = if window.is_window_active() {
+                scheme.color(FOREGROUND)
             } else {
-                self.scheme.inactive_tab
+                scheme.inactive_tab.0
             };
-            div()
-                .id(("tab", index))
-                .flex_1()
-                .max_w(px(240.))
-                .h_full()
-                .px(TAB_PADDING * 2.)
+            let folder = title.and_then(|title| title.dir.as_ref()).map(|_| {
+                svg().path("folder.svg").flex_none().size(px(14.)).text_color(hsla(scheme.color(4)))
+            });
+            let text = title.map_or("rtty".into(), |title| title.text.clone());
+            let centered = div()
+                .size_full()
+                .px(px(tabbar::LIGHTS_END))
                 .flex()
                 .items_center()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
+                .justify_center()
+                .gap(px(6.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hsla(fg))
+                .children(folder)
+                .child(label(text));
+            parts.push(centered.into_any_element());
+        }
+        for (index, &pill) in bar.tabs.iter().enumerate() {
+            let (fg, bg) = self.pill_colors(index);
+            let close = self.pill_hovered(index).then(|| {
+                let button = bar.close(index);
+                at(tabbar::Rect { x: button.x - pill.x, y: button.y - pill.y, ..button })
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(self.bar_hover == Some(Hit::Close(index)), |button| {
+                        button.bg(hsla(fg).opacity(0.18))
+                    })
+                    .child(svg().path("close.svg").size(px(8.)).text_color(hsla(fg)))
+            });
+            let digit = (index < 9).then(|| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .right(px(11.))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.))
+                    .text_color(hsla(fg).opacity(0.5))
+                    .child(format!("\u{2318}{}", index + 1))
+            });
+            let title = self.title(self.tabs.all()[index].focus(), cx);
+            let pill = at(pill)
+                .rounded_full()
                 .bg(hsla(bg))
                 .text_color(hsla(fg))
-                .child(self.tab_label(index, cx))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| this.select_tab(index, window, cx)),
-                )
-        });
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(32.))
+                .child(label(title))
+                .children(close)
+                .children(digit);
+            parts.push(pill.into_any_element());
+        }
+        if let Some(new) = bar.new {
+            let (fg, bg) = self.new_tab_colors();
+            let plus = at(new)
+                .rounded_full()
+                .bg(hsla(bg))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(svg().path("plus.svg").size(px(12.)).text_color(hsla(fg)));
+            parts.push(plus.into_any_element());
+        }
         div()
-            .flex()
+            .id("bar")
+            .absolute()
+            .top_0()
+            .left_0()
             .w_full()
-            .h(height)
-            .font(font)
-            .text_size(font_size)
-            .bg(hsla(self.scheme.tab_bar))
-            .children(tabs.collect::<Vec<_>>())
+            .h(px(bar.height))
+            .bg(hsla(scheme.tab_bar))
+            .font_family(UI_FONT)
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .children(parts)
     }
 }
 
@@ -703,7 +954,30 @@ impl Render for TerminalWindow {
                     .child(line.bg(split))
             })
             .collect();
-        let tab_bar = (bar > px(0.)).then(|| self.tab_bar(bar, cx));
+        let titlebar = self.bar(window);
+        let titlebar = (titlebar.height > 0.).then(|| {
+            self.bar_view(&titlebar, window, cx)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        this.bar_down(event.position, event.click_count, window, cx)
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                        this.bar_up(event.position, window, cx)
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                    this.bar_move(Some(event.position), window, cx)
+                }))
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                    if !hovered {
+                        this.bar_move(None, window, cx)
+                    }
+                }))
+        });
         div()
             .relative()
             .size_full()
@@ -737,7 +1011,7 @@ impl Render for TerminalWindow {
             )
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
             .on_drag_move(cx.listener(Self::drag_divider))
-            .children(tab_bar)
+            .children(titlebar)
             .children(panes)
             .children(dividers)
     }

@@ -575,14 +575,21 @@ impl Tabs {
         if !self.tabs[index].close(pane) {
             return Some(Closed::Pane);
         }
+        self.close_tab(index).map(|(_, closed)| closed)
+    }
+
+    /// Closes tab `index` and every pane in it, as `close` does a tab left empty; the panes it
+    /// held, and whether it was the window's last.
+    pub fn close_tab(&mut self, index: usize) -> Option<(Vec<PaneId>, Closed)> {
+        let panes = self.tabs.get(index)?.panes();
         if self.tabs.len() == 1 {
-            return Some(Closed::Window);
+            return Some((panes, Closed::Window));
         }
         self.tabs.remove(index);
         if self.active > index || self.active == self.tabs.len() {
             self.active -= 1;
         }
-        Some(Closed::Tab)
+        Some((panes, Closed::Tab))
     }
 }
 
@@ -664,6 +671,21 @@ mod tests {
         assert_eq!(tabs.active().panes(), [3]);
         assert_eq!(tabs.close(7), None);
         assert_eq!(tabs.close(3), Some(Closed::Window));
+    }
+
+    #[test]
+    fn closing_a_tab_takes_its_panes_and_keeps_the_shown_tab_showing() {
+        let mut tabs = Tabs::new(1);
+        tabs.active_mut().split(1, Direction::Right, 2);
+        tabs.open(3);
+        tabs.open(4);
+        assert_eq!(tabs.close_tab(0), Some((vec![1, 2], Closed::Tab)));
+        assert_eq!(tabs.active().panes(), [4]);
+        // The shown tab, last: the one before it shows.
+        assert_eq!(tabs.close_tab(1), Some((vec![4], Closed::Tab)));
+        assert_eq!(tabs.active().panes(), [3]);
+        assert_eq!(tabs.close_tab(5), None);
+        assert_eq!(tabs.close_tab(0), Some((vec![3], Closed::Window)));
     }
 
     #[test]
