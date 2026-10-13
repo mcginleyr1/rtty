@@ -427,6 +427,21 @@ mod tests {
         }
     }
 
+    /// The pane's foreground process once `meant` says it is the one meant, within 5 s: a child
+    /// takes the foreground (or prints) before it execs its program, and until then its
+    /// arguments are its parent's.
+    fn foreground_when(pane: &Pane, meant: impl Fn(&Foreground) -> bool) -> Foreground {
+        let started = Instant::now();
+        loop {
+            let seen = pane.foreground();
+            match seen {
+                Some(foreground) if meant(&foreground) => return foreground,
+                _ => assert!(started.elapsed() < Duration::from_secs(5), "last saw {seen:?}"),
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn finish(mut pane: Pane) -> (String, Option<u32>) {
         pane.reader.take().unwrap().join().unwrap();
         let code = pane.waiter.take().unwrap().join().unwrap();
@@ -561,12 +576,10 @@ mod tests {
     fn the_foreground_process_tells_its_command_and_working_directory() {
         let dir = std::env::temp_dir().join(format!("rtty-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = format!("cd '{}' && printf ready && exec sleep 5", dir.display());
+        let script = format!("cd '{}' && exec sleep 5", dir.display());
         let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None).unwrap();
-        wait_for(&pane, "ready");
-        let foreground = pane.foreground().unwrap();
+        let foreground = foreground_when(&pane, |process| process.argv == ["sleep", "5"]);
         assert!(!foreground.shell);
-        assert_eq!(foreground.argv, ["sleep", "5"]);
         assert_eq!(foreground.cwd.unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
         drop(pane);
         std::fs::remove_dir(dir).unwrap();
@@ -594,19 +607,11 @@ mod tests {
         shell.cwd(&home);
         let (pane, _) = Pane::spawn(shell, 24, 80, None, None).unwrap();
         wait_for(&pane, "$");
-        let at_prompt = pane.foreground().unwrap();
-        assert!(at_prompt.shell, "{at_prompt:?}");
+        let at_prompt = foreground_when(&pane, |process| process.shell);
         assert_eq!(at_prompt.cwd.unwrap().canonicalize().unwrap(), home.canonicalize().unwrap());
         pane.write(b"sleep 5\n".to_vec());
-        let started = Instant::now();
-        let running = loop {
-            match pane.foreground() {
-                Some(foreground) if !foreground.shell => break foreground,
-                _ => assert!(started.elapsed() < Duration::from_secs(5), "sleep never ran"),
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
-        assert_eq!(running.argv, ["sleep", "5"]);
+        let running = foreground_when(&pane, |process| process.argv == ["sleep", "5"]);
+        assert!(!running.shell, "{running:?}");
         drop(pane);
         std::fs::remove_dir_all(home).unwrap();
     }
