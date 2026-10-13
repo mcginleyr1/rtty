@@ -235,6 +235,14 @@ Programs that ask for more get it:
 GPUI does not report keypad keys apart from the main keys, so application keypad mode (DECKPAM)
 has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1`).
 
+**What a command leaves on.** A program killed with SIGKILL turns off none of the reports and key
+encodings it turned on, and the shell after it then gets a click, a focus change or a flip to dark
+as typing, and its keys in kitty's encoding. When the shell marks the command's end (OSC 133;D,
+the first of a run of them), rtty turns off the mouse reports (every mode and encoding), focus
+reports (1004), light/dark reports (2031), modifyOtherKeys and kitty's flags, right there in the
+stream, so what the shell sets for its next prompt stays. Bracketed paste and the cursor and keypad
+modes stay too: shells set those themselves. tutti does the same.
+
 ## rtty cli and editors
 
 `rtty cli` is the same binary in another role: it asks the rtty a pane runs in, through a Unix

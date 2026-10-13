@@ -14,13 +14,13 @@ use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use std::{mem, ptr};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
 use rtty_vt::{ColorScheme, Event, MarkKind, Terminal};
 
 use crate::scheme::{SLOTS, Scheme};
@@ -98,8 +98,7 @@ impl Pane {
         scheme: Option<&Scheme>,
         trace: Option<Trace>,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
-        let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
-        let pty = native_pty_system().openpty(size).map_err(io::Error::other)?;
+        let pty = open_pty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         // The program runs in rtty, not in the terminal or multiplexer rtty was started from;
@@ -122,6 +121,10 @@ impl Pane {
         // Alternate scroll on, as most terminals start: the wheel moves a full-screen program
         // that takes no mouse reports (a pager) by its arrow keys.
         term.advance(b"\x1b[?1007h");
+        // What a killed program left on (mouse and focus reports, 2031, key encodings) goes off
+        // when the shell marks the command's end, before the shell hears of a click or a flip
+        // to dark as typing.
+        term.set_command_end_reset(true);
         if let Some(scheme) = scheme {
             host_scheme(&mut term, scheme);
         }
@@ -295,6 +298,14 @@ impl Drop for Pane {
     }
 }
 
+/// A new pty, opened by one thread at a time: macOS's openpty(3) now and then fails (errno -6)
+/// when two threads of a process call it at once, as the tests' threads do.
+fn open_pty(size: PtySize) -> io::Result<PtyPair> {
+    static OPENING: Mutex<()> = Mutex::new(());
+    let _alone = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+    native_pty_system().openpty(size).map_err(io::Error::other)
+}
+
 fn host_scheme(term: &mut Terminal, scheme: &Scheme) {
     for slot in 0..SLOTS {
         term.set_host_color(slot, Some(scheme.color(slot)));
@@ -422,6 +433,28 @@ mod tests {
         (screen, code)
     }
 
+    /// Sixteen threads open ptys together, twenty times over; unserialized, macOS fails a few of
+    /// the 320.
+    #[test]
+    fn ptys_open_from_many_threads_at_once() {
+        let size = PtySize { rows: 2, cols: 2, pixel_width: 0, pixel_height: 0 };
+        for _ in 0..20 {
+            let barrier = Arc::new(std::sync::Barrier::new(16));
+            let opens: Vec<_> = (0..16)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    thread::spawn(move || {
+                        barrier.wait();
+                        open_pty(size).map(drop)
+                    })
+                })
+                .collect();
+            for open in opens {
+                open.join().unwrap().unwrap();
+            }
+        }
+    }
+
     #[test]
     fn output_reaches_the_terminal_and_the_exit_code_the_waiter() {
         let (pane, _) =
@@ -460,6 +493,25 @@ mod tests {
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   ?   9   9   7   ;   2   n"), "{screen}");
+    }
+
+    /// A program killed before it turned 2031 and mouse reports off: at the shell's mark of the
+    /// command's end both go off, and a flip to light sends the shell nothing it would take for
+    /// typing.
+    #[test]
+    fn a_commands_end_turns_off_what_the_command_left_on() {
+        let script = "stty -icanon -echo min 0 time 5; \
+                      printf '\\033]133;C\\007\\033[?2031h\\033[?1000h\\033]133;D;137\\007ready\\n'; \
+                      dd bs=1 count=9 2>/dev/null | od -c";
+        let schemes = load(&[]).unwrap();
+        let dark = find(&schemes, "OneDark Pro").unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
+        wait_for(&pane, "ready");
+        pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
+        let modes = pane.lock().modes().clone();
+        assert!(!modes.color_scheme_reports && modes.mouse == rtty_vt::MouseMode::None);
+        let (screen, _) = finish(pane);
+        assert!(!screen.contains("033"), "{screen}");
     }
 
     /// A program that asks for the background in its first write (nvim does) is answered.
