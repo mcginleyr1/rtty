@@ -17,6 +17,7 @@ mod scheme;
 mod script;
 mod search;
 mod selection;
+mod session;
 mod shell;
 mod tabbar;
 mod title;
@@ -71,7 +72,8 @@ struct Seen(Vec<(PathBuf, Option<SystemTime>)>);
 impl Global for Seen {}
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
-                     [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
+                     [--stats] [--trace FILE] [--script FILE [--activate] [--restore]]
+                     [-e PROGRAM [ARGS...]]
        rtty cli COMMAND...       ask the rtty this pane runs in (`rtty cli` lists the commands)
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
@@ -143,6 +145,8 @@ struct Options {
     /// A scripted window takes the keyboard only when asked to: the person at the machine may be
     /// typing elsewhere.
     activate: bool,
+    /// A scripted launch restores and saves the layout only when asked to, as a normal one does.
+    restore: bool,
     command: Option<Vec<String>>,
 }
 
@@ -167,6 +171,7 @@ fn main() -> ExitCode {
                 None => return usage_error("--script needs a file"),
             },
             "--activate" => options.activate = true,
+            "--restore" => options.restore = true,
             "--config" => match args.next() {
                 Some(path) => options.overrides.config = Some(path.into()),
                 None => return usage_error("--config needs a file"),
@@ -343,6 +348,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         click_to_move: config.click_to_move.unwrap_or(true),
         editor: config.editor,
         quick_select: config.quick_select,
+        restore_layout: config.restore_layout.unwrap_or(true),
         launch,
     })
 }
@@ -383,6 +389,49 @@ fn reload(cx: &mut App) {
     cx.set_global(Seen(watched(cx)));
 }
 
+/// The layout last written, and why the writes since have failed, if they have.
+#[derive(Default)]
+struct Saved {
+    json: String,
+    failed: Option<String>,
+}
+
+/// Keeps every window's layout for the next launch, when this launch keeps it and it changed
+/// since it was last written. A write that fails is tried again at the next call, and its error
+/// logged once, until it changes.
+fn save_layout(saved: &mut Saved, cx: &mut App) {
+    let settings = cx.global::<Settings>();
+    let Some(path) = settings.launch.layout.clone().filter(|_| settings.restore_layout) else {
+        return;
+    };
+    let json = serde_json::to_string_pretty(&window::session(cx)).expect("a layout is JSON");
+    if json == saved.json {
+        return;
+    }
+    match session::write(&path, &json) {
+        Ok(()) => *saved = Saved { json, failed: None },
+        Err(err) => {
+            let err = format!("layout not saved: {}: {err}", path.display());
+            if saved.failed.as_ref() != Some(&err) {
+                note(&err);
+            }
+            saved.failed = Some(err);
+        }
+    }
+}
+
+/// The windows the last launch left, or none (and why, in the log).
+fn saved_layout(path: &Path) -> Vec<session::Window> {
+    let windows = session::read(path).unwrap_or_else(|err| {
+        note(&format!("no layout restored: {}: {err}", path.display()));
+        Vec::new()
+    });
+    if !windows.is_empty() {
+        note(&format!("restoring the layout in {} (windows: {})", path.display(), windows.len()));
+    }
+    windows
+}
+
 /// Reads `config.toml` (or `--config`), loads the color schemes, and runs the window.
 fn run(options: Options) -> Result<(), String> {
     // Absolute, so that it names the same file from an editor's directory (`open-config`).
@@ -402,6 +451,9 @@ fn run(options: Options) -> Result<(), String> {
     if options.activate && script.is_none() {
         return Err("--activate goes with --script".into());
     }
+    if options.restore && script.is_none() {
+        return Err("--restore goes with --script".into());
+    }
     let activate = script.is_none() || options.activate;
     let (open_links, clipboard) = (script.is_none(), script.is_none());
     let trace = options
@@ -415,12 +467,24 @@ fn run(options: Options) -> Result<(), String> {
     control::sweep(dir);
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
+    // One rtty at a time keeps the layout: the first to lock it.
+    let keeps_layout = options.command.is_none() && (script.is_none() || options.restore);
+    let layout = session::path().filter(|_| keeps_layout).filter(|path| {
+        let taken = session::take(path);
+        match &taken {
+            Ok(true) => {}
+            Ok(false) => note("another rtty keeps the layout"),
+            Err(err) => note(&format!("layout not kept: {}: {err}", path.display())),
+        }
+        taken.is_ok_and(|taken| taken)
+    });
     let launch = Launch {
         stats: options.stats,
         trace,
         socket: socket.clone(),
         config,
         overrides: options.overrides,
+        layout,
         open_links,
         clipboard,
         prompts: script.is_none(),
@@ -441,16 +505,21 @@ fn run(options: Options) -> Result<(), String> {
         cx.set_global(Seen(watched(cx)));
         // Once the window that took the chord is done with it, so that it says what came of it.
         cx.on_action(|_: &ReloadConfig, cx| cx.defer(reload));
-        // Edits to the config take effect once saved, with no reload by hand.
+        // Edits to the config take effect once saved, with no reload by hand, and the layout is
+        // kept as it changes.
         cx.spawn(async move |cx| {
+            let mut saved = Saved::default();
             loop {
                 cx.background_executor().timer(WATCH).await;
-                let changed = cx.update(|cx| cx.global::<Seen>().0 != watched(cx));
-                match changed {
-                    Ok(true) => cx.update(reload).ok(),
-                    Ok(false) => None,
-                    Err(_) => break,
-                };
+                let ticked = cx.update(|cx| {
+                    if cx.global::<Seen>().0 != watched(cx) {
+                        reload(cx)
+                    }
+                    save_layout(&mut saved, cx)
+                });
+                if ticked.is_err() {
+                    break;
+                }
             }
         })
         .detach();
@@ -566,7 +635,9 @@ fn run(options: Options) -> Result<(), String> {
         .detach();
         cx.on_app_quit({
             let socket = socket.clone();
-            move |_| {
+            move |cx| {
+                // Before the windows go.
+                save_layout(&mut Saved::default(), cx);
                 let _ = std::fs::remove_file(&socket);
                 note("quit");
                 async {}
@@ -581,7 +652,18 @@ fn run(options: Options) -> Result<(), String> {
             }
         })
         .detach();
-        let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
+        let settings = cx.global::<Settings>();
+        let layout = settings.launch.layout.clone().filter(|_| settings.restore_layout);
+        let restored = layout.map_or_else(Vec::new, |path| saved_layout(&path));
+        let restored = restored.into_iter().filter_map(|saved| {
+            window::restore(saved, cx).map_err(|err| note(&format!("not restored: {err}"))).ok()
+        });
+        let restored: Vec<_> = restored.collect();
+        let window = restored
+            .first()
+            .copied()
+            .map_or_else(|| window::open(command(options.command), cx), Ok);
+        let window = window.unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
             std::process::exit(1);
         });

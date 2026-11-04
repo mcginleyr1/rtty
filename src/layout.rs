@@ -2,7 +2,7 @@
 //! the dividers are, which pane has the focus, and every way those change. Nothing here knows
 //! GPUI, so all of it is unit tested.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +34,8 @@ pub enum Direction {
 }
 
 /// How a split shares its space: side by side, with a vertical divider, or one above the other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Orientation {
     SideBySide,
     Stacked,
@@ -78,7 +79,8 @@ pub enum Amount {
 /// A divider is one cell thick; no pane gets fewer cells than this across a split.
 const MIN: u16 = 2;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Node {
     Pane(PaneId),
     Split {
@@ -112,7 +114,7 @@ pub struct Place {
 }
 
 /// One tab: its split tree, the pane with the focus, and whether that pane fills the tab.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     root: Node,
     focus: PaneId,
@@ -120,7 +122,7 @@ pub struct Layout {
     previous: Option<PaneId>,
     zoomed: bool,
     /// When each pane last had the focus, to choose between neighbours.
-    focused_at: HashMap<PaneId, u64>,
+    focused_at: BTreeMap<PaneId, u64>,
     clock: u64,
 }
 
@@ -131,7 +133,7 @@ impl Layout {
             focus: pane,
             previous: None,
             zoomed: false,
-            focused_at: HashMap::from([(pane, 0)]),
+            focused_at: BTreeMap::from([(pane, 0)]),
             clock: 0,
         }
     }
@@ -434,6 +436,16 @@ fn ratio_for(offset: u16, len: u16) -> f32 {
 }
 
 impl Node {
+    /// Every split's ratio is a share, from 0 to 1.
+    fn shares(&self) -> bool {
+        match self {
+            Node::Pane(_) => true,
+            Node::Split { ratio, first, second, .. } => {
+                (0. ..=1.).contains(ratio) && first.shares() && second.shares()
+            }
+        }
+    }
+
     fn collect(&self, panes: &mut Vec<PaneId>) {
         match self {
             Node::Pane(pane) => panes.push(*pane),
@@ -607,7 +619,7 @@ impl Node {
 }
 
 /// A window's tabs and which one shows.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tabs {
     tabs: Vec<Layout>,
     active: usize,
@@ -626,6 +638,17 @@ pub enum Closed {
 impl Tabs {
     pub fn new(pane: PaneId) -> Tabs {
         Tabs { tabs: vec![Layout::new(pane)], active: 0 }
+    }
+
+    /// Whether tabs read back from a file hold together: one of them shows, each one's focus,
+    /// and the focus before it, is one of its panes, and every split's ratio is a share.
+    pub fn sound(&self) -> bool {
+        self.active < self.tabs.len()
+            && self.tabs.iter().all(|tab| {
+                let panes = tab.panes();
+                let held = |pane: &PaneId| panes.contains(pane);
+                held(&tab.focus) && tab.previous.as_ref().is_none_or(held) && tab.root.shares()
+            })
     }
 
     pub fn active(&self) -> &Layout {
@@ -981,7 +1004,7 @@ mod tests {
         layout.split(4, Direction::Down, 5);
         layout.drag(&[false], AREA, (0, 5));
         layout.set_focus(1);
-        let rects: HashMap<_, _> = layout.rects(AREA).into_iter().collect();
+        let rects: BTreeMap<_, _> = layout.rects(AREA).into_iter().collect();
         assert_eq!((rects[&1].rows, rects[&3].rows, rects[&4].rows, rects[&5].rows), (5, 12, 6, 5));
         // From 2 (rows 6–24) to the right: 3 (0–11), 4 (13–18) and 5 (20–24) all overlap it;
         // 5 was focused last of them, so it wins though it overlaps least.

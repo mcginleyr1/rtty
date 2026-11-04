@@ -40,6 +40,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
 | `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
+| `--restore` | with `--script`: restore the saved layout and save it, as a normal launch does ([Restoring windows](#configuration)); the script drives the first window |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
 
@@ -55,7 +56,7 @@ $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty star
 why, each pane's start, split, close (with the chord that closed it) and its program's exit
 status, a tab's close button, the question a close asked and its answer (never what runs), a
 close undone or made for good, the dock's progress badge as it changes, what came of each config
-reload, each Cmd chord as AppKit
+reload, the layout restored at launch (or why none was), each Cmd chord as AppKit
 hands it to rtty and as GPUI dispatched it
 (the window's activation, the key contexts it met, the actions bound to it there and the one that
 ran), and every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
@@ -121,6 +122,7 @@ notify_after = 10                 # the default: notify a command of 10 s or mor
 click_to_move = true              # the default: a click on the command line moves the shell's cursor there
 editor = ["nvim", "+{line}", "{path}"]  # edits the files Cmd+click opens (Links); unset: $EDITOR
 quick_select_patterns = ['[A-Z]+-\d+']  # regexes quick select labels too (Quick select)
+restore_layout = true             # the default: the windows come back at the next launch (below)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -164,6 +166,32 @@ file's keys. What changes, and when:
 | `undo_timeout` | from the next close; one already waiting keeps its time |
 | `notify_after` | for every command that ends from then on, running ones included |
 | `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
+| `restore_layout` | saving the layout stops or starts at once; restoring it is at launch |
+
+**Restoring windows.** With `restore_layout = true`, the default (Terminal.app and iTerm2 restore
+their windows by default too), rtty keeps each window's layout for the next launch: its frame and
+display, its tabs, each tab's splits with their ratios, zoom and focus, and each pane's working
+directory (as its shell last reported it with OSC 7, else its foreground process's). It saves as it
+quits, and once a second when any of that changed since it last wrote it; a write that fails is
+tried again each second, its error logged once. At launch it opens those windows, each pane a new
+login shell in its directory (the home directory, when that is gone). It never starts the programs
+that ran there and never keeps what a pane showed. A missing or corrupt file starts fresh, and the
+log says why: corrupt is also a pane in two tabs, a focus on no pane, a ratio past 1, or a frame
+under 100 points across or down. Closing the last window quits with no window to restore, so the
+next launch opens one fresh window.
+
+One rtty at a time keeps the layout: the first to lock `layout.lock` beside the file, which it holds
+until it exits. Another started meanwhile (`cargo run` beside the installed app) neither restores
+nor saves, so the first one's layout stays its own. A launch with `-e` or `--script` (short of
+`--restore`) never tries for it.
+
+The file is `$XDG_STATE_HOME/rtty/layout.json` (an empty or relative `XDG_STATE_HOME` is ignored),
+else `~/.local/state/rtty/layout.json`, beside the config's `~/.config` as XDG has it, since rtty's
+directory in `$TMPDIR` holds what may go with a restart. It is readable by its owner alone (0600)
+and written whole, through a rename: JSON, a list of windows, each with its `frame` (points from its
+display's top left), `display` (the display's UUID; on another display, or none, or with the
+middle of its titlebar off that display, the window is centered on the main one), `tabs` (each tab's
+split tree, by pane id, and which shows) and `cwds` (each pane's directory).
 
 A Neovim-like layout: the window keys smart-splits.nvim suggests, with LazyVim's split and zoom
 keys (`<leader>|`, `<leader>-`, `<leader>wm`) moved onto Option, since a terminal has no leader.
@@ -687,6 +715,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   gets fewer than two across a split), split and close with the cascade to tab and window, a
   closed pane or tab put back where it was, a divider dragged to a cell or moved by a resize, focus by direction and back to the last pane, a
   swap with the pane that way, zoom.
+- `session.rs` — the windows' layout as the next launch restores it (the layout's own split trees,
+  serialized), read back checked and written whole; unit tested.
 - `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
   for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
 - `window.rs` — `TerminalWindow`: one window's tabs, the bar (drawn where `tabbar` puts it, in a

@@ -50,6 +50,8 @@ pub struct Config {
     /// `quick_select_patterns`, compiled.
     #[serde(skip)]
     pub quick_select: Vec<Regex>,
+    /// The windows' layout is saved as it changes and restored at the next launch.
+    pub restore_layout: Option<bool>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -495,6 +497,7 @@ mod tests {
         assert_eq!(config.notify_after(), defaults.notify_after());
         assert_eq!((config.confirm_close, config.click_to_move), (Some(true), Some(true)));
         assert!(config.editor.is_some() && config.quick_select.is_empty());
+        assert_eq!(config.restore_layout, Some(true));
         assert_eq!(config.bindings["alt-\\"], Action::SplitRight);
         assert!(!config.bindings.contains_key("cmd-shift-d"));
     }

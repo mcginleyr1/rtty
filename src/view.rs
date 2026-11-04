@@ -111,6 +111,8 @@ pub struct Settings {
     pub editor: Option<Vec<String>>,
     /// `quick_select_patterns`: what quick select labels besides what it knows.
     pub quick_select: Vec<Regex>,
+    /// The layout is kept for the next launch (`restore_layout`), when this launch keeps it.
+    pub restore_layout: bool,
     pub launch: Launch,
 }
 
@@ -127,6 +129,10 @@ pub struct Launch {
     /// The config file, `None` when there is no home to find it in.
     pub config: Option<PathBuf>,
     pub overrides: Overrides,
+    /// Where the windows' layout is kept (`session::path`), when this launch restores it and
+    /// saves it: not one with `-e`, under `--script` (short of `--restore`), or while another
+    /// rtty runs, which keeps it.
+    pub layout: Option<PathBuf>,
     /// Cmd+click opens links with the system's handler; under `--script` it records them in the
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,

@@ -17,12 +17,12 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
-    EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, PromptButton, PromptLevel, Render, SharedString, Size, Stateful,
-    StyleRefinement, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle,
-    WindowId, WindowOptions, actions, div, point, prelude::*, px, relative, size, svg,
-    transparent_black,
+    Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, DisplayId, Div,
+    DragMoveEvent, EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, PromptButton, PromptLevel, Render, SharedString,
+    Size, Stateful, StyleRefinement, TitlebarOptions, Window, WindowAppearance, WindowBounds,
+    WindowHandle, WindowId, WindowOptions, actions, div, point, prelude::*, px, relative, size,
+    svg, transparent_black,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
@@ -40,6 +40,7 @@ use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::progress::{self, Progress, State};
 use crate::scheme::Scheme;
+use crate::session;
 use crate::tabbar::{self, Bar, Hit};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
@@ -346,14 +347,56 @@ pub fn quit(cx: &mut App) {
 /// Opens a window with `command` running in its one pane: the first window centered, later ones
 /// cascading from the active one.
 pub fn open(command: CommandBuilder, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
-    let scheme = cx.global::<Settings>().theme.for_appearance(cx.window_appearance()).clone();
     let id = next_pane_id();
-    let (rows, cols) = START_SIZE;
-    let (pane, notices) = spawn(command, id, rows, cols, &scheme, cx)?;
     let first = cx.windows().is_empty();
+    let bounds = first.then(|| Bounds::centered(None, size(px(900.), px(600.)), cx));
+    open_tabs(Tabs::new(id), vec![(id, command)], bounds, None, cx)
+}
+
+/// Opens a window as `saved` has it: its frame on its display (centered on the main one, that
+/// display gone or the frame's titlebar off it), its tabs, splits, zoom and focus, and in each
+/// pane a new login shell in the pane's directory (the home directory, that one gone). Its panes
+/// keep their ids.
+pub fn restore(
+    saved: session::Window,
+    cx: &mut App,
+) -> Result<WindowHandle<TerminalWindow>, String> {
+    let ids: Vec<PaneId> = saved.tabs.all().iter().flat_map(|tab| tab.panes()).collect();
+    NEXT_PANE.fetch_max(ids.iter().max().map_or(1, |id| id + 1), Ordering::Relaxed);
+    let commands = ids.into_iter().map(|id| (id, shell(saved.cwds.get(&id).cloned()))).collect();
+    // The middle of its titlebar on its display, where it can be taken hold of.
+    let frame = saved.frame;
+    let titlebar = point(frame.origin.x + frame.size.width / 2., frame.origin.y);
+    let display = cx.displays().into_iter().find(|display| {
+        let uuid = display.uuid().map(|uuid| uuid.to_string());
+        let on_it = Bounds::new(point(px(0.), px(0.)), display.bounds().size).contains(&titlebar);
+        on_it && uuid.is_ok_and(|uuid| saved.display.as_ref() == Some(&uuid))
+    });
+    let (frame, display) = match display {
+        Some(display) => (saved.frame, Some(display.id())),
+        None => (Bounds::centered(None, saved.frame.size, cx), None),
+    };
+    open_tabs(saved.tabs, commands, Some(frame), display, cx)
+}
+
+/// Opens a window holding `tabs`, each pane running its command, at `bounds` on `display`; with
+/// no bounds, cascading from the active window.
+fn open_tabs(
+    tabs: Tabs,
+    commands: Vec<(PaneId, CommandBuilder)>,
+    bounds: Option<Bounds<Pixels>>,
+    display_id: Option<DisplayId>,
+    cx: &mut App,
+) -> Result<WindowHandle<TerminalWindow>, String> {
+    let scheme = cx.global::<Settings>().theme.for_appearance(cx.window_appearance()).clone();
+    let (rows, cols) = START_SIZE;
+    let panes = commands.into_iter().map(|(id, command)| {
+        spawn(command, id, rows, cols, &scheme, cx).map(|(pane, notices)| (id, pane, notices))
+    });
+    let panes = panes.collect::<Result<Vec<_>, String>>()?;
     let options = WindowOptions {
-        window_bounds: first
-            .then(|| WindowBounds::Windowed(Bounds::centered(None, size(px(900.), px(600.)), cx))),
+        window_bounds: bounds.map(WindowBounds::Windowed),
+        display_id,
         // The window draws its own titlebar, the bar, under the traffic lights.
         titlebar: Some(TitlebarOptions {
             title: Some("rtty".into()),
@@ -365,10 +408,20 @@ pub fn open(command: CommandBuilder, cx: &mut App) -> Result<WindowHandle<Termin
         }),
         ..Default::default()
     };
-    cx.open_window(options, |window, cx| {
-        cx.new(|cx| TerminalWindow::new(id, pane, notices, window, cx))
-    })
-    .map_err(|err| format!("cannot open a window: {err}"))
+    cx.open_window(options, |window, cx| cx.new(|cx| TerminalWindow::new(tabs, panes, window, cx)))
+        .map_err(|err| format!("cannot open a window: {err}"))
+}
+
+/// Every window shown (not one a close hid), as `session` keeps them for the next launch.
+pub fn session(cx: &mut App) -> Vec<session::Window> {
+    let hidden = hidden_window(cx);
+    let windows = cx.windows().into_iter().filter(|window| Some(window.window_id()) != hidden);
+    let windows: Vec<WindowHandle<TerminalWindow>> =
+        windows.filter_map(|window| window.downcast()).collect();
+    let saved = windows
+        .into_iter()
+        .map(|handle| handle.update(cx, |this, window, cx| this.saved(window, cx)));
+    saved.filter_map(Result::ok).collect()
 }
 
 /// The user's login shell, started in `cwd`, else (or where that is gone) in their home
@@ -381,10 +434,12 @@ fn shell(cwd: Option<PathBuf>) -> CommandBuilder {
     command
 }
 
+/// The next pane's id, past every restored pane's.
+static NEXT_PANE: AtomicU64 = AtomicU64::new(1);
+
 /// Pane ids are unique across windows, so `--trace` lines name one pane.
 fn next_pane_id() -> PaneId {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    NEXT_PANE.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Starts pane `id`'s program, which finds its pane and the way to `rtty cli` in `RTTY_PANE` and
@@ -485,9 +540,8 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
 
 impl TerminalWindow {
     fn new(
-        id: PaneId,
-        pane: Pane,
-        notices: UnboundedReceiver<Notice>,
+        tabs: Tabs,
+        panes: Vec<(PaneId, Pane, UnboundedReceiver<Notice>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -516,7 +570,7 @@ impl TerminalWindow {
             this.update(cx, |this, cx| this.close_button(window, cx)).is_err()
         });
         let mut this = TerminalWindow {
-            tabs: Tabs::new(id),
+            tabs,
             views: HashMap::new(),
             scheme,
             bar_hover: None,
@@ -525,8 +579,23 @@ impl TerminalWindow {
             asked: None,
             said: None,
         };
-        this.add(id, pane, notices, window, cx);
+        for (id, pane, notices) in panes {
+            this.add(id, pane, notices, window, cx);
+        }
         this
+    }
+
+    /// The window as `session` keeps it: its frame (the one it goes back to from full screen),
+    /// its display, its tabs, and its panes' directories.
+    fn saved(&self, window: &Window, cx: &App) -> session::Window {
+        let display = window.display(cx).and_then(|display| display.uuid().ok());
+        let cwds = self.views.iter().filter_map(|(id, view)| Some((*id, view.read(cx).cwd()?)));
+        session::Window {
+            frame: window.window_bounds().get_bounds(),
+            display: display.map(|uuid| uuid.to_string()),
+            tabs: self.tabs.clone(),
+            cwds: cwds.collect(),
+        }
     }
 
     /// Shows a new pane, which the layout already focuses; it takes the keyboard and names the
@@ -1298,6 +1367,7 @@ impl TerminalWindow {
         let badge = cx.try_global::<DockBadge>().and_then(|badge| badge.0.as_deref());
         let visible = ns_window(window).map(|ns_window| ns_window.isVisible());
         let _ = writeln!(out, "dock badge {badge:?}, this window on screen {visible:?}");
+        let _ = writeln!(out, "frame {:?}", window.window_bounds().get_bounds());
         if let Some(undo) = cx.try_global::<LastClose>().and_then(|last| last.0.as_ref()) {
             let panes: Vec<PaneId> = undo.views.iter().map(|(pane, _)| *pane).collect();
             let left = undo.until.saturating_duration_since(Instant::now()).as_millis();
