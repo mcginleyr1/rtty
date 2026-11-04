@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::cell::{Attrs, Cell, Color};
 use crate::dispatch::Performer;
 use crate::event::{Event, Mark, MarkKind, ModeChange};
+use crate::graphics::{APC_MAX, Graphics};
 use crate::grid::Grid;
 use crate::modes::{CursorStyle, Modes, MouseEncoding, MouseMode};
 use crate::row::{CLUSTER_MAX, Extra, Hyperlink, Row};
@@ -119,12 +120,32 @@ enum Osc {
     Skip,
 }
 
-/// A terminal's state, fed the bytes a program writes. It does no IO:
-/// `advance` mutates the grid and queues events — replies for the pty among
-/// them — that the host drains with `take_events`.
+/// Where the bytes fed so far stand against APC strings, while graphics are on.
+#[derive(Debug, Default)]
+pub(crate) enum Apc {
+    #[default]
+    Out,
+    /// Just after an `ESC`, before the byte that says what it starts.
+    Esc,
+    /// Inside one: its bytes so far.
+    In(Vec<u8>),
+    /// An `ESC` ended one: it runs if `\` follows (ST), and is dropped if
+    /// anything else does.
+    Ending(Vec<u8>),
+    /// Inside one that ran past `APC_MAX`: skipped up to its end.
+    Skip,
+}
+
+/// A terminal's state, fed the bytes a program writes. It does no IO but
+/// read the image files a program names, with graphics on: `advance` mutates
+/// the grid and queues events — replies for the pty among them — that the
+/// host drains with `take_events`.
 pub struct Terminal {
     parser: vte::Parser,
     osc: Osc,
+    pub(crate) apc: Apc,
+    /// The kitty graphics protocol's images and state, while it is on.
+    pub(crate) graphics: Option<Box<Graphics>>,
     /// The start of a UTF-8 character the last `advance` ended in.
     held: Vec<u8>,
     /// The printed characters gathered for one write, kept for its
@@ -177,6 +198,8 @@ impl Terminal {
         Terminal {
             parser: vte::Parser::new(),
             osc: Osc::Out,
+            apc: Apc::Out,
+            graphics: None,
             held: Vec::new(),
             run: Vec::new(),
             grid: Grid::new(rows, cols, scrollback),
@@ -225,10 +248,12 @@ impl Terminal {
     ///
     /// A UTF-8 character split across calls is held back until it is whole:
     /// `vte` 0.15 resumes one itself, but can then swallow the character
-    /// after it. An OSC string longer than `OSC_MAX` is dropped.
+    /// after it. An OSC string longer than `OSC_MAX` is dropped, and with
+    /// graphics on an APC string longer than `APC_MAX`.
     pub fn advance(&mut self, mut bytes: &[u8]) {
         let mut parser = std::mem::take(&mut self.parser);
         let mut osc = std::mem::take(&mut self.osc);
+        let mut apc = std::mem::take(&mut self.apc);
         let held = if let Some(&lead) = self.held.first() {
             let take = (utf8_len(lead) - self.held.len()).min(bytes.len());
             self.held.extend_from_slice(&bytes[..take]);
@@ -243,15 +268,22 @@ impl Terminal {
         };
         let whole = whole_chars(bytes);
         let run = std::mem::take(&mut self.run);
+        let graphics = self.graphics.is_some();
         let mut performer = Performer(self, run);
-        feed(&mut parser, &mut osc, &mut performer, &held);
-        feed(&mut parser, &mut osc, &mut performer, &bytes[..whole]);
+        for bytes in [&held[..], &bytes[..whole]] {
+            if graphics {
+                feed_apc(&mut parser, &mut osc, &mut apc, &mut performer, bytes);
+            } else {
+                feed(&mut parser, &mut osc, &mut performer, bytes);
+            }
+        }
         performer.flush();
         let Performer(term, run) = performer;
         term.run = run;
         term.held.extend_from_slice(&bytes[whole..]);
         term.parser = parser;
         term.osc = osc;
+        term.apc = apc;
     }
 
     /// The events queued since the last call, in stream order. Drain after
@@ -909,8 +941,8 @@ impl Terminal {
     // Erasing, inserting and deleting.
 
     /// ED: 0 below, 1 above, 2 all (the primary screen's contents scroll
-    /// into its scrollback first), 3 the scrollback (from the primary
-    /// screen only: the alternate one has none).
+    /// into its scrollback first, its images gone), 3 the scrollback (from
+    /// the primary screen only: the alternate one has none).
     pub(crate) fn erase_display(&mut self, mode: u16) {
         let bg = self.cursor.pen.bg;
         let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
@@ -919,16 +951,17 @@ impl Terminal {
             0 => {
                 self.grid.line_mut(row).erase(col..cols, bg);
                 for below in row + 1..self.grid.rows {
-                    self.reset_line(below, bg);
+                    self.blank_line(below, bg);
                 }
             }
             1 => {
                 for above in 0..row {
-                    self.reset_line(above, bg);
+                    self.blank_line(above, bg);
                 }
                 self.grid.line_mut(row).erase(0..col + 1, bg);
             }
             2 => {
+                self.erase_images();
                 if !self.grid.alt_active {
                     let used = (0..self.grid.rows).rev().find(|&r| !self.grid.line(r).is_empty());
                     if let Some(used) = used {
@@ -948,6 +981,15 @@ impl Terminal {
         let cols = self.grid.cols;
         let line = self.grid.line_mut(row);
         line.reset(cols, bg);
+    }
+
+    /// A row ED 0 or 1 erases whole: its images stay, as under every erase but ED 2.
+    fn blank_line(&mut self, row: u16, bg: Color) {
+        let cols = self.grid.cols;
+        let line = self.grid.line_mut(row);
+        let images = std::mem::take(&mut line.images);
+        line.reset(cols, bg);
+        line.images = images;
     }
 
     /// EL: 0 right, 1 left, 2 all. With a wrap pending, the last column's
@@ -1116,6 +1158,7 @@ impl Terminal {
         self.cursor_style = None;
         *self.colors = [None; PALETTE_LEN];
         self.last_printed = None;
+        self.reset_graphics();
     }
 
     /// DECSTR: modes, pen, margins and the saved cursor reset; the screen and
@@ -1320,14 +1363,91 @@ fn feed(parser: &mut vte::Parser, osc: &mut Osc, performer: &mut Performer, mut 
     }
 }
 
+/// Feed `bytes` as `feed` does, less the APC strings in them, which `vte`
+/// drops: each is kept, and runs when ST (`ESC \`) ends it, after the bytes
+/// before it and before those after. An `ESC` followed by anything but `\`
+/// drops it, as do CAN and SUB, and so does running past `APC_MAX`. `vte`
+/// still sees each string open and end, so it leaves its state as it would
+/// have.
+fn feed_apc(
+    parser: &mut vte::Parser,
+    osc: &mut Osc,
+    apc: &mut Apc,
+    performer: &mut Performer,
+    mut bytes: &[u8],
+) {
+    loop {
+        match apc {
+            Apc::In(_) | Apc::Skip => {
+                let end = bytes.iter().position(|&b| matches!(b, 0x18 | 0x1a | 0x1b));
+                let body = &bytes[..end.unwrap_or(bytes.len())];
+                match apc {
+                    Apc::In(kept) if kept.len() + body.len() <= APC_MAX => {
+                        kept.extend_from_slice(body)
+                    }
+                    _ => *apc = Apc::Skip,
+                }
+                let Some(end) = end else { return };
+                *apc = match (std::mem::take(apc), bytes[end]) {
+                    (Apc::In(kept), 0x1b) => Apc::Ending(kept),
+                    _ => Apc::Out,
+                };
+                bytes = &bytes[end..];
+            }
+            Apc::Ending(_) => {
+                // The ESC, and what `vte` stays escaped over, up to the byte that says what the
+                // ESC starts.
+                let held = bytes.iter().position(|&b| !stays(b) && b != 0x1b);
+                feed(parser, osc, performer, &bytes[..held.unwrap_or(bytes.len())]);
+                let Some(held) = held else { return };
+                if let (Apc::Ending(kept), b'\\') = (std::mem::take(apc), bytes[held]) {
+                    performer.apc(&kept);
+                }
+                *apc = Apc::Esc;
+                bytes = &bytes[held..];
+            }
+            Apc::Out | Apc::Esc => {
+                let Some(start) = apc_start(apc, bytes) else {
+                    return feed(parser, osc, performer, bytes);
+                };
+                feed(parser, osc, performer, &bytes[..start]);
+                *apc = Apc::In(Vec::new());
+                bytes = &bytes[start..];
+            }
+        }
+    }
+}
+
+/// Just past the `_` of the first `ESC _` in `bytes` that opens an APC
+/// string, as `vte` finds them; with none, `apc` is left saying whether
+/// `bytes` end escaped.
+fn apc_start(apc: &mut Apc, bytes: &[u8]) -> Option<usize> {
+    let escaped = |before: &[u8], start: bool| match before.iter().rev().find(|&&b| !stays(b)) {
+        Some(&b) => b == 0x1b,
+        None => start,
+    };
+    let start = matches!(apc, Apc::Esc);
+    let mut from = 0;
+    while let Some(at) = memchr::memchr(b'_', &bytes[from..]).map(|at| from + at) {
+        if escaped(&bytes[from..at], from == 0 && start) {
+            return Some(at + 1);
+        }
+        from = at + 1;
+    }
+    *apc = if escaped(&bytes[from..], from == 0 && start) { Apc::Esc } else { Apc::Out };
+    None
+}
+
+/// C0 controls but CAN, SUB and ESC, DEL and high bytes leave vte's escape
+/// state as it was; so an `ESC` and then any of them leave it escaped.
+fn stays(b: u8) -> bool {
+    matches!(b, 0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff)
+}
+
 /// Step `osc` over `bytes`, as `vte` enters and leaves OSC strings: the
 /// offset of the first byte past `OSC_MAX` in one, if a string runs that
 /// far, with `osc` left where it stands there.
 fn past_limit(osc: &mut Osc, bytes: &[u8]) -> Option<usize> {
-    // C0 controls but CAN, SUB and ESC, DEL and high bytes leave vte's
-    // escape state as it was; so an `ESC` and then any of them leave it
-    // escaped.
-    let stays = |b: u8| matches!(b, 0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff);
     let escaped = |bytes: &[u8]| bytes.iter().rev().find(|&&b| !stays(b)) == Some(&0x1b);
     let mut i = 0;
     while i < bytes.len() {

@@ -2,7 +2,8 @@
 
 The terminal core shared by tutti's daemon, tutti's TUI and the rtty GPU
 terminal: the bytes a program writes go in, a grid with absolute-numbered
-scrollback, modes, replies and events come out. No IO. The byte-level parser
+scrollback, modes, replies and events come out. No IO (but for the image
+files a program names, with graphics on). The byte-level parser
 is `vte`'s DEC state machine; everything above it is this crate.
 
 ```rust
@@ -31,13 +32,50 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
 - Unicode: `unicode-width` per character, grapheme clusters by
   `unicode-segmentation` for combining marks and emoji sequences; see the
   crate documentation for the width rules and VS16.
+- `set_graphics(true)`: kitty's graphics protocol, off by default (APC
+  strings are then dropped as they always were, so tutti's daemon is
+  unchanged). `vte` drops APC strings, so the engine splits them off the
+  stream before it, each up to `APC_MAX` (16 MiB). A command runs only when
+  ST (`ESC \`) ends it; an ESC that starts anything else drops it unrun.
+  - Transmit (`a=t`, `a=T`): RGB, RGBA and PNG (`f=24`, `32`, `100`), zlib
+    (`o=z`), in chunks (`m=1`), in the string or from a file (`t=d`, `t=f`,
+    `t=t`) by the specification's rules: regular files only (checked on the
+    path, then on the file, opened without blocking), at most the quota
+    (the read too), none under `/proc`, `/sys` or `/dev`, `t=t` only in a temporary
+    directory with `tty-graphics-protocol` in its path and deleted once
+    read, every failure the same `EBADF`. `I` image numbers.
+  - Query (`a=q`) and feature queries (`e`); quiet `q=1`, `q=2`.
+  - Put (`a=p`, `a=T`): `c`/`r` (one keeps the shape, both letterbox),
+    `x`/`y`/`w`/`h`, `X`/`Y`, `z`, `p`; the cursor goes to the image's last
+    row, past its right edge, unless `C=1`.
+  - Delete (`a=d`): `d=` `a c i n p q r x y z`, and their capitals, which
+    also free the images then placed nowhere.
+  - Not supported, each answering `EINVAL`: shared memory (`t=s`),
+    animation (`a=f`, `a=a`, `a=c`), relative placements (`P`), indexed
+    colour (`f=8`, `f=16`).
+  - Images are held as RGBA up to `GRAPHICS_QUOTA` (256 MiB) per terminal;
+    past it the oldest go, those placed nowhere first. However small they
+    are, a terminal holds at most 4096 images (the oldest going as past the
+    quota) and 4096 placements (the oldest going first). `placements(from,
+    to)` gives the host each image over those rows (the image, the cell it
+    counts from, where in cells, which part of it, `z`); `images()` the ones
+    held, each with a generation unique in the process.
+  - A placement belongs to the row of its top left cell: it scrolls into the
+    scrollback, reflows with that cell (keeping its size in cells), and goes
+    when its row is trimmed, scrolls out of a margin region or is reset (ED
+    2, the alternate screen's clearing, RIS); ED 0 and 1 and the other
+    erases leave it. While the alternate screen is up, the primary screen's
+    placements (its scrollback's too) neither draw nor go with its deletes;
+    a narrowing that cuts the alternate screen's cells takes their images.
+  - The engine's one IO: `t=f` and `t=t` read the files a program names.
 
 Tests: per-feature tests from the specs; differential tests against
 alacritty_terminal over a randomized grammar and the recorded programs in
 `fixtures/` (`DIVERGENCES.md` lists the known differences); checks that
 `snapshot()` and `redraw()` reproduce the visible state, over random streams
 and at every fixture checkpoint; property tests that resizes keep
-lines and numbering, and that no input panics; and an answer to every query
+lines and numbering, and that no input panics, graphics commands with graphics
+on included; and an answer to every query
 the recorded programs sent. The long campaigns run with
 `cargo test --release -- --ignored`; throughput against alacritty_terminal and
 vt100 with `cargo bench`.

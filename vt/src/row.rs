@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::cell::{Cell, Color};
 use crate::event::MarkKind;
+use crate::graphics::Anchor;
 
 /// An OSC 8 hyperlink.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -36,8 +37,9 @@ impl Extra {
     }
 }
 
-/// One row of the grid: its cells, whether it soft-wraps into the next, and
-/// the shell-integration marks that fell on it.
+/// One row of the grid: its cells, whether it soft-wraps into the next, the
+/// shell-integration marks that fell on it, and the images placed from its
+/// cells.
 #[derive(Clone, Debug)]
 pub struct Row {
     pub(crate) cells: Vec<Cell>,
@@ -48,6 +50,7 @@ pub struct Row {
     /// points at any more are dropped when the vector outgrows the row.
     extras: Vec<Extra>,
     pub(crate) marks: Vec<(u16, MarkKind)>,
+    pub(crate) images: Vec<Anchor>,
     pub(crate) wrapped: bool,
 }
 
@@ -59,6 +62,7 @@ impl Row {
             occupied: if bg == Color::Default { 0 } else { cols },
             extras: Vec::new(),
             marks: Vec::new(),
+            images: Vec::new(),
             wrapped: false,
         }
     }
@@ -79,6 +83,7 @@ impl Row {
         }
         self.extras.clear();
         self.marks.clear();
+        self.images.clear();
         self.wrapped = false;
     }
 

@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use crate::cell::{Cell, Color};
 use crate::event::MarkKind;
+use crate::graphics::Anchor;
 use crate::row::Row;
 use crate::term::{Cursor, PRIMARY, Terminal, default_tabs};
 
@@ -18,8 +19,9 @@ impl Terminal {
     ///
     /// The primary screen reflows: soft-wrapped rows rejoin into lines and
     /// rewrap at the new width, scrollback included, the cursor, the saved
-    /// cursor and the OSC 133 marks travelling with the characters they sat
-    /// on. The screen keeps its first line at the top while the cursor stays
+    /// cursor, the OSC 133 marks and the images' placements travelling with
+    /// the characters they sat on (an image keeps its size in cells). The
+    /// screen keeps its first line at the top while the cursor stays
     /// on it; growing pulls rows back from the scrollback, shrinking drops
     /// rows below the cursor first and pushes rows into the scrollback only
     /// to keep the cursor in view. The alternate screen is cut or padded,
@@ -69,12 +71,30 @@ impl Terminal {
             points.extend(self.saved[PRIMARY].as_ref().map(|saved| position(&saved.cursor)));
         }
 
-        let old = std::mem::take(&mut self.grid.primary);
+        let mut old = std::mem::take(&mut self.grid.primary);
         let (mut ring, mapped) = if cols == self.grid.cols {
             (old, points)
         } else {
-            let (rows, mapped) = rewrap(&old, usize::from(cols), &points);
-            (VecDeque::from(rows), mapped)
+            // Placements go where the cells they start on go.
+            let anchors: Vec<(Point, Anchor)> = old
+                .iter_mut()
+                .enumerate()
+                .flat_map(|(row, line)| {
+                    let anchors = std::mem::take(&mut line.images).into_iter();
+                    anchors.map(move |anchor| (Point { row, col: usize::from(anchor.col) }, anchor))
+                })
+                .collect();
+            let count = points.len();
+            points.extend(anchors.iter().map(|(point, _)| *point));
+            let (rows, mut mapped) = rewrap(&old, usize::from(cols), &points);
+            let mut ring = VecDeque::from(rows);
+            for ((_, mut anchor), point) in anchors.into_iter().zip(mapped.drain(count..)) {
+                anchor.col = point.col.min(usize::from(cols) - 1) as u16;
+                if let Some(line) = ring.get_mut(point.row) {
+                    line.images.push(anchor);
+                }
+            }
+            (ring, mapped)
         };
 
         let rows = usize::from(rows);
@@ -140,11 +160,12 @@ impl Terminal {
                     row.orphan(usize::from(cols) - 1);
                 }
             }
-            // Cut or padded, a row no longer runs to its edge.
+            // Cut or padded, a row no longer runs to its edge; the images on cells cut go too.
             if let Some(last) = row.cells.last_mut() {
                 last.clear_pad();
             }
             row.wrapped = false;
+            row.images.retain(|anchor| usize::from(anchor.col) < usize::from(cols));
             row.cells.resize(usize::from(cols), Cell::default());
         }
         while self.grid.alt.len() < rows {

@@ -4448,7 +4448,10 @@ dependencies = [
 name = "rtty-vt"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "memchr",
+ "miniz_oxide 0.8.9",
+ "png 0.18.1",
  "unicode-segmentation",
  "unicode-width",
  "vte",

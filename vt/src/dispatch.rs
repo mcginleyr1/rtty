@@ -27,6 +27,15 @@ impl Performer<'_> {
         self.flush();
         self.0.joinable = false;
     }
+
+    /// An APC string ST ended, while graphics are on: kitty's graphics
+    /// commands start with `G`.
+    pub(crate) fn apc(&mut self, body: &[u8]) {
+        self.interrupt();
+        if let Some(command) = body.strip_prefix(b"G") {
+            self.0.graphics_command(command);
+        }
+    }
 }
 
 /// The DCS strings that are answered.

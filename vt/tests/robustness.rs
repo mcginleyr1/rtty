@@ -26,6 +26,40 @@ fn step() -> impl Strategy<Value = Step> {
     ]
 }
 
+/// A kitty graphics command of keys and values picked to reach every
+/// action, and a payload of base64 characters, valid or not, which a cut may
+/// end early.
+fn graphics_command() -> impl Strategy<Value = Vec<u8>> {
+    let key = prop::sample::select(b"aqftosvSOiIpmxywhXYcrCUzPde".to_vec());
+    let values =
+        ["T", "t", "p", "d", "q", "f", "A", "i", "c", "z", "-5", "24", "100", "2147483648"];
+    let value = prop_oneof![
+        (0u32..300).prop_map(|n| n.to_string()),
+        prop::sample::select(values.to_vec()).prop_map(String::from),
+    ];
+    let pairs = prop::collection::vec((key, value), 0..8);
+    let base64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let payload = prop::collection::vec(prop::sample::select(base64.to_vec()), 0..64);
+    (pairs, payload, any::<bool>()).prop_map(|(pairs, payload, whole)| {
+        let keys: Vec<String> =
+            pairs.iter().map(|(key, value)| format!("{}={value}", char::from(*key))).collect();
+        let mut bytes = format!("\x1b_G{};", keys.join(",")).into_bytes();
+        bytes.extend(payload);
+        if whole {
+            bytes.extend(b"\x1b\\");
+        }
+        bytes
+    })
+}
+
+fn graphics_step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        4 => graphics_command().prop_map(Step::Feed),
+        4 => prop::collection::vec(byte(), 0..100).prop_map(Step::Feed),
+        1 => (0u16..30, 0u16..90).prop_map(|(rows, cols)| Step::Resize(rows, cols)),
+    ]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 2000, failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -53,5 +87,35 @@ proptest! {
         let (rows, cols) = term.size();
         let mut copy = Terminal::new(rows, cols, 0);
         copy.advance(&term.snapshot());
+    }
+
+    /// The same with graphics on, its commands among the bytes.
+    #[test]
+    fn graphics_commands_never_panic(
+        (rows, cols) in (0u16..12, 0u16..40),
+        scrollback in 0usize..50,
+        cell in prop::option::of((0u16..30, 0u16..30)),
+        steps in prop::collection::vec(graphics_step(), 0..40),
+    ) {
+        let mut term = Terminal::new(rows, cols, scrollback);
+        if let Some((width, height)) = cell {
+            term.set_cell_pixels(width, height);
+        }
+        term.set_graphics(true);
+        for step in steps {
+            match step {
+                Step::Feed(bytes) => term.advance(&bytes),
+                Step::Resize(rows, cols) => term.resize(rows, cols),
+            }
+            term.take_events();
+            let damage = term.take_damage();
+            let _ = term.redraw(&damage);
+            let top = term.screen_top();
+            let _ = term.placements(term.oldest_row(), top + u64::from(term.size().0));
+        }
+        let _ = term.snapshot();
+        term.set_graphics(false);
+        term.advance(b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\");
+        prop_assert!(term.images().is_empty());
     }
 }

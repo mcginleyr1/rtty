@@ -45,10 +45,21 @@
 //! VS16 (U+FE0F) joins its base and never widens it: `wcwidth` gives it no
 //! width, so a program's idea of the cursor would part from the grid's. A
 //! renderer may draw the emoji presentation within the base's cells.
+//!
+//! # Graphics
+//!
+//! With `set_graphics(true)` the engine takes kitty's graphics protocol out
+//! of the stream (`vte` drops APC strings, so they are split off before it):
+//! images are decoded to RGBA and held up to `GRAPHICS_QUOTA`, and their
+//! placements ride the rows their top left cells are on. A host draws what
+//! `placements` gives; it decodes and draws nothing itself. Off, the default,
+//! APC strings are dropped as they always were. With graphics on, `t=f` and
+//! `t=t` transmissions read the files they name: the one IO the engine does.
 
 mod cell;
 mod dispatch;
 mod event;
+mod graphics;
 mod grid;
 mod modes;
 mod reflow;
@@ -59,6 +70,7 @@ mod term;
 pub use cell::{Attrs, Cell, Color, Underline};
 pub use dispatch::XTERM_VERSION;
 pub use event::{Event, Mark, MarkKind, ModeChange};
+pub use graphics::{APC_MAX, GRAPHICS_QUOTA, Image, Placement};
 pub use modes::{CursorShape, CursorStyle, Modes, MouseEncoding, MouseMode};
 pub use row::{Hyperlink, Row};
 pub use term::{BACKGROUND, CURSOR, ColorScheme, FOREGROUND, OSC_MAX, Rgb, Terminal};
