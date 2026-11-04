@@ -272,7 +272,10 @@ group, as titles find it): an agent, Neovim, a build. A pane's question names it
 tab's, a window's and the quit's count the panes running something and name what each runs.
 `Close` (or `Quit`, the default button) goes on and `Cancel` (Esc) keeps everything. A pane
 whose shell sits at its prompt closes at once, as does a pane whose program exits.
-`confirm_close = false` never asks.
+`confirm_close = false` never asks. Known limits: only the login shell rtty starts itself counts
+as a shell, so a pane started with `rtty -e /bin/zsh` asks even at an idle prompt; and a command
+forked a moment before the close may not hold the foreground yet, and then is not seen as
+running.
 
 **Undoing a close.** A closed pane, tab or window does not go at once: it waits, hidden, its
 programs running on, for `undo_timeout` seconds (5 by default), and `Cmd+Z` (`undo-close`) brings
