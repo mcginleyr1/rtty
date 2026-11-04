@@ -1,23 +1,56 @@
 //! rtty as a macOS app: its menu bar, whose items run `[bind]`'s actions and show their chords,
-//! and the question before quitting however macOS asks rtty to quit.
+//! the question before quitting however macOS asks rtty to quit, and Secure Keyboard Entry.
 
 use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::{mem, ptr};
+use std::mem;
+use std::ptr::{self, NonNull};
 
-use gpui::{App, AsyncApp, Menu, MenuItem, actions};
+use block2::RcBlock;
+use gpui::{App, AsyncApp, Global, Menu, MenuItem, WindowHandle, actions};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationTerminateReply as Reply, NSEventModifierFlags as Flags, NSMenu,
+    NSApplication, NSApplicationDidBecomeActiveNotification, NSApplicationTerminateReply as Reply,
+    NSApplicationWillResignActiveNotification, NSControlStateValueOff, NSControlStateValueOn,
+    NSEventModifierFlags as Flags, NSMenu,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
 
 use crate::config::Action;
+use crate::view::Settings;
+use crate::window::TerminalWindow;
 
-actions!(rtty, [About, Hide, HideOthers, ShowAll]);
+actions!(rtty, [About, Hide, HideOthers, ShowAll, ToggleSecureInput]);
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn EnableSecureEventInput() -> i32;
+    fn DisableSecureEventInput() -> i32;
+    fn IsSecureEventInputEnabled() -> u8;
+}
+
+/// rtty as the app: whether it is the active one, the window it gave the keyboard last, and
+/// Secure Keyboard Entry.
+struct AppState {
+    /// rtty is the active app (NSApplication's notifications; `--script`'s `app` step).
+    active: bool,
+    key: Option<WindowHandle<TerminalWindow>>,
+    /// `secure-input`'s toggle, which `secure_input` sets at start.
+    secure_input: bool,
+    /// The focused pane of the window with the keyboard reads a password (`auto_secure_input`).
+    password: bool,
+    /// `EnableSecureEventInput` called, and not yet undone.
+    held: bool,
+    /// The enable and disable calls made: as many of each, or one more enable while held.
+    calls: (u32, u32),
+}
+
+impl Global for AppState {}
+
+const SECURE_INPUT: &str = "Secure Keyboard Entry";
 
 thread_local! {
     /// The app, for what AppKit calls outside GPUI.
@@ -39,6 +72,8 @@ const MENUS: &[(&str, &[Item])] = &[
         "rtty",
         &[
             ("About rtty", Some(Action::About)),
+            LINE,
+            (SECURE_INPUT, Some(Action::SecureInput)),
             LINE,
             ("Hide rtty", Some(Action::Hide)),
             ("Hide Others", Some(Action::HideOthers)),
@@ -95,16 +130,120 @@ const MENUS: &[(&str, &[Item])] = &[
     ),
 ];
 
-/// The menu bar, and what its app-wide items do.
-pub fn init(bindings: &BTreeMap<String, Action>, cx: &mut App) {
+/// The menu bar and what its app-wide items do, and Secure Keyboard Entry, whose toggle
+/// `secure_input` turns on from the start.
+pub fn init(cx: &mut App) {
     APP.with(|app| app.set(cx.to_async()).ok().expect("rtty starts once"));
+    let settings = cx.global::<Settings>();
+    let (bindings, secure_input) = (settings.bindings.clone(), settings.secure_input);
+    let (active, key, password, held, calls) = (false, None, false, false, (0, 0));
+    cx.set_global(AppState { active, key, secure_input, password, held, calls });
     cx.on_action(|_: &About, _| {
         NSApplication::sharedApplication(main_thread()).orderFrontStandardAboutPanel(None)
     });
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    menus(bindings, cx);
+    cx.on_action(|_: &ToggleSecureInput, cx| {
+        let state = cx.global_mut::<AppState>();
+        state.secure_input = !state.secure_input;
+        let on = state.secure_input;
+        crate::note(&format!("secure keyboard entry turned {}", if on { "on" } else { "off" }));
+        check_secure_input(on);
+        refresh_secure_input(cx);
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: AppKit's names for its notifications, there for the process's life.
+    let changes = unsafe {
+        [
+            (NSApplicationDidBecomeActiveNotification, true),
+            (NSApplicationWillResignActiveNotification, false),
+        ]
+    };
+    for (name, active) in changes {
+        let changed =
+            RcBlock::new(move |_: NonNull<NSNotification>| later(move |cx| set_active(active, cx)));
+        // SAFETY: AppKit posts NSApplication's notifications on the main thread, where the block
+        // runs; the observer stays for rtty's life.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &changed)
+        };
+        mem::forget(observer);
+    }
+    cx.on_app_quit(|cx| {
+        cx.global_mut::<AppState>().active = false;
+        refresh_secure_input(cx);
+        async {}
+    })
+    .detach();
+    menus(&bindings, cx);
+}
+
+/// Runs `f` with the app on a later turn of the run loop, out of whatever AppKit, and GPUI
+/// calling into it, are doing now.
+fn later(f: impl FnOnce(&mut App) + 'static) {
+    APP.with(|app| {
+        let app = app.get().expect("rtty runs").clone();
+        let executor = app.foreground_executor().clone();
+        executor.spawn(async move { app.update(f).ok() }).detach()
+    })
+}
+
+/// rtty became the active app, or stopped being it.
+pub fn set_active(active: bool, cx: &mut App) {
+    cx.global_mut::<AppState>().active = active;
+    cx.defer(refresh_secure_input);
+}
+
+/// `window` took the keyboard.
+pub fn key_window(window: WindowHandle<TerminalWindow>, cx: &mut App) {
+    cx.global_mut::<AppState>().key = Some(window);
+    cx.defer(refresh_secure_input);
+}
+
+/// Holds Secure Keyboard Entry while rtty is the active app and its toggle is on or the focused
+/// pane of the window with the keyboard reads a password (`Pane::reads_password`), and lets it go
+/// otherwise. macOS counts the calls, and `held` keeps one `DisableSecureEventInput` for each
+/// `EnableSecureEventInput`.
+pub fn refresh_secure_input(cx: &mut App) {
+    let state = cx.global::<AppState>();
+    let auto = cx.global::<Settings>().auto_secure_input;
+    let key = state.key.filter(|_| state.active && auto);
+    let pane = key.and_then(|key| key.read(cx).ok()?.focused());
+    let password = pane.is_some_and(|pane| pane.read(cx).reads_password());
+    let state = cx.global_mut::<AppState>();
+    state.password = password;
+    let hold = state.active && (state.secure_input || password);
+    if hold == state.held {
+        return;
+    }
+    state.held = hold;
+    // SAFETY: Carbon calls taking nothing; `held` pairs them.
+    let status = if hold {
+        state.calls.0 += 1;
+        unsafe { EnableSecureEventInput() }
+    } else {
+        state.calls.1 += 1;
+        unsafe { DisableSecureEventInput() }
+    };
+    let why = if password { "a password prompt" } else { "the toggle" };
+    let what = if hold { format!("on for {why}") } else { "off".into() };
+    crate::note(&format!("secure keyboard entry {what} (status {status})"));
+    // The lock in every window's bar.
+    cx.refresh_windows();
+}
+
+/// Secure Keyboard Entry is on, and the bars show a lock.
+pub fn secure_input_held(cx: &App) -> bool {
+    cx.global::<AppState>().held
+}
+
+/// The App menu's Secure Keyboard Entry, checked while its toggle is on.
+fn check_secure_input(on: bool) {
+    let title = NSString::from_str(SECURE_INPUT);
+    for item in native_menus().filter_map(|menu| menu.itemWithTitle(&title)) {
+        item.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+    }
 }
 
 /// Has macOS ask rtty before it quits it (the dock's Quit, logging out, a quit Apple event), by
@@ -181,6 +320,7 @@ pub fn menus(bindings: &BTreeMap<String, Action>, cx: &App) {
         };
         item.setKeyEquivalent(&NSString::from_str(key));
     }
+    check_secure_input(cx.global::<AppState>().secure_input);
 }
 
 /// The menu bar. An item runs its action as the action's chord does, and macOS shows the chord
@@ -206,10 +346,28 @@ fn native_menus() -> impl Iterator<Item = Retained<NSMenu>> {
     bar.into_iter().flat_map(|bar| bar.itemArray()).filter_map(|item| item.submenu())
 }
 
-/// The menu bar as AppKit has it, a line per menu: each item's title and the chord macOS shows
-/// for it (not the hidden and alternate items AppKit adds), for `--script`'s dump.
-pub fn dump() -> String {
+/// For `--script`'s dump: the menu bar as AppKit has it, a line per menu, each item's title and
+/// the chord macOS shows for it (not the hidden and alternate items AppKit adds), checked ones
+/// marked; then rtty as the app and Secure Keyboard Entry, with the calls made and whether
+/// macOS has it on, for any process.
+pub fn dump(cx: &App) -> String {
     let mut out = String::new();
+    let state = cx.global::<AppState>();
+    let key = state.key.map(|key| key.window_id().as_u64());
+    let _ = writeln!(out, "app active {} key window {key:?}", state.active);
+    // SAFETY: a Carbon call taking nothing.
+    let system = unsafe { IsSecureEventInputEnabled() } != 0;
+    let _ = writeln!(
+        out,
+        "secure input toggle {} auto {} password {} held {} enable calls {} disable calls {}, \
+         on in macOS {system}",
+        state.secure_input,
+        cx.global::<Settings>().auto_secure_input,
+        state.password,
+        state.held,
+        state.calls.0,
+        state.calls.1
+    );
     for menu in native_menus() {
         let items: Vec<String> = menu
             .itemArray()
@@ -231,9 +389,10 @@ pub fn dump() -> String {
                     "\r" => format!(" {held}↩"),
                     key => format!(" {held}{}", key.to_uppercase()),
                 };
+                let check = if item.state() == NSControlStateValueOn { "✓ " } else { "" };
                 match item.isSeparatorItem() {
                     true => "-".to_owned(),
-                    false => format!("{}{chord}", item.title()),
+                    false => format!("{check}{}{chord}", item.title()),
                 }
             })
             .collect();

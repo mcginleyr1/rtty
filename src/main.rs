@@ -264,6 +264,7 @@ pub fn gpui_action(action: Action, chord: &str) -> (Box<dyn gpui::Action>, Optio
         Action::Hide => (Box::new(app::Hide), None),
         Action::HideOthers => (Box::new(app::HideOthers), None),
         Action::ShowAll => (Box::new(app::ShowAll), None),
+        Action::SecureInput => (Box::new(app::ToggleSecureInput), None),
     }
 }
 
@@ -366,6 +367,8 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         quick_select: config.quick_select,
         restore_layout: config.restore_layout.unwrap_or(true),
         graphics: config.graphics.unwrap_or(true),
+        secure_input: config.secure_input.unwrap_or(false),
+        auto_secure_input: config.auto_secure_input.unwrap_or(true),
         launch,
     })
 }
@@ -515,7 +518,7 @@ fn run(options: Options) -> Result<(), String> {
         // What the key monitor below reads, which cannot reach the settings.
         let option_as_alt = Rc::new(Cell::new(settings.option_as_alt));
         configure(settings, cx);
-        app::init(&cx.global::<Settings>().bindings.clone(), cx);
+        app::init(cx);
         cx.observe_global::<Settings>({
             let option_as_alt = option_as_alt.clone();
             move |cx| option_as_alt.set(cx.global::<Settings>().option_as_alt)

@@ -41,6 +41,8 @@
 //! menu MENU ITEM         the menu bar's item (`menu Shell Split Right`): the action it carries,
 //!                        dispatched to the window as a click on it dispatches it to the key
 //!                        window, which a scripted window never is
+//! app active|inactive    what rtty does when macOS makes it the active app, the window the key
+//!                        one, and when rtty stops being it; the window takes no keyboard
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -109,6 +111,8 @@ pub enum Step {
     WindowClose(usize),
     /// The menu's title, the item's.
     Menu(String, String),
+    /// Whether rtty is the active app.
+    App(bool),
     Appearance(WindowAppearance),
     Resize {
         rows: u16,
@@ -269,6 +273,11 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             "menu" => match rest.trim().split_once(' ') {
                 Some((menu, item)) => Step::Menu(menu.into(), item.trim().into()),
                 None => return Err(error("menu MENU ITEM expected")),
+            },
+            "app" => match rest.trim() {
+                "active" => Step::App(true),
+                "inactive" => Step::App(false),
+                _ => return Err(error("active or inactive expected")),
             },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
@@ -496,6 +505,16 @@ async fn perform(
                 Ok::<_, String>(())
             })
             .map_err(|err| err.to_string())??,
+        Step::App(active) => cx
+            .update(|window, cx| {
+                if *active {
+                    let handle = Window::window_handle(window).downcast();
+                    let handle = handle.expect("a terminal window");
+                    crate::app::key_window(handle, cx);
+                }
+                crate::app::set_active(*active, cx)
+            })
+            .map_err(|err| err.to_string())?,
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -646,6 +665,9 @@ mod tests {
         assert!(matches!((&answers[0].1, &answers[1].1), (Step::Answer(0), Step::Answer(1))));
         assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
         assert!(matches!(parse("terminate").unwrap()[0].1, Step::Terminate));
+        let app = parse("app active\napp inactive").unwrap();
+        assert!(matches!((&app[0].1, &app[1].1), (Step::App(true), Step::App(false))));
+        assert!(parse("app front").unwrap_err().contains("active or inactive expected"));
         assert!(matches!(parse("window close 2").unwrap()[0].1, Step::WindowClose(1)));
         for wrong in ["window close 0", "window close", "window open 2"] {
             assert!(parse(wrong).unwrap_err().contains("window close N, from 1"), "{wrong}");

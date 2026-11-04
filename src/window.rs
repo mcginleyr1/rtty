@@ -118,7 +118,7 @@ const SAID: Duration = Duration::from_secs(6);
 const UI_FONT: &str = ".SystemUIFont";
 
 /// The bar's icons, drawn for rtty on a 16-unit grid; GPUI tints them with the text color.
-const ICONS: [(&str, &str); 3] = [
+const ICONS: [(&str, &str); 4] = [
     (
         "folder.svg",
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1 3.75A1.25 1.25 0 0 1 2.25 2.5h3.7a1.25 1.25 0 0 1 .9.38L8 4h5.75A1.25 1.25 0 0 1 15 5.25v7A1.25 1.25 0 0 1 13.75 13.5H2.25A1.25 1.25 0 0 1 1 12.25z"/></svg>"#,
@@ -130,6 +130,10 @@ const ICONS: [(&str, &str); 3] = [
     (
         "plus.svg",
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2.5v11M2.5 8h11" stroke="black" stroke-width="1.8" stroke-linecap="round"/></svg>"#,
+    ),
+    (
+        "lock.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 7.5V5a3 3 0 0 1 6 0v2.5" fill="none" stroke="black" stroke-width="1.6"/><rect x="3" y="7" width="10" height="7.5" rx="1.5"/></svg>"#,
     ),
 ];
 
@@ -567,7 +571,14 @@ impl TerminalWindow {
         .detach();
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
         // The title dims while the window is in the background, as macOS's do.
-        cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                let handle = window.window_handle().downcast().expect("a terminal window");
+                crate::app::key_window(handle, cx);
+            }
+            cx.notify()
+        })
+        .detach();
         let this = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             this.update(cx, |this, cx| this.close_button(window, cx)).is_err()
@@ -697,8 +708,10 @@ impl TerminalWindow {
     }
 
     /// Every pane, shown or not, looks again at what it is called (a command started or ended,
-    /// the shell changed directory); the bar and the window title follow.
+    /// the shell changed directory); the bar and the window title follow. And whether the focused
+    /// one reads a password, for Secure Keyboard Entry.
     fn refresh_titles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.defer(crate::app::refresh_secure_input);
         let mut changed = false;
         for view in self.views.values() {
             changed |= view.update(cx, |view, _| view.refresh_title());
@@ -709,13 +722,15 @@ impl TerminalWindow {
         }
     }
 
-    /// The keyboard goes to the shown tab's focused pane, whose title names the window.
+    /// The keyboard goes to the shown tab's focused pane, whose title names the window, and
+    /// whose password prompt holds Secure Keyboard Entry.
     fn focus_shown(&self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.tabs.active().focus();
         if let Some(view) = self.views.get(&focus) {
             view.read(cx).focus(window);
         }
         window.set_window_title(&self.title(focus, cx));
+        cx.defer(crate::app::refresh_secure_input);
         cx.notify();
     }
 
@@ -737,6 +752,7 @@ impl TerminalWindow {
                 if self.tabs.active().panes().contains(&id) {
                     self.tabs.active_mut().set_focus(id);
                     window.set_window_title(&self.title(id, cx));
+                    cx.defer(crate::app::refresh_secure_input);
                     cx.notify();
                 }
             }
@@ -1383,10 +1399,11 @@ impl TerminalWindow {
         let bar = self.bar(window);
         let _ = writeln!(
             out,
-            "bar {}px bg {} hover {:?} window title {:?}",
+            "bar {}px bg {} hover {:?} lock {} window title {:?}",
             bar.height,
             hex(self.scheme.tab_bar),
             self.bar_hover,
+            crate::app::secure_input_held(cx),
             window.window_title()
         );
         if bar.tabs.is_empty() && bar.height > 0. {
@@ -1424,7 +1441,7 @@ impl TerminalWindow {
         if let Some((said, at)) = &self.said {
             let _ = writeln!(out, "said {said:?} {} ms ago", at.elapsed().as_millis());
         }
-        out.push_str(&crate::app::dump());
+        out.push_str(&crate::app::dump(cx));
         let rects = layout.rects(area);
         for (id, rect) in &rects {
             let _ =
@@ -1474,6 +1491,11 @@ impl TerminalWindow {
             let line = div().absolute().h(px(2.)).rounded_full().bg(track);
             line.child(done.bg(hsla(color).opacity(opacity)))
         };
+        // Before the shown tab's title while Secure Keyboard Entry is on.
+        let lock = |color: Rgb| {
+            let held = crate::app::secure_input_held(cx);
+            held.then(|| svg().path("lock.svg").flex_none().size(px(11.)).text_color(hsla(color)))
+        };
         let mut parts: Vec<AnyElement> = Vec::new();
         if bar.tabs.is_empty() {
             let title =
@@ -1498,6 +1520,7 @@ impl TerminalWindow {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(fg))
                 .children(folder)
+                .children(lock(fg))
                 .child(label(text));
             parts.push(centered.into_any_element());
             if let Some(progress) = self.tab_progress(0, cx) {
@@ -1544,7 +1567,9 @@ impl TerminalWindow {
                 .flex()
                 .items_center()
                 .justify_center()
+                .gap(px(5.))
                 .px(px(32.))
+                .children(lock(fg).filter(|_| index == self.tabs.index()))
                 .child(label(title))
                 .children(close)
                 .children(digit)

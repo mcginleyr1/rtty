@@ -54,6 +54,10 @@ pub struct Config {
     pub restore_layout: Option<bool>,
     /// Programs show images with kitty's graphics protocol.
     pub graphics: Option<bool>,
+    /// Secure Keyboard Entry from the start, as `secure-input` turns it on.
+    pub secure_input: Option<bool>,
+    /// Secure Keyboard Entry while the pane with the keyboard reads a password.
+    pub auto_secure_input: Option<bool>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -105,6 +109,7 @@ pub enum Action {
     Hide,
     HideOthers,
     ShowAll,
+    SecureInput,
 }
 
 impl Action {
@@ -149,6 +154,7 @@ impl Action {
             "hide" => Hide,
             "hide-others" => HideOthers,
             "show-all" => ShowAll,
+            "secure-input" => SecureInput,
             _ => {
                 return toward("focus")
                     .map(Focus)
@@ -673,7 +679,7 @@ mod tests {
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
                      prompt-prev prompt-next clear-scrollback quick-select quick-open reload-config \
                      open-config quit close-window minimize zoom-window about hide hide-others \
-                     show-all";
+                     show-all secure-input";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
@@ -703,6 +709,19 @@ mod tests {
         );
         let typed = err("'cmd-d' = 1");
         assert!(typed.contains("line 3") && typed.contains("expected a string"), "{typed}");
+    }
+
+    #[test]
+    fn secure_input_is_off_and_its_auto_on_unless_told_otherwise() {
+        let read = |source| {
+            toml::from_str::<Config>(source)
+                .map(|config| (config.secure_input, config.auto_secure_input))
+        };
+        assert_eq!(read("").unwrap(), (None, None));
+        let source = "secure_input = true\nauto_secure_input = false";
+        assert_eq!(read(source).unwrap(), (Some(true), Some(false)));
+        assert!(read("secure-input = true").is_err(), "keys are written with underscores");
+        assert!(read("secure_input = 'yes'").is_err());
     }
 
     #[test]

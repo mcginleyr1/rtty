@@ -301,6 +301,16 @@ impl Pane {
         })
     }
 
+    /// The program reads a password, as `sudo`, `ssh` and `read -s` do: the pty's echo off and
+    /// its canonical mode on.
+    pub fn reads_password(&self) -> bool {
+        let Some(fd) = self.master.as_raw_fd() else { return false };
+        // SAFETY: tcgetattr writes only the struct it is given.
+        let mut termios: libc::termios = unsafe { mem::zeroed() };
+        let read = unsafe { libc::tcgetattr(fd, &mut termios) } == 0;
+        read && termios.c_lflag & libc::ICANON != 0 && termios.c_lflag & libc::ECHO == 0
+    }
+
     /// The selected text, as it is copied.
     pub fn selected_text(&self) -> Option<String> {
         let term = self.lock();
@@ -510,6 +520,22 @@ mod tests {
         command.env("TMUX", "/tmp/outer,1,0");
         let (pane, _) = Pane::spawn(command, 24, 80, None, None, None, false).unwrap();
         assert_eq!(finish(pane).0, "rtty:none");
+    }
+
+    /// Echo off with canonical mode on is a password prompt; echo off alone (a full-screen
+    /// program, a shell's line editor) and a plain read are not.
+    #[test]
+    fn a_password_prompt_is_echo_off_in_canonical_mode() {
+        let reads = |modes: &str| {
+            let script = format!("stty {modes}; printf ready; sleep 5");
+            let (pane, _) =
+                Pane::spawn(shell_command(&script), 24, 80, None, None, None, false).unwrap();
+            wait_for(&pane, "ready");
+            pane.reads_password()
+        };
+        assert!(reads("-echo icanon"));
+        assert!(!reads("-echo -icanon"));
+        assert!(!reads("echo icanon"));
     }
 
     /// The engine answers a query and the reply reaches the program, which shows it with `od`.

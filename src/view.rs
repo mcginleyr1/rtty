@@ -114,6 +114,10 @@ pub struct Settings {
     pub quick_select: Vec<Regex>,
     /// The layout is kept for the next launch (`restore_layout`), when this launch keeps it.
     pub restore_layout: bool,
+    /// Secure Keyboard Entry: `secure_input` turns its toggle on, and `auto_secure_input` holds
+    /// it at a password prompt (`app::refresh_secure_input`).
+    pub secure_input: bool,
+    pub auto_secure_input: bool,
     pub launch: Launch,
     /// `graphics`: programs show images with kitty's graphics protocol.
     pub graphics: bool,
@@ -628,6 +632,10 @@ impl PaneView {
         editor::trusted(&server, &program).then_some(server)
     }
 
+    pub fn reads_password(&self) -> bool {
+        self.pane.reads_password()
+    }
+
     pub fn progress(&self) -> Option<Progress> {
         self.progress
     }
@@ -682,6 +690,10 @@ impl PaneView {
         match notice {
             Notice::Output => {
                 self.refresh_search(cx);
+                // A password prompt prints as it turns echo off.
+                if self.focused {
+                    cx.defer(crate::app::refresh_secure_input);
+                }
                 cx.notify()
             }
             Notice::Event(Event::CursorStyle(_) | Event::Mode(_)) => cx.notify(),
