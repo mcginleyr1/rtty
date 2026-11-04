@@ -28,10 +28,8 @@ install dest="/Applications" bin=(env_var("HOME") / ".local/bin"): bundle
         echo "{{bin}}/rtty is not a link install made; move it aside first" >&2
         exit 1
     fi
-    rm -rf "{{dest}}/rtty.app.new"
-    ditto target/rtty.app "{{dest}}/rtty.app.new"
     rm -rf "{{dest}}/rtty.app"
-    mv "{{dest}}/rtty.app.new" "{{dest}}/rtty.app"
+    mv target/rtty.app "{{dest}}/rtty.app"
     mkdir -p "{{bin}}"
     ln -sf "{{dest}}/rtty.app/Contents/MacOS/rtty" "{{bin}}/rtty"
 
