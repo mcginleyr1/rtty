@@ -34,8 +34,14 @@ _rtty_prompt() {
   _rtty_ready=1
   return $ret
 }
-# Newlines, not semicolons: the user's own may end in one.
-PROMPT_COMMAND=$'_rtty_end\n'${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}_rtty_prompt
+# bash 5.1 runs every element of an array PROMPT_COMMAND: there rtty's go in as elements of their
+# own, around the user's. An older bash runs only the first, which they join, on lines of their own
+# since the user's may end in a semicolon.
+if ((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 501)) && [[ -n ${PROMPT_COMMAND[1]+set} ]]; then
+  PROMPT_COMMAND=(_rtty_end "${PROMPT_COMMAND[@]}" _rtty_prompt)
+else
+  PROMPT_COMMAND=$'_rtty_end\n'${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}_rtty_prompt
+fi
 if ((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404)); then
   PS0+='\e]133;C\a'
 elif [[ -z $(trap -p DEBUG) ]]; then

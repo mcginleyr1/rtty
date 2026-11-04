@@ -689,6 +689,45 @@ mod tests {
         std::fs::remove_dir_all(homes).unwrap();
     }
 
+    /// A user's PROMPT_COMMAND array whose last element rebuilds PS1: bash 5.1 runs every element,
+    /// so rtty's marking must be one of them and last, and bash 3.2 runs only the first, which
+    /// must still hold all of rtty's. Either way the prompt after a command is marked.
+    #[test]
+    fn bash_marks_a_prompt_that_an_array_prompt_command_rebuilds() {
+        let id = std::process::id();
+        let integration = shell::install(&std::env::temp_dir().join(format!("rtty-arr-{id}")));
+        let integration = integration.unwrap();
+        let homes = std::env::temp_dir().join(format!("rtty-arr-homes-{id}"));
+        let brew = Path::new("/opt/homebrew/bin/bash").exists().then_some("/opt/homebrew/bin/bash");
+        for path in ["/bin/bash"].into_iter().chain(brew) {
+            let home = homes.join(path.replace('/', "-"));
+            std::fs::create_dir_all(&home).unwrap();
+            let profile = "PS1='ready> '\nPROMPT_COMMAND=(: 'PS1=\"ready> \"')\n";
+            std::fs::write(home.join(".bash_profile"), profile).unwrap();
+            let mut shell = CommandBuilder::new_default_prog();
+            shell.env("SHELL", path);
+            shell.env("HOME", &home);
+            shell.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
+            shell.cwd(&home);
+            let (pane, _) = Pane::spawn(shell, 24, 80, None, None, Some(&integration)).unwrap();
+            wait_for(&pane, "ready>");
+            pane.write(b"echo one two\n".to_vec());
+            wait_for_output(&pane, "one two");
+            let started = Instant::now();
+            let last =
+                || prompt::marks(&pane.lock()).iter().rev().take(2).map(|m| m.kind).collect();
+            let mut kinds: Vec<MarkKind> = last();
+            while kinds != [MarkKind::CommandStart, MarkKind::PromptStart] {
+                assert!(started.elapsed() < Duration::from_secs(5), "{path}: last marks {kinds:?}");
+                thread::sleep(Duration::from_millis(10));
+                kinds = last();
+            }
+            drop(pane);
+        }
+        std::fs::remove_dir_all(integration.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(homes).unwrap();
+    }
+
     #[test]
     fn the_view_scrolls_within_the_scrollback_and_stays_put_under_output() {
         let (mut pane, _) = Pane::spawn(
