@@ -21,7 +21,11 @@ pub struct Config {
     /// Families for what `font` lacks (icons, symbols), in order; unset, an installed Nerd Font.
     pub fallback: Option<Vec<String>>,
     pub size: Option<f32>,
-    pub ligatures: Option<bool>,
+    ligatures: Option<bool>,
+    /// OpenType features, each `tag`, `-tag` or `tag=n` (`feature`), over `ligatures`'.
+    font_features: Option<Vec<String>>,
+    /// The cell's height as a share of the font's: 1 is the font's ascent plus descent.
+    pub line_height: Option<f32>,
     keys: Option<Keys>,
     pub bell: Option<Bell>,
     pub option_as_alt: Option<OptionAsAlt>,
@@ -149,6 +153,20 @@ fn chord(text: &str) -> Option<String> {
     let function = (1..=35).any(|n| key == format!("f{n}"));
     let named = named.split_whitespace().any(|name| name == key);
     (character || function || named).then(|| keystroke.unparse())
+}
+
+/// An OpenType feature as `font_features` writes it: `tag` or `+tag` turns it on, `-tag` off, and
+/// `tag=n` picks the font's alternate n; a tag is four letters or digits.
+fn feature(text: &str) -> Option<(String, u32)> {
+    let (tag, value) = match text.split_once('=') {
+        Some((tag, value)) => (tag, value.parse().ok()?),
+        None => match text.strip_prefix('-') {
+            Some(tag) => (tag, 0),
+            None => (text.strip_prefix('+').unwrap_or(text), 1),
+        },
+    };
+    let tag_like = tag.len() == 4 && tag.chars().all(|c| c.is_ascii_alphanumeric());
+    tag_like.then(|| (tag.to_owned(), value))
 }
 
 /// rtty's own chords and, with `keys = "tutti"`, tutti's direct keys.
@@ -323,6 +341,17 @@ impl Config {
             Regex::new(pattern).map_err(|err| format!("quick_select_patterns: {pattern:?}: {err}"))
         });
         config.quick_select = compiled.collect::<Result<_, _>>()?;
+        if let Some(height) = config.line_height.filter(|height| !(0.5..=3.).contains(height)) {
+            return Err(format!("line_height = {height}: a share of the font's height, 0.5 to 3"));
+        }
+        if let Some(wrong) =
+            config.font_features.iter().flatten().find(|text| feature(text).is_none())
+        {
+            return Err(format!(
+                "font_features: {wrong:?} is not a feature: a four-letter OpenType tag, alone \
+                 (on), after - (off), or with =n (alternate n)"
+            ));
+        }
         config.bindings = defaults(config.keys.unwrap_or_default());
         let mut lines = HashMap::new();
         for (text, name) in config.bind.iter().flatten() {
@@ -346,6 +375,24 @@ impl Config {
             }
         }
         Ok(config)
+    }
+
+    /// The OpenType features text is shaped with: `ligatures`' (on: `calt` and `liga`; off: those
+    /// and `dlig` off), then `font_features`, then `--ligatures`, the last word on a tag winning.
+    pub fn features(&self, overrides: &Overrides) -> Vec<(String, u32)> {
+        let ligatures = |on: bool| {
+            let tags: &[_] = if on { &["calt", "liga"] } else { &["calt", "liga", "dlig"] };
+            tags.iter().map(move |tag| (tag.to_string(), u32::from(on)))
+        };
+        let words = ligatures(self.ligatures.unwrap_or(true))
+            .chain(self.font_features.iter().flatten().filter_map(|text| feature(text)))
+            .chain(overrides.ligatures.into_iter().flat_map(ligatures));
+        let mut features: Vec<(String, u32)> = Vec::new();
+        for (tag, value) in words {
+            features.retain(|(other, _)| *other != tag);
+            features.push((tag, value));
+        }
+        features
     }
 
     /// How long a command must run for its end out of view to be notified: `notify_after`
@@ -437,6 +484,9 @@ mod tests {
             (config.font.as_deref(), config.size, config.ligatures),
             (Some("Menlo"), Some(14.), Some(true))
         );
+        let none = Overrides::default();
+        assert_eq!(config.features(&none), defaults.features(&none));
+        assert_eq!(config.line_height, Some(1.));
         assert_eq!(config.keys.unwrap_or_default(), Keys::default());
         assert_eq!(config.bell.unwrap_or_default(), Bell::default());
         assert_eq!(config.option_as_alt.unwrap_or_default(), OptionAsAlt::default());
@@ -498,6 +548,47 @@ mod tests {
         assert_eq!(config.size, Some(12.));
         assert_eq!(config.ligatures, Some(false));
         assert!(toml::from_str::<Config>("fallback = 'Hack'").is_err(), "a list, not a name");
+    }
+
+    #[test]
+    fn font_features_go_over_ligatures_and_the_command_line_over_both() {
+        let features = |source: &str, ligatures: Option<bool>| {
+            let overrides = Overrides { ligatures, ..Overrides::default() };
+            Config::parse(source).unwrap().features(&overrides)
+        };
+        let tags = |tags: &[(&str, u32)]| -> Vec<(String, u32)> {
+            tags.iter().map(|(tag, value)| (tag.to_string(), *value)).collect()
+        };
+        assert_eq!(features("", None), tags(&[("calt", 1), ("liga", 1)]));
+        let off = tags(&[("calt", 0), ("liga", 0), ("dlig", 0)]);
+        assert_eq!(features("ligatures = false", None), off);
+        assert_eq!(features("", Some(false)), off);
+        let mine = "font_features = ['ss01', '-calt', 'zero', 'cv01=2', '+dlig']";
+        let expected =
+            [("liga", 1), ("ss01", 1), ("calt", 0), ("zero", 1), ("cv01", 2), ("dlig", 1)];
+        assert_eq!(features(mine, None), tags(&expected));
+        // `--ligatures` has the last word on the tags it names.
+        let expected = [("zero", 1), ("calt", 1), ("liga", 1)];
+        assert_eq!(features("font_features = ['-calt', 'zero']", Some(true)), tags(&expected));
+    }
+
+    #[test]
+    fn font_feature_and_line_height_mistakes_are_errors() {
+        for wrong in ["cal", "-", "calt=x", "ss01 ", "ligatures", "-c lt", "=1"] {
+            let err = Config::parse(&format!("font_features = ['{wrong}']")).unwrap_err();
+            assert!(
+                err.starts_with(&format!("font_features: {wrong:?} is not a feature")),
+                "{err}"
+            );
+        }
+        assert!(Config::parse("font_features = 'calt'").is_err(), "a list, not a tag");
+        let height = |source: &str| Config::parse(source).map(|config| config.line_height);
+        assert_eq!(height("line_height = 1.2").unwrap(), Some(1.2));
+        assert_eq!(height("").unwrap(), None);
+        for wrong in ["0.4", "3.5", "nan"] {
+            let err = height(&format!("line_height = {wrong}")).unwrap_err();
+            assert!(err.ends_with("a share of the font's height, 0.5 to 3"), "{err}");
+        }
     }
 
     #[test]

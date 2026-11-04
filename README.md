@@ -34,11 +34,11 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `--config FILE` | read this config file instead of `~/.config/rtty/config.toml` (it must exist) |
 | `--font NAME` | font family (default Menlo); an unknown family is an error |
 | `--size PT` | font size in points (default 14) |
-| `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`; default on |
+| `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`, over the config's `ligatures` and `font_features`; default on |
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -105,6 +105,8 @@ font = "FiraCode Nerd Font"
 fallback = ["Symbols Nerd Font Mono"]  # for what `font` lacks, in order (Fonts, below)
 size = 12
 ligatures = true
+font_features = ["ss01", "zero"]  # OpenType features, over `ligatures`' (Fonts, below)
+line_height = 1.2                 # the cell's height as a share of the font's; 1 by default
 scheme_dark = "OneDark Pro"       # the default
 scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
@@ -152,7 +154,7 @@ file's keys. What changes, and when:
 
 | Keys | Take effect |
 | --- | --- |
-| `font`, `fallback`, `size`, `ligatures` | at once in every pane of every window, which reshapes its text and refits its cells; a size set with `Cmd+=`/`Cmd+-` stays unless `size` itself changed, and `Cmd+0` goes back to the new `size` |
+| `font`, `fallback`, `size`, `ligatures`, `font_features`, `line_height` | at once in every pane of every window, which reshapes its text and refits its cells; a size set with `Cmd+=`/`Cmd+-` stays unless `size` itself changed, and `Cmd+0` goes back to the new `size` |
 | `scheme`, `scheme_dark`, `scheme_light`, and an edit to a scheme file they name | at once: every pane, the tab bar and the dividers repaint, and a program that asked for DEC mode 2031 hears of a flip between dark and light |
 | `keys`, `[bind]` | at once, for the next chord |
 | `option_as_alt`, `minimum_contrast` | at once |
@@ -189,6 +191,25 @@ macOS's own fallback (emoji, CJK). macOS's knows no font with Nerd Font icons, s
 else the first `… Nerd Font Mono` family by name, else the first `… Nerd Font`. rtty bundles no
 font; with no Nerd Font installed the icons stay missing. An unknown family, in `font` or in
 `fallback`, is an error.
+
+**Font features.** `font_features` turns OpenType features of the font on and off, as CoreText
+shapes the text: `"ss01"` or `"+ss01"` turns one on, `"-calt"` off, and `"cv01=2"` picks the
+font's second alternate where a feature has several. A tag is four letters or digits; anything else
+is an error. Which features there are is the font's: Fira Code's `zero` slashes its zero and `ss01`
+gives another `r`, and a font without a feature ignores it. `ligatures` is two of these features
+too ([Ligatures](#ligatures)): `true` turns on `calt` and `liga`, `false` turns off those and
+`dlig`. The words apply in order, the last on a tag winning: `ligatures`, then `font_features`, then
+`--ligatures`. So `font_features = ["-calt"]` turns off the contextual alternates that make Fira
+Code's, JetBrains Mono's and Cascadia's `->` and `!=`, and `"-liga"` the standard ligatures some
+other fonts use; `--ligatures on` turns them back on for that launch.
+
+**Line height.** `line_height` makes the cell taller (or shorter) than the font's ascent plus
+descent, from 0.5 to 3 times it, rounded up to whole points; the text is centered in the taller
+cell. Box drawing, block and powerline characters, which rtty draws itself, fill the whole cell, so
+they still join from row to row. An underline keeps its place under the text, and a strikethrough
+through it; in a cell shorter than the font's text (below about 0.95 for Menlo) they rise to stay
+inside the cell, never in the next row's: the underline to the cell's bottom, a double or curly one
+to a thickness above it.
 
 rtty draws box drawing (U+2500–257F), block elements (U+2580–259F) and the powerline separators
 (U+E0B0–E0BF) itself, filling each cell exactly: lines meet the next cell's, blocks tile, and the
@@ -728,7 +749,10 @@ while the window is occluded, so `--stats` prints nothing for a hidden window.
 
 Programming ligatures (`->`, `=>`, `!=`, `===`, `<=`, `|>`, …) render with fonts that have them
 (checked with Fira Code, JetBrains Mono, Iosevka and Victor Mono). `--ligatures off` turns off the
-font's `calt`, `liga` and `dlig` features.
+font's `calt`, `liga` and `dlig` features; `font_features` turns off (or on) any one of them, over
+`ligatures` ([Fonts](#configuration)). rtty's own part below (runs shaped whole, glyphs snapped to
+their cells, the cursor's cell alone) is the same whatever the features: it only lets the font's
+ligatures form, and with `calt` and `liga` off the font forms none.
 
 - Each run of single-width cells with the same foreground, background and font style goes
   through CoreText as one string, so the font's contextual alternates can form.

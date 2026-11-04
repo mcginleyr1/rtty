@@ -6,6 +6,8 @@
 # fallback = ["Symbols Nerd Font Mono"]  # unset: an installed Nerd Font
 # size = 14
 # ligatures = true
+# font_features = []                     # OpenType features over those: "ss01", "-calt", "cv01=2"
+# line_height = 1                        # the cell's height, as a share of the font's
 # scheme_dark = "OneDark Pro"
 # scheme_light = "Solarized Light"
 # scheme = "Solarized Dark"              # one scheme whatever the appearance, for the two above

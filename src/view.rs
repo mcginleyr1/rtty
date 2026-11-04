@@ -89,6 +89,8 @@ pub struct Settings {
     pub font_size: Pixels,
     /// The configured size (`size`, or `--size`), which Cmd+0 goes back to.
     pub size: Pixels,
+    /// The cell's height as a share of the font's (`line_height`).
+    pub line_height: f32,
     pub theme: Theme,
     /// Every chord rtty acts on and its action (`Config::bindings`).
     pub bindings: BTreeMap<String, Bound>,
@@ -307,6 +309,7 @@ struct CacheKey {
     size: (u16, u16),
     font: Font,
     font_size: Pixels,
+    cell: Size<Pixels>,
 }
 
 #[derive(Clone)]
@@ -967,6 +970,37 @@ impl PaneView {
             f32::from(settings.font_size),
             font.features
         );
+        // The cell, and where text sits in it: centered, whatever `line_height` adds.
+        let Metrics { cell, ascent, descent } = metrics(text_system, settings);
+        let text = (cell.height - ascent - descent) / 2.;
+        let _ = writeln!(
+            out,
+            "cell {:.2}x{:.2} line_height {} text {:.2}..{:.2}",
+            f32::from(cell.width),
+            f32::from(cell.height),
+            settings.line_height,
+            f32::from(text),
+            f32::from(text + ascent + descent)
+        );
+        // A drawn character's shapes in the device pixels `paint_drawn` gives them.
+        let scale = window.scale_factor();
+        let (width, height) = (cell.width * scale, cell.height * scale);
+        let (width, height) = (f32::from(width).round(), f32::from(height).round());
+        let thickness = self.cache.last.as_ref().map_or(px(1.), |frame| frame.thickness);
+        let light = (f32::from(thickness) * scale).round().max(1.);
+        let drawn_rows = |c: char| {
+            let ys =
+                glyphs::shapes(c, width, height, light).into_iter().flat_map(|shape| match shape {
+                    Shape::Rect { y, h, .. } => vec![y, y + h],
+                    Shape::Fill(segs) | Shape::Stroke(_, segs) => segs
+                        .into_iter()
+                        .map(|seg| match seg {
+                            Seg::Move(_, y) | Seg::Line(_, y) | Seg::Curve { to: (_, y), .. } => y,
+                        })
+                        .collect(),
+                });
+            ys.fold((height, 0_f32), |(top, bottom), y| (top.min(y), bottom.max(y)))
+        };
         let term = self.pane.lock();
         let palette = Palette::new(&term, &self.scheme, minimum_contrast);
         let (rows, cols) = term.size();
@@ -1115,7 +1149,14 @@ impl PaneView {
                 }
             }
             for drawn in &line.drawn {
-                let _ = writeln!(out, "  drawn {} {:?} {}", drawn.col, drawn.c, hex(drawn.fg));
+                let (top, bottom) = drawn_rows(drawn.c);
+                let _ = writeln!(
+                    out,
+                    "  drawn {} {:?} {} device rows {top}..{bottom} of {height}",
+                    drawn.col,
+                    drawn.c,
+                    hex(drawn.fg)
+                );
             }
         }
         if let Some((start, end)) = selection {
@@ -1418,7 +1459,7 @@ impl PaneView {
         let (font, font_size) = (settings.font.clone(), settings.font_size);
         let minimum_contrast = settings.minimum_contrast;
         let text_system = window.text_system().clone();
-        let Metrics { cell, ascent, descent } = metrics(&text_system, &font, font_size);
+        let Metrics { cell, ascent, descent } = metrics(&text_system, settings);
         let (rows, cols, _) = self.grid;
         let focused = self.focus.is_focused(window) && window.is_window_active();
 
@@ -1471,6 +1512,7 @@ impl PaneView {
             size: (rows, cols),
             font: font.clone(),
             font_size,
+            cell,
         };
         if cache.key.as_ref() != Some(&key) {
             cache.rows.clear();
@@ -1547,14 +1589,14 @@ impl PaneView {
             );
             (backdrop, cursor_bounds.origin, line)
         });
-        let padding = (cell.height - ascent - descent) / 2.;
-        let baseline = padding + ascent;
+        let thickness = px((f32::from(font_size) / 14.).round().max(1.));
+        let (underline, strike) = decorations(cell.height, ascent, descent, thickness);
         let frame = Frame {
             bounds,
             cell,
-            underline: baseline + descent * 0.618,
-            strike: (ascent * 0.5 + baseline) * 0.5,
-            thickness: px((f32::from(font_size) / 14.).round().max(1.)),
+            underline,
+            strike,
+            thickness,
             background: hsla(scene.bg),
             rows: (0..rows)
                 .filter_map(|row| Some((row, cache.rows.get(&(top + u64::from(row)))?.clone())))
@@ -1658,11 +1700,14 @@ fn decorate(run: &Run, origin: Point<Pixels>, frame: &Frame, window: &mut Window
     match run.style.underline {
         Underline::None => {}
         Underline::Single => line(window, y, underline),
+        // Two lines and the wave reach a thickness further down, still inside the cell.
         Underline::Double => {
+            let y = y.min(cell.height - thick * 2.);
             line(window, y - thick, underline);
             line(window, y + thick, underline);
         }
         Underline::Curly => {
+            let y = y.min(cell.height - thick * 2.);
             let style =
                 UnderlineStyle { color: Some(hsla(underline)), thickness: thick, wavy: true };
             window.paint_underline(origin + point(px(0.), y - thick), width, &style);
@@ -1774,14 +1819,16 @@ pub struct Metrics {
     pub descent: Pixels,
 }
 
-/// The cell is the font's advance of `m` wide and its ascent plus descent tall, whole pixels.
-pub fn metrics(text_system: &WindowTextSystem, font: &Font, font_size: Pixels) -> Metrics {
-    let font_id = text_system.resolve_font(font);
+/// The cell is the font's advance of `m` wide and `line_height` times its ascent plus descent
+/// tall, whole pixels; text is centered in it, and drawn characters fill it.
+pub fn metrics(text_system: &WindowTextSystem, settings: &Settings) -> Metrics {
+    let (font_size, line_height) = (settings.font_size, settings.line_height);
+    let font_id = text_system.resolve_font(&settings.font);
     let width =
         text_system.advance(font_id, font_size, 'm').expect("the terminal font has an 'm'").width;
     let ascent = text_system.ascent(font_id, font_size);
     let descent = text_system.descent(font_id, font_size).abs();
-    Metrics { cell: size(width, (ascent + descent).ceil()), ascent, descent }
+    Metrics { cell: size(width, ((ascent + descent) * line_height).ceil()), ascent, descent }
 }
 
 /// The run shaped as one string, every glyph on its cell and kept to it.
@@ -1880,6 +1927,20 @@ fn fit_ink(
         false => px(0.),
     };
     Some(Fit { scale, offset: point(x, y) })
+}
+
+/// Where, from a cell's top, its underline and its strikethrough go: a bit under the baseline of
+/// text centered in the cell, and through the middle of its lowercase letters. Each line,
+/// `thickness` tall, stays inside the cell however short `line_height` makes it.
+fn decorations(
+    cell: Pixels,
+    ascent: Pixels,
+    descent: Pixels,
+    thickness: Pixels,
+) -> (Pixels, Pixels) {
+    let baseline = (cell - ascent - descent) / 2. + ascent;
+    let last = cell - thickness;
+    ((baseline + descent * 0.618).min(last), ((ascent * 0.5 + baseline) * 0.5).min(last))
 }
 
 /// The run's glyphs, those `fit` moved where it put them.
@@ -2262,6 +2323,23 @@ mod tests {
 
     fn ink(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    /// In Menlo 14's cell (its ascent and descent, as `metrics` gets them) at each line height.
+    #[test]
+    fn the_underline_and_strikethrough_keep_inside_the_cell_at_any_line_height() {
+        let (ascent, descent, thickness) = (px(13.), px(3.3), px(1.));
+        let cell = |line_height: f32| ((ascent + descent) * line_height).ceil();
+        // At 1, as before line_height: under the baseline (13.35 down), through the letters.
+        let (underline, strike) = decorations(cell(1.), ascent, descent, thickness);
+        assert!((f32::from(underline) - 15.39).abs() < 0.01, "{underline:?}");
+        assert!((f32::from(strike) - 9.93).abs() < 0.01, "{strike:?}");
+        for line_height in [0.5, 0.6, 0.75, 0.85, 1., 1.5, 3.] {
+            let cell = cell(line_height);
+            let (underline, strike) = decorations(cell, ascent, descent, thickness);
+            assert!(underline + thickness <= cell && strike + thickness <= cell, "{line_height}");
+            assert!(underline > strike, "{line_height}");
+        }
     }
 
     /// An icon twice a 10×20 cell's width, its ink from 0 to 20 across and from the baseline up

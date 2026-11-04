@@ -278,7 +278,6 @@ struct Loaded {
     theme: Theme,
     family: String,
     size: f32,
-    ligatures: bool,
 }
 
 fn load(path: Option<&Path>, overrides: &Overrides) -> Result<Loaded, String> {
@@ -297,19 +296,18 @@ fn load(path: Option<&Path>, overrides: &Overrides) -> Result<Loaded, String> {
     let theme = config.theme(&scheme::load(&scheme_dirs)?)?;
     let family = overrides.font.clone().or(config.font.clone()).unwrap_or_else(|| "Menlo".into());
     let size = overrides.size.or(config.size).unwrap_or(14.);
-    let ligatures = overrides.ligatures.or(config.ligatures).unwrap_or(true);
     if size <= 0. || !size.is_finite() {
         return Err(format!("font size {size} is not a positive number of points"));
     }
-    Ok(Loaded { config, theme, family, size, ligatures })
+    Ok(Loaded { config, theme, family, size })
 }
 
 /// `Settings` as `loaded` says, for `launch`: the font once its families are known to be
 /// installed (with no `fallback`, an installed Nerd Font, `nerd_font`), and the shell
 /// integration's scripts written beside the socket.
 fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String> {
-    let Loaded { config, theme, family, size, ligatures } = loaded;
-    let notify_after = config.notify_after();
+    let Loaded { config, theme, family, size } = loaded;
+    let (notify_after, features) = (config.notify_after(), config.features(&launch.overrides));
     let installed = cx.text_system().all_font_names();
     let fallbacks = config.fallback.unwrap_or_else(|| nerd_font(&installed).into_iter().collect());
     if let Some(missing) =
@@ -318,11 +316,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         return Err(format!("no font family named {missing:?}"));
     }
     let mut font = font(family);
-    font.features = FontFeatures(Arc::new(if ligatures {
-        vec![("calt".into(), 1), ("liga".into(), 1)]
-    } else {
-        vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
-    }));
+    font.features = FontFeatures(Arc::new(features));
     // Ahead of macOS's own cascade, which knows no font with Nerd Font icons.
     font.fallbacks = (!fallbacks.is_empty()).then(|| FontFallbacks::from_fonts(fallbacks));
     let dir = launch.socket.parent().expect("the socket is in its directory");
@@ -336,6 +330,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         font,
         font_size: px(size),
         size: px(size),
+        line_height: config.line_height.unwrap_or(1.),
         theme,
         notify_after,
         bindings: config.bindings,

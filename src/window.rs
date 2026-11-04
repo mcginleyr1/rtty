@@ -567,7 +567,7 @@ impl TerminalWindow {
     /// The cells the panes share, the size of a cell, and the height of the bar above them.
     fn area(&self, window: &Window, cx: &App) -> (Rect, Size<Pixels>, Pixels) {
         let settings = cx.global::<Settings>();
-        let cell = metrics(window.text_system(), &settings.font, settings.font_size).cell;
+        let cell = metrics(window.text_system(), settings).cell;
         let bar = px(self.bar(window).height);
         let viewport = window.viewport_size();
         // Half a pixel short of a cell still counts: window sizes round.
