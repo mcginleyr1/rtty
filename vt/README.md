@@ -21,6 +21,9 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
   (OSC 133;D, the first of a run), the reports and key encodings a killed
   program left on go off, there in the stream (mouse, 1004, 2031,
   modifyOtherKeys, kitty's flags; bracketed paste, DECCKM and DECKPAM stay).
+- `clear()`: the host's own clear (rtty's Cmd+K) drops the primary screen's
+  scrollback whichever screen is up, and blanks the primary screen without
+  ED 2's push into the scrollback; the alternate screen stays.
 - Resize reflows the primary screen (scrollback included); the alternate
   screen is cut or padded.
 - Unicode: `unicode-width` per character, grapheme clusters by

@@ -392,6 +392,19 @@ impl Terminal {
         self.cell_pixels = Some((width, height));
     }
 
+    /// The host's clear (Cmd+K): the primary screen's scrollback goes,
+    /// whichever screen is up (ED 3 reaches it only from the primary), and
+    /// while the primary is up its rows are blanked too, without ED 2's push
+    /// into the scrollback. The cursor stays where it is.
+    pub fn clear(&mut self) {
+        self.grid.clear_history();
+        if !self.grid.alt_active {
+            for row in 0..self.grid.rows {
+                self.reset_line(row, Color::Default);
+            }
+        }
+    }
+
     /// The visible screen as text: rows joined by newlines, a soft-wrapped
     /// row run on into the next, trailing spaces and blank rows trimmed.
     pub fn contents(&self) -> String {

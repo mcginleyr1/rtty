@@ -87,6 +87,28 @@ fn clearing_the_screen_scrolls_it_back_and_clearing_the_scrollback_drops_it() {
 }
 
 #[test]
+fn the_hosts_clear_drops_the_scrollback_and_blanks_only_the_primary_screen() {
+    let mut term = Terminal::new(3, 20, 100);
+    term.advance(numbered(0, 6).as_bytes());
+    term.advance(b"$ ");
+    term.take_damage();
+    term.clear();
+    // Nothing pushed into the scrollback, every row blank and redrawn, the cursor where it was.
+    assert_eq!((term.oldest_row(), term.screen_top()), (4, 4));
+    assert_eq!(screen(&term), ["", "", ""]);
+    assert_eq!(term.take_damage(), [0, 1, 2]);
+    assert_eq!(term.cursor_position(), (2, 2));
+    // Under the alternate screen only the primary's scrollback goes.
+    term.advance(format!("{}\x1b[?1049h\x1b[Hfull screen", numbered(10, 5)).as_bytes());
+    assert!(term.screen_top() > term.oldest_row());
+    term.clear();
+    assert_eq!(term.oldest_row(), term.screen_top());
+    assert_eq!(screen(&term), ["full screen", "", ""]);
+    term.advance(b"\x1b[?1049l");
+    assert_eq!(screen(&term), ["L13", "L14", ""]);
+}
+
+#[test]
 fn rows_deleted_at_the_top_go_into_the_scrollback() {
     let mut term = Terminal::new(3, 10, 100);
     term.advance(b"a\r\nb\r\nc\x1b[H\x1b[M");
