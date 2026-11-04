@@ -32,8 +32,10 @@
 //! bar click new          ... on the +
 //! bar hover tab N|new|none   the pointer onto tab N's pill or the +, or off the bar
 //! answer ok|cancel       press a button on the question closing asked first (Cmd+W, a tab's
-//!                        close button, the window's, Cmd+Q), which a scripted window keeps in
+//!                        close button, the window's, quitting), which a scripted window keeps in
 //!                        its dump instead of showing a sheet
+//! terminate              AppKit's `terminate:`, in process, as the dock's Quit and logging out
+//!                        start it: it asks first, and AppKit waits for the answer
 //! window close N         the close button of window N (from 1, in the order they opened), as a
 //!                        click on it goes on; not the script's own window
 //! menu MENU ITEM         the menu bar's item (`menu Shell Split Right`): the action it carries,
@@ -55,9 +57,9 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, OwnedMenuItem, Pixels, Point, ScrollDelta, ScrollWheelEvent,
     TouchPhase, WeakEntity, Window, WindowAppearance, WindowHandle, point,
 };
-use objc2::MainThreadMarker;
+use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
-use objc2_foundation::{NSPoint, NSString};
+use objc2_foundation::{NSObjectNSDelayedPerforming, NSPoint, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::tabbar::Hit;
@@ -103,6 +105,7 @@ pub enum Step {
     BarClick(Hit),
     BarHover(Option<Hit>),
     Answer(usize),
+    Terminate,
     WindowClose(usize),
     /// The menu's title, the item's.
     Menu(String, String),
@@ -277,6 +280,7 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 Step::Resize { rows: size[0], cols: size[1] }
             }
             "dump" if !rest.is_empty() => Step::Dump(rest.trim().into()),
+            "terminate" => Step::Terminate,
             "quit" => Step::Quit,
             _ => return Err(error("unknown step")),
         };
@@ -508,10 +512,17 @@ async fn perform(
                 .map_err(|err| err.to_string())?;
             std::fs::write(path, dump).map_err(|err| format!("{}: {err}", path.display()))?;
         }
-        Step::Quit => {
-            crate::note("quitting: the script's quit");
-            cx.update(|_, cx| cx.quit()).map_err(|err| err.to_string())?
+        // From the run loop, as AppKit handles the quit Apple event: AppKit waits for the
+        // question's answer inside `terminate:`, and the steps after it run meanwhile.
+        Step::Terminate => {
+            let app =
+                NSApplication::sharedApplication(MainThreadMarker::new().expect("main thread"));
+            // SAFETY: `terminate:` takes the sender, which may be nil.
+            unsafe { app.performSelector_withObject_afterDelay(sel!(terminate:), None, 0.) }
         }
+        Step::Quit => cx
+            .update(|_, cx| crate::app::quit("the script's quit", cx))
+            .map_err(|err| err.to_string())?,
     }
     Ok(())
 }
@@ -634,6 +645,7 @@ mod tests {
         let answers = parse("answer ok\nanswer cancel").unwrap();
         assert!(matches!((&answers[0].1, &answers[1].1), (Step::Answer(0), Step::Answer(1))));
         assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
+        assert!(matches!(parse("terminate").unwrap()[0].1, Step::Terminate));
         assert!(matches!(parse("window close 2").unwrap()[0].1, Step::WindowClose(1)));
         for wrong in ["window close 0", "window close", "window open 2"] {
             assert!(parse(wrong).unwrap_err().contains("window close N, from 1"), "{wrong}");

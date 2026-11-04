@@ -1,17 +1,32 @@
-//! rtty as a macOS app: its menu bar, whose items run `[bind]`'s actions and show their chords.
+//! rtty as a macOS app: its menu bar, whose items run `[bind]`'s actions and show their chords,
+//! and the question before quitting however macOS asks rtty to quit.
 
+use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::{mem, ptr};
 
-use gpui::{App, Menu, MenuItem, actions};
-use objc2::MainThreadMarker;
+use gpui::{App, AsyncApp, Menu, MenuItem, actions};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSEventModifierFlags as Flags, NSMenu};
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::{MainThreadMarker, sel};
+use objc2_app_kit::{
+    NSApplication, NSApplicationTerminateReply as Reply, NSEventModifierFlags as Flags, NSMenu,
+};
 use objc2_foundation::NSString;
 
 use crate::config::Action;
 
 actions!(rtty, [About, Hide, HideOthers, ShowAll]);
+
+thread_local! {
+    /// The app, for what AppKit calls outside GPUI.
+    static APP: OnceCell<AsyncApp> = const { OnceCell::new() };
+    /// rtty decided to quit: `applicationShouldTerminate:` lets it go without asking.
+    static QUITTING: Cell<bool> = const { Cell::new(false) };
+    /// AppKit asked whether rtty may quit, and waits for the answer.
+    static WAITING: Cell<bool> = const { Cell::new(false) };
+}
 
 /// A menu item's title and the `[bind]` action it runs; none for a line between items.
 type Item = (&'static str, Option<Action>);
@@ -82,6 +97,7 @@ const MENUS: &[(&str, &[Item])] = &[
 
 /// The menu bar, and what its app-wide items do.
 pub fn init(bindings: &BTreeMap<String, Action>, cx: &mut App) {
+    APP.with(|app| app.set(cx.to_async()).ok().expect("rtty starts once"));
     cx.on_action(|_: &About, _| {
         NSApplication::sharedApplication(main_thread()).orderFrontStandardAboutPanel(None)
     });
@@ -89,6 +105,67 @@ pub fn init(bindings: &BTreeMap<String, Action>, cx: &mut App) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     menus(bindings, cx);
+}
+
+/// Has macOS ask rtty before it quits it (the dock's Quit, logging out, a quit Apple event), by
+/// giving GPUI's application delegate the `applicationShouldTerminate:` it lacks; before the app
+/// runs, so AppKit sees it on its delegate from the start.
+pub fn ask_before_terminating() {
+    let delegate = AnyClass::get(c"GPUIApplicationDelegate").expect("GPUI's application delegate");
+    let method: extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> Reply = should_terminate;
+    // SAFETY: `method` takes and returns what `applicationShouldTerminate:` does (`Q@:@`), and
+    // the class is GPUI's live delegate class, which adding a method to leaves as it was.
+    let added = unsafe {
+        objc2::ffi::class_addMethod(
+            ptr::from_ref(delegate).cast_mut(),
+            sel!(applicationShouldTerminate:),
+            mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> Reply, Imp>(
+                method,
+            ),
+            c"Q@:@".as_ptr(),
+        )
+    };
+    assert!(added.as_bool(), "GPUI's delegate answers applicationShouldTerminate: itself");
+}
+
+/// `applicationShouldTerminate:`. A quit rtty decided on goes on; any other asks first, as
+/// `Cmd+Q` does (`window::quit`), and AppKit waits for the answer (`quit`, `stay`).
+extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) -> Reply {
+    if !QUITTING.get() {
+        crate::note("macOS asked rtty to quit: the dock's Quit, logging out, or a quit event");
+        APP.with(|app| app.get().map(|app| app.update(crate::window::quit)));
+    }
+    if QUITTING.get() {
+        return Reply::TerminateNow;
+    }
+    WAITING.set(true);
+    Reply::TerminateLater
+}
+
+/// Quits: tells AppKit to go on when it waits on the question (`should_terminate`), else asks
+/// it to terminate, which then asks nothing.
+pub fn quit(why: &str, cx: &mut App) {
+    crate::note(&format!("quitting: {why}"));
+    QUITTING.set(true);
+    if WAITING.take() { reply(true) } else { cx.quit() }
+}
+
+/// The question quitting asked was cancelled: AppKit, when it waits on it, hears so.
+pub fn stay() {
+    if WAITING.take() {
+        reply(false)
+    }
+}
+
+/// From a later turn of the run loop: AppKit, terminating, calls GPUI back.
+fn reply(go: bool) {
+    APP.with(|app| {
+        let app = app.get().expect("rtty runs");
+        let terminate = async move {
+            NSApplication::sharedApplication(main_thread()).replyToApplicationShouldTerminate(go)
+        };
+        app.foreground_executor().spawn(terminate).detach()
+    })
 }
 
 /// Sets the menu bar (`bar`).
@@ -185,6 +262,20 @@ mod tests {
             _ => None,
         });
         found.unwrap_or_else(|| panic!("no {title} in {menu}"))
+    }
+
+    #[test]
+    fn gpuis_delegate_answers_whether_rtty_may_quit() {
+        ask_before_terminating();
+        let delegate = AnyClass::get(c"GPUIApplicationDelegate").unwrap();
+        assert!(delegate.instance_method(sel!(applicationShouldTerminate:)).is_some());
+        // With no app to ask on, AppKit waits; a quit rtty decided on goes on at once.
+        let object = objc2_foundation::NSObject::new();
+        let ask = || should_terminate(&object, sel!(applicationShouldTerminate:), ptr::null_mut());
+        assert_eq!(ask(), Reply::TerminateLater);
+        assert!(WAITING.take());
+        QUITTING.set(true);
+        assert_eq!(ask(), Reply::TerminateNow);
     }
 
     #[test]

@@ -19,7 +19,7 @@ libc = "0.2"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSDockTile", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSResponder", "NSTextInputContext", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSGeometry", "NSString", "NSError", "NSSet", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSError", "NSSet", "NSURL"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 portable-pty = "0.9"
 # The window's NSView, for `--script`'s `nskey`.

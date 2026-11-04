@@ -318,8 +318,9 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     view.window()
 }
 
-/// Cmd+Q: quits, once what runs in any window is confirmed, asked on the active window (else the
-/// first). A window a close hid is closed already.
+/// Quitting, however asked for (Cmd+Q, the menu's Quit, and through `app::should_terminate` the
+/// dock's Quit and logging out): quits once what runs in any window is confirmed, asked on the
+/// active window (else the first). A window a close hid is closed already.
 pub fn quit(cx: &mut App) {
     let hidden = hidden_window(cx);
     let windows: Vec<WindowHandle<TerminalWindow>> = cx
@@ -335,15 +336,13 @@ pub fn quit(cx: &mut App) {
         .collect();
     let active = cx.active_window().and_then(|window| window.downcast::<TerminalWindow>());
     let quit = |_: &mut TerminalWindow, _: &mut Window, cx: &mut Context<TerminalWindow>| {
-        crate::note("quitting: Cmd+Q");
-        cx.quit()
+        crate::app::quit("as asked", cx)
     };
     let asked = active.or(windows.first().copied()).map(|asker| {
         asker.update(cx, |this, window, cx| this.confirm(Closing::Quit, running, window, cx, quit))
     });
     if !matches!(asked, Some(Ok(()))) {
-        crate::note("quitting: Cmd+Q");
-        cx.quit()
+        crate::app::quit("as asked, with no window to ask on", cx)
     }
 }
 
@@ -874,6 +873,8 @@ impl TerminalWindow {
             crate::note(&format!("{question} {}", if go { button } else { "Cancel" }));
             if go {
                 this.update_in(cx, |this, window, cx| then(this, window, cx)).ok();
+            } else if closing == Closing::Quit {
+                crate::app::stay();
             }
         })
         .detach();

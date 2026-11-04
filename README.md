@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, a menu bar item's action, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--restore` | with `--script`: restore the saved layout and save it, as a normal launch does ([Restoring windows](#configuration)); the script drives the first window |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
@@ -374,13 +374,16 @@ exists for Terminal.app alone, and the foreground process is what answers. A pan
 program exits, with the same cascade as `Cmd+W`.
 
 **Closing what runs.** Closing a pane (`close-pane`, whatever chord it is bound to), a tab (its
-×), a window (its close button) or rtty (`Cmd+Q`) asks first, in a sheet on the window, while
+×), a window (its close button) or rtty (`Cmd+Q`, the menu's Quit, the dock's Quit, logging out)
+asks first, in a sheet on the window, while
 anything other than a pane's shell at its prompt holds that pane's foreground (the pty's process
 group, as titles find it): an agent, Neovim, a build. A pane's question names its program; a
 tab's, a window's and the quit's count the panes running something and name what each runs.
 `Close` (or `Quit`, the default button) goes on and `Cancel` (Esc) keeps everything. A pane
 whose shell sits at its prompt closes at once, as does a pane whose program exits.
-`confirm_close = false` never asks. Known limits: only the login shell rtty starts itself counts
+`confirm_close = false` never asks. When macOS quits rtty (the dock's Quit, logging out), it waits
+for the answer, through `applicationShouldTerminate:`: `Quit` lets the logout go on, `Cancel`
+stops it. Known limits: only the login shell rtty starts itself counts
 as a shell, so a pane started with `rtty -e /bin/zsh` asks even at an idle prompt; and a command
 forked a moment before the close may not hold the foreground yet, and then is not seen as
 running.
@@ -776,7 +779,9 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   `main.rs` turns them into the `Settings` global every window and pane reads as it draws and
   acts, and at a reload replaces it and the keymap whole.
 - `app.rs` — rtty as a macOS app: the menu bar, a table of titles and `[bind]` actions, each
-  item the GPUI action its chord runs (`gpui_action` in `main.rs`), so macOS shows the chord.
+  item the GPUI action its chord runs (`gpui_action` in `main.rs`), so macOS shows the chord; and
+  `applicationShouldTerminate:`, added to GPUI's application delegate at startup, which asks
+  `window::quit`'s question and answers AppKit later (`NSTerminateLater`).
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
   escaped for a shell, unit tested (the escaping against sh and zsh themselves).
@@ -904,7 +909,10 @@ screen. Closing's question is checked through the `--script` dump, where a scrip
 it, and its `answer` step, and the window's close button through its `window close` step, which
 runs what a click runs; the native sheet itself, its buttons and Esc, the click on the close
 button as AppKit sends it, the dock's badge and the progress line's look are not yet checked by
-eye. Quitting another way than `Cmd+Q` (the dock's Quit, logging out) asks nothing. The menu
+eye. Quitting as macOS asks is checked with `--script`'s `terminate` step, which sends AppKit's
+`terminate:` from the run loop, in process: the question, `Cancel` keeping rtty, `Quit` quitting
+it, and nothing asked over an idle shell; the dock's Quit and a logout themselves are not yet
+checked. The menu
 bar's chords are checked in the `--script` dump, which lists the menus as AppKit has them, and its
 items by `--script`'s `menu` step, which dispatches an item's action to the scripted window (a
 click dispatches it to the key window, which a scripted window never is); the menus' look and a

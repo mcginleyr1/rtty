@@ -506,6 +506,7 @@ fn run(options: Options) -> Result<(), String> {
         clipboard,
         prompts: script.is_none(),
     };
+    app::ask_before_terminating();
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
         let settings = settings(loaded, launch, cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
@@ -665,8 +666,7 @@ fn run(options: Options) -> Result<(), String> {
         cx.on_window_closed(|cx| {
             window::refresh_badge(cx);
             if cx.windows().is_empty() {
-                note("quitting: the last window closed");
-                cx.quit()
+                app::quit("the last window closed", cx)
             }
         })
         .detach();
