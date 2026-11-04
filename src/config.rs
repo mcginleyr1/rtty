@@ -52,6 +52,8 @@ pub struct Config {
     pub quick_select: Vec<Regex>,
     /// The windows' layout is saved as it changes and restored at the next launch.
     pub restore_layout: Option<bool>,
+    /// Programs show images with kitty's graphics protocol.
+    pub graphics: Option<bool>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -497,7 +499,7 @@ mod tests {
         assert_eq!(config.notify_after(), defaults.notify_after());
         assert_eq!((config.confirm_close, config.click_to_move), (Some(true), Some(true)));
         assert!(config.editor.is_some() && config.quick_select.is_empty());
-        assert_eq!(config.restore_layout, Some(true));
+        assert_eq!((config.restore_layout, config.graphics), (Some(true), Some(true)));
         assert_eq!(config.bindings["alt-\\"], Action::SplitRight);
         assert!(!config.bindings.contains_key("cmd-shift-d"));
     }
@@ -773,11 +775,13 @@ mod tests {
         let defaults: Config = toml::from_str("").unwrap();
         assert_eq!(defaults.shell_integration.unwrap_or_default(), ShellIntegration::Auto);
         assert_eq!(defaults.notify_after(), Some(Duration::from_secs(10)), "the default notifies");
-        assert_eq!(defaults.click_to_move, None);
-        let source = "shell_integration = 'none'\nnotify_after = 0\nclick_to_move = false";
+        assert_eq!((defaults.click_to_move, defaults.graphics), (None, None));
+        let source =
+            "shell_integration = 'none'\nnotify_after = 0\nclick_to_move = false\ngraphics = false";
         let config: Config = toml::from_str(source).unwrap();
         assert_eq!(config.shell_integration, Some(ShellIntegration::None));
         assert_eq!((config.notify_after(), config.click_to_move), (None, Some(false)));
+        assert_eq!(config.graphics, Some(false));
         let soon: Config = toml::from_str("notify_after = 3").unwrap();
         assert_eq!(soon.notify_after(), Some(Duration::from_secs(3)));
         let err = toml::from_str::<Config>("shell_integration = 'zsh'").unwrap_err().to_string();

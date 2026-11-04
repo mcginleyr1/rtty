@@ -23,6 +23,7 @@
 # editor = ["nvim", "+{line}", "{path}"]  # what edits a file Cmd+click opens; unset: $EDITOR
 # quick_select_patterns = []             # regexes quick select labels too
 # restore_layout = true                  # windows, tabs, splits and directories come back
+# graphics = true                        # programs show images (kitty's graphics protocol)
 
 # [bind]                                 # chords and the actions they run, over the defaults
 # "alt-\\" = "split-right"

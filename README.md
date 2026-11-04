@@ -123,6 +123,7 @@ click_to_move = true              # the default: a click on the command line mov
 editor = ["nvim", "+{line}", "{path}"]  # edits the files Cmd+click opens (Links); unset: $EDITOR
 quick_select_patterns = ['[A-Z]+-\d+']  # regexes quick select labels too (Quick select)
 restore_layout = true             # the default: the windows come back at the next launch (below)
+graphics = true                   # the default: programs show images (Images); false drops their commands
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -167,6 +168,7 @@ file's keys. What changes, and when:
 | `notify_after` | for every command that ends from then on, running ones included |
 | `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
 | `restore_layout` | saving the layout stops or starts at once; restoring it is at launch |
+| `graphics` | new panes only: a pane's engine takes graphics commands, or not, from its first byte |
 
 **Restoring windows.** With `restore_layout = true`, the default (Terminal.app and iTerm2 restore
 their windows by default too), rtty keeps each window's layout for the next launch: its frame and
@@ -613,6 +615,27 @@ after the shell has started.
   command: without that mark a prompt's end is the last mark while a command runs too (bash 3.2
   with a DEBUG trap of your own), and a click would type arrows into the command.
 
+## Images
+
+Programs show images with kitty's graphics protocol: rtty-vt reads the commands (the subset is in
+its [README](vt/README.md)) and keeps the images and where they are placed, and each frame draws
+them with GPUI's images, clipped to the pane: those with a z under −2³⁰ beneath the cells'
+backgrounds, other negative ones beneath the text, the rest over it. An image is anchored to the
+cell its top left corner is on, so it scrolls with the text into the scrollback and back, and
+moves with that cell when a resize reflows the screen. It keeps its size in cells, as the cell
+size was when it was placed (`line_height` included): a later font change scales it, and a later
+`line_height` change stretches it with its rows. `clear` (ED 2), the alternate screen's clearing
+and a reset take the images on the screen; erasing text leaves them. Unicode placeholders work
+too: cells of U+10EEEE draw no glyph but their part of the image, so images survive tmux and
+tutti, which pass the placeholder text along. Each image is decoded once, by rtty-vt, held as one
+GPUI image until rtty-vt evicts it (256 MiB of images per pane, the oldest first), and its pixels
+go to the GPU once.
+
+Clients size images by the cell size in pixels, which rtty reports in points (the pty's
+`ws_xpixel` and `ws_ypixel`, and `CSI 14 t` and `16 t`): on a Retina screen an image shown at its
+own size covers twice its pixels on the display. `graphics = false` drops every graphics command,
+as a terminal without the protocol does.
+
 ## rtty cli and editors
 
 `rtty cli` is the same binary in another role: it asks the rtty a pane runs in, through a Unix
@@ -674,7 +697,7 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
   and text runs with their resolved colors and decorations, the characters rtty draws itself, and
   the cursor. A program's colors (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the
-  defaults.
+  defaults. A Unicode placeholder's cell draws no glyph: its image does.
 - `glyphs.rs` — box drawing, block elements and the powerline separators as rectangles and paths
   on a cell's device pixels, from the Unicode charts; unit tested.
 - `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
@@ -708,8 +731,10 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   read the rows that changed (the engine's damage, plus the cursor's rows and rows that left the
   screen) into `render` lines, then shapes those outside the lock; unchanged rows reuse last
   frame's shaped runs (see [Ligatures](#ligatures)). A synchronized update (mode 2026) keeps the
-  last frame up until it ends, or for 150 ms. The view is also GPUI's text input handler, for
-  committed text and IME marked text.
+  last frame up until it ends, or for 150 ms. Images (`Terminal::placements`) are read under the
+  same lock and drawn by z beneath or over the text, each engine image one GPUI image kept by its
+  generation until the engine lets it go ([Images](#images)). The view is also GPUI's text input
+  handler, for committed text and IME marked text.
 - `layout.rs` — a window's tabs, each a tree of splits with ratios, in cells, with no GPUI in it
   and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
   gets fewer than two across a split), split and close with the cascade to tab and window, a
@@ -820,9 +845,10 @@ tab's pill
 and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
-2031 reports), `rtty cli` and the editor plugins, the log, and shell integration that loads
+2031 reports), `rtty cli` and the editor plugins, the log, shell integration that loads
 itself (prompt jumps, the last command's output, notifications of long commands, click to move the
-cursor). Checked with `--script` against Neovim in two
+cursor), and images (kitty's graphics protocol, Unicode placeholders included). Checked with
+`--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key
@@ -871,8 +897,10 @@ Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
 machine that has not fetched it. The cost is a shader compile at startup.
 
-Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT. rtty takes nothing
-from Zed's GPL `terminal` / `terminal_view` crates.
+Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT; the image crates (`png` and
+`miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or Apache-2.0. rtty takes nothing
+from Zed's GPL `terminal` / `terminal_view` crates, and nothing from kitty's GPL source: the
+graphics protocol is implemented from its documentation.
 
 ## Roadmap
 

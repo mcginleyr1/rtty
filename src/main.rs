@@ -349,6 +349,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         editor: config.editor,
         quick_select: config.quick_select,
         restore_layout: config.restore_layout.unwrap_or(true),
+        graphics: config.graphics.unwrap_or(true),
         launch,
     })
 }
@@ -687,9 +688,16 @@ fn finish(pane: &mut Pane) -> Option<u32> {
 
 fn smoke() -> ExitCode {
     let (rows, cols) = START_SIZE;
-    let (mut pane, _notices) =
-        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None, None, None)
-            .expect("spawn /bin/sh");
+    let (mut pane, _notices) = Pane::spawn(
+        shell_command("printf hello-rtty; exit 7"),
+        rows,
+        cols,
+        None,
+        None,
+        None,
+        false,
+    )
+    .expect("spawn /bin/sh");
     let exit_code = finish(&mut pane);
     let screen = pane.lock().contents();
     let passed = screen.contains("hello-rtty") && exit_code == Some(7);
@@ -717,7 +725,8 @@ fn bench(command: &str) -> ExitCode {
 
     let started = Instant::now();
     let (mut pane, _notices) =
-        Pane::spawn(shell_command(command), rows, cols, None, None, None).expect("spawn /bin/sh");
+        Pane::spawn(shell_command(command), rows, cols, None, None, None, false)
+            .expect("spawn /bin/sh");
     finish(&mut pane);
     let pipeline = started.elapsed();
 

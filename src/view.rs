@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::iter;
 use std::mem;
@@ -12,13 +12,14 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
-    App, BorderStyle, Bounds, ClipboardItem, Context, DispatchPhase, Div, ElementInputHandler,
-    EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font, FontId, FontWeight, Global,
-    Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels, Point, Render,
-    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Subscription, Task, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
-    div, fill, outline, point, prelude::*, px, size,
+    App, BorderStyle, Bounds, ClipboardItem, ContentMask, Context, Corners, DispatchPhase, Div,
+    ElementInputHandler, EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font,
+    FontId, FontWeight, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    PathBuilder, Pixels, Point, Render, RenderImage, Rgba, ScrollWheelEvent, ShapedGlyph,
+    ShapedLine, ShapedRun, Size, Subscription, Task, TextRun, UTF16Selection, UnderlineStyle,
+    Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill, outline, point,
+    prelude::*, px, size,
 };
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
@@ -114,6 +115,8 @@ pub struct Settings {
     /// The layout is kept for the next launch (`restore_layout`), when this launch keeps it.
     pub restore_layout: bool,
     pub launch: Launch,
+    /// `graphics`: programs show images with kitty's graphics protocol.
+    pub graphics: bool,
 }
 
 impl Global for Settings {}
@@ -153,6 +156,8 @@ pub struct PaneView {
     scheme: Arc<Scheme>,
     geometry: Option<Geometry>,
     cache: Cache,
+    /// The engine's images as GPUI draws them, by generation, until the engine lets them go.
+    images: HashMap<u64, Arc<RenderImage>>,
     marked_text: Option<String>,
     scroll_remainder: Pixels,
     /// The cell the last mouse report named.
@@ -329,11 +334,23 @@ struct Frame {
     thickness: Pixels,
     background: Hsla,
     rows: Vec<(u16, Rc<ShapedRow>)>,
+    /// Images over the cells, lowest first.
+    pictures: Vec<Picture>,
     cursor: Option<PaintQuad>,
     marked_text: Option<(PaintQuad, Point<Pixels>, ShapedLine)>,
     /// A bell's flash over the pane: the text color, faint.
     flash: Option<Hsla>,
     layout_time: Duration,
+}
+
+/// An image drawn whole at `bounds`, showing only within `clip`: the part of it a placement
+/// shows, over the cells it covers, in the pane.
+#[derive(Clone)]
+struct Picture {
+    image: Arc<RenderImage>,
+    bounds: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+    z: i32,
 }
 
 #[derive(Default)]
@@ -358,6 +375,13 @@ impl PaneView {
         cx.on_focus(&focus, window, Self::focus_changed).detach();
         cx.on_blur(&focus, window, Self::focus_changed).detach();
         cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
+        // A closed pane's images leave the window's sprite atlas with it.
+        cx.on_release_in(window, |view, window, _| {
+            for (_, image) in view.images.drain() {
+                window.drop_image(image).ok();
+            }
+        })
+        .detach();
         let settings = cx.global::<Settings>();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
         let stats = settings.launch.stats.then(FrameStats::default);
@@ -389,6 +413,7 @@ impl PaneView {
             scheme,
             geometry: None,
             cache: Cache::default(),
+            images: HashMap::new(),
             marked_text: None,
             scroll_remainder: px(0.),
             mouse_cell: None,
@@ -1538,7 +1563,12 @@ impl PaneView {
             .filter(|(index, _)| !cache.rows.contains_key(index))
             .map(|(index, row)| (index, scene.line(row, index)))
             .collect();
+        let placements = term.placements(top, in_view.end);
+        let held: HashSet<u64> = term.images().iter().map(|image| image.generation).collect();
         drop(term);
+        for (_, gone) in self.images.extract_if(|generation, _| !held.contains(generation)) {
+            window.drop_image(gone).ok();
+        }
 
         for (index, line) in missing {
             let shaped = line
@@ -1554,6 +1584,29 @@ impl PaneView {
                 bounds.origin.y + cell.height * f32::from(row),
             )
         };
+        // Each drawn whole, scaled and moved so that its source lands on its cells, and clipped
+        // to them; a placement's row may be above the view.
+        let pictures = placements
+            .iter()
+            .filter_map(|placement| {
+                let image = &placement.image;
+                let ([x, y, w, h], [sx, sy, sw, sh]) = (placement.dest, placement.source);
+                let row = (placement.row as i64 - top as i64) as f32;
+                let corner = bounds.origin
+                    + point(cell.width * (f32::from(placement.col) + x), cell.height * (row + y));
+                let clip = Bounds::new(corner, size(cell.width * w, cell.height * h));
+                let clip = clip.intersect(&bounds);
+                let (across, down) = (cell.width * (w / sw), cell.height * (h / sh));
+                let whole = Bounds::new(
+                    corner - point(across * sx, down * sy),
+                    size(across * image.width as f32, down * image.height as f32),
+                );
+                let rendered =
+                    self.images.entry(image.generation).or_insert_with(|| render_image(image));
+                let image = rendered.clone();
+                (!clip.is_empty()).then_some(Picture { image, bounds: whole, clip, z: placement.z })
+            })
+            .collect();
         let screen_row = (screen_top + u64::from(cursor_row)).saturating_sub(top);
         let cursor_bounds =
             Bounds::new(at(screen_row.min(u64::from(rows - 1)) as u16, cursor_col), cell);
@@ -1607,6 +1660,7 @@ impl PaneView {
             rows: (0..rows)
                 .filter_map(|row| Some((row, cache.rows.get(&(top + u64::from(row)))?.clone())))
                 .collect(),
+            pictures,
             cursor,
             marked_text,
             flash: self
@@ -1642,7 +1696,21 @@ impl PaneView {
                 frame.bounds.origin.y + cell.height * f32::from(row),
             )
         };
+        // Images by z: under the cells' own backgrounds, under the text, over it.
+        let pictures = |window: &mut Window, layer: fn(i32) -> bool| {
+            for picture in frame.pictures.iter().filter(|picture| layer(picture.z)) {
+                let mask = ContentMask { bounds: picture.clip };
+                let painted = window.with_content_mask(Some(mask), |window| {
+                    let image = picture.image.clone();
+                    window.paint_image(picture.bounds, Corners::default(), image, 0, false)
+                });
+                if let Err(err) = painted {
+                    eprintln!("rtty: painting an image failed: {err}");
+                }
+            }
+        };
         window.paint_quad(fill(bounds, frame.background));
+        pictures(window, |z| z < i32::MIN / 2);
         for (row, shaped) in &frame.rows {
             for span in &shaped.line.backgrounds {
                 let width = cell.width * f32::from(span.cells);
@@ -1652,6 +1720,7 @@ impl PaneView {
                 ));
             }
         }
+        pictures(window, |z| (i32::MIN / 2..0).contains(&z));
         let scale = window.scale_factor();
         let light = (f32::from(frame.thickness) * scale).round().max(1.);
         for (row, shaped) in &frame.rows {
@@ -1674,6 +1743,7 @@ impl PaneView {
                 paint_drawn(drawn, at(*row, drawn.col), cell, scale, light, window);
             }
         }
+        pictures(window, |z| z >= 0);
         if let Some(cursor) = frame.cursor {
             window.paint_quad(cursor);
         }
@@ -2089,6 +2159,17 @@ fn grid_positions(
 pub fn hsla(Rgb(r, g, b): Rgb) -> Hsla {
     let channel = |value: u8| f32::from(value) / 255.;
     Rgba { r: channel(r), g: channel(g), b: channel(b), a: 1. }.into()
+}
+
+/// An image of the engine's (RGBA) as GPUI draws it (BGRA).
+fn render_image(image: &rtty_vt::Image) -> Arc<RenderImage> {
+    let mut pixels = image.rgba.clone();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(image.width, image.height, pixels)
+        .expect("the engine's images hold width × height pixels");
+    Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
 }
 
 impl Render for PaneView {

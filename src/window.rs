@@ -457,8 +457,9 @@ fn spawn(
     command.env("RTTY_SOCKET", &settings.launch.socket);
     let trace = settings.launch.trace.as_ref().map(|trace| trace.for_pane(id));
     let integration = settings.shell_integration.as_deref();
-    let spawned = Pane::spawn(command, rows, cols, Some(scheme), trace, integration)
-        .map_err(|err| format!("cannot start the shell: {err}"));
+    let spawned =
+        Pane::spawn(command, rows, cols, Some(scheme), trace, integration, settings.graphics)
+            .map_err(|err| format!("cannot start the shell: {err}"));
     match &spawned {
         Ok(_) => crate::note(&format!("pane {id}: started at {rows}x{cols}")),
         Err(err) => crate::note(&format!("pane {id}: {err}")),

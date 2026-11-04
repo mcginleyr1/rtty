@@ -5,7 +5,7 @@
 use std::mem;
 
 use rtty_vt::{Attrs, BACKGROUND, CURSOR, Color, CursorShape as Shape, FOREGROUND, Rgb, Row};
-use rtty_vt::{Terminal, Underline};
+use rtty_vt::{PLACEHOLDER, Terminal, Underline};
 
 use crate::glyphs;
 use crate::scheme::{self, SLOTS, Scheme};
@@ -248,7 +248,8 @@ impl<'a> Scene<'a> {
                 _ => {}
             }
 
-            if cell.is_spacer() {
+            // A Unicode placeholder shows its image (`Terminal::placements`), no glyph.
+            if cell.is_spacer() || cell.ch() == PLACEHOLDER {
                 continue;
             }
             let linked =
@@ -400,6 +401,16 @@ mod tests {
         assert_eq!(texts(&lines[0]), [(0, "ab"), (2, "日"), (4, "e\u{301}"), (5, "cd")]);
         let cells: Vec<_> = lines[0].runs.iter().map(|run| (run.cells, run.single_width)).collect();
         assert_eq!(cells, [(2, true), (2, false), (1, false), (2, true)]);
+    }
+
+    /// A Unicode placeholder's cell keeps its background and draws no glyph: its image shows
+    /// there instead.
+    #[test]
+    fn placeholder_cells_draw_no_text() {
+        let text = "\x1b[?25la\x1b[38;5;1;44m\u{10EEEE}\u{305}\u{305}\u{10EEEE}\x1b[0mb";
+        let (lines, _) = draw(&term(text.as_bytes()));
+        assert_eq!(texts(&lines[0]), [(0, "a"), (3, "b")]);
+        assert_eq!(lines[0].backgrounds, [Background { col: 1, cells: 2, color: rgb(0x61afef) }]);
     }
 
     /// Box drawing, blocks and powerline separators leave the text runs, in their own colors;

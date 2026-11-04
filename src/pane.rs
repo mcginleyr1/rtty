@@ -91,7 +91,8 @@ pub struct Pane {
 impl Pane {
     /// Runs `command` on a new `rows`×`cols` pty. With a `scheme`, color queries are answered
     /// from the program's first byte on (see `set_scheme`). A login shell loads the shell
-    /// integration `integration` holds (`shell::install`). The receiver yields the pane's
+    /// integration `integration` holds (`shell::install`). With `graphics`, the program can show
+    /// images (kitty's graphics protocol) from its first byte on. The receiver yields the pane's
     /// notices.
     pub fn spawn(
         mut command: CommandBuilder,
@@ -100,6 +101,7 @@ impl Pane {
         scheme: Option<&Scheme>,
         trace: Option<Trace>,
         integration: Option<&Path>,
+        graphics: bool,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
         let pty = open_pty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         command.env("TERM", "xterm-256color");
@@ -131,6 +133,7 @@ impl Pane {
         // when the shell marks the command's end, before the shell hears of a click or a flip
         // to dark as typing.
         term.set_command_end_reset(true);
+        term.set_graphics(graphics);
         if let Some(scheme) = scheme {
             host_scheme(&mut term, scheme);
         }
@@ -488,9 +491,16 @@ mod tests {
 
     #[test]
     fn output_reaches_the_terminal_and_the_exit_code_the_waiter() {
-        let (pane, _) =
-            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None, None, None)
-                .unwrap();
+        let (pane, _) = Pane::spawn(
+            shell_command("printf 'a\\033[1mb'; exit 3"),
+            24,
+            80,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
     }
 
@@ -498,7 +508,7 @@ mod tests {
     fn the_program_hears_it_runs_in_rtty_and_in_no_multiplexer() {
         let mut command = shell_command("printf '%s:%s' \"$TERM_PROGRAM\" \"${TMUX-none}\"");
         command.env("TMUX", "/tmp/outer,1,0");
-        let (pane, _) = Pane::spawn(command, 24, 80, None, None, None).unwrap();
+        let (pane, _) = Pane::spawn(command, 24, 80, None, None, None, false).unwrap();
         assert_eq!(finish(pane).0, "rtty:none");
     }
 
@@ -507,9 +517,23 @@ mod tests {
     fn replies_go_back_to_the_program() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[6n'; \
                       dd bs=1 count=6 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None, None, None).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command(script), 24, 80, None, None, None, false).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   1   ;   1   R"), "{screen}");
+    }
+
+    /// With graphics, an image in the program's first write is held; without, it is dropped.
+    #[test]
+    fn graphics_are_on_from_the_first_byte_or_not_at_all() {
+        let image = "printf '\\033_Ga=t,i=1,q=2,f=24,s=1,v=1;AAAA\\033\\\\done'";
+        for graphics in [true, false] {
+            let (pane, _) =
+                Pane::spawn(shell_command(image), 24, 80, None, None, None, graphics).unwrap();
+            wait_for(&pane, "done");
+            assert_eq!(pane.lock().images().len(), usize::from(graphics), "{graphics}");
+            assert_eq!(finish(pane).0, "done");
+        }
     }
 
     /// What the window does on an appearance flip, through a real pty: a program that turned on
@@ -521,7 +545,7 @@ mod tests {
         let schemes = load(&[]).unwrap();
         let dark = find(&schemes, "OneDark Pro").unwrap();
         let (pane, _) =
-            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None, false).unwrap();
         wait_for(&pane, "ready");
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let (screen, _) = finish(pane);
@@ -539,7 +563,7 @@ mod tests {
         let schemes = load(&[]).unwrap();
         let dark = find(&schemes, "OneDark Pro").unwrap();
         let (pane, _) =
-            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None, false).unwrap();
         wait_for(&pane, "ready");
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let modes = pane.lock().modes().clone();
@@ -555,7 +579,7 @@ mod tests {
                       dd bs=1 count=24 2>/dev/null | tr '\\033\\007' EB";
         let dark = find(&load(&[]).unwrap(), "OneDark Pro").unwrap();
         let (pane, _) =
-            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None, false).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("E]11;rgb:2828/2c2c/3434B"), "{screen}");
     }
@@ -566,7 +590,8 @@ mod tests {
     fn prompt_jumps_go_from_mark_to_mark() {
         let script = "for p in one two three; do printf '\\033]133;A\\007$ %s\\n' $p; seq 1 30; done; \
                       printf '\\033]133;A\\007$ last'; sleep 5";
-        let (mut pane, _) = Pane::spawn(shell_command(script), 10, 20, None, None, None).unwrap();
+        let (mut pane, _) =
+            Pane::spawn(shell_command(script), 10, 20, None, None, None, false).unwrap();
         wait_for(&pane, "$ last");
         let (prompts, screen_top): (Vec<u64>, u64) = {
             let term = pane.lock();
@@ -596,7 +621,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rtty-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = format!("cd '{}' && exec sleep 5", dir.display());
-        let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None, None).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command(&script), 24, 80, None, None, None, false).unwrap();
         let foreground = foreground_when(&pane, |process| process.argv == ["sleep", "5"]);
         assert!(!foreground.shell);
         assert_eq!(foreground.cwd.unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
@@ -624,7 +650,7 @@ mod tests {
         shell.env("SHELL", "/bin/dash");
         shell.env("HOME", &home);
         shell.cwd(&home);
-        let (pane, _) = Pane::spawn(shell, 24, 80, None, None, None).unwrap();
+        let (pane, _) = Pane::spawn(shell, 24, 80, None, None, None, false).unwrap();
         wait_for(&pane, "$");
         let at_prompt = foreground_when(&pane, |process| process.shell);
         assert_eq!(at_prompt.cwd.unwrap().canonicalize().unwrap(), home.canonicalize().unwrap());
@@ -669,7 +695,8 @@ mod tests {
             shell.env("ZDOTDIR", home.join("zdotdir"));
             shell.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
             shell.cwd(&home);
-            let (pane, _) = Pane::spawn(shell, 24, 80, None, None, Some(&integration)).unwrap();
+            let (pane, _) =
+                Pane::spawn(shell, 24, 80, None, None, Some(&integration), false).unwrap();
             wait_for(&pane, "ready>");
             assert!(foreground_when(&pane, |process| process.shell).shell, "{path}");
             pane.write(b"echo one two\n".to_vec());
@@ -709,7 +736,8 @@ mod tests {
             shell.env("HOME", &home);
             shell.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
             shell.cwd(&home);
-            let (pane, _) = Pane::spawn(shell, 24, 80, None, None, Some(&integration)).unwrap();
+            let (pane, _) =
+                Pane::spawn(shell, 24, 80, None, None, Some(&integration), false).unwrap();
             wait_for(&pane, "ready>");
             pane.write(b"echo one two\n".to_vec());
             wait_for_output(&pane, "one two");
@@ -737,6 +765,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         wait_for(&pane, "done");
