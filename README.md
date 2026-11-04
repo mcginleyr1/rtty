@@ -279,6 +279,16 @@ its height whatever the number of tabs, so opening or closing a tab resizes no p
 screen, where macOS hides the titlebar, a lone tab has no bar and a row of tabs starts at the
 window's edge. Its colors are the scheme's (below), so it follows the light/dark flip.
 
+**Progress.** A program that reports its progress, with ConEmu's OSC 9;4 (`ESC ] 9 ; 4 ; state
+; percent ST`, as Claude Code does with its progress setting on, and Ghostty and Windows Terminal
+read it) or tutti's OSC 7501 program status (`state=working:progress=40`), shows it as a thin line
+along the bottom of its tab's pill, between its rounded ends (with one tab, along the bar's
+bottom edge): the scheme's blue, as far along as the percent; its yellow while paused (or, for
+OSC 7501, `blocked`); its red on an error; the whole line in a faint blue while the program
+cannot say how far. A tab with several reporting panes shows an error first, else the least
+done. The line goes when the program removes it (`9;4;0`, or `done`, `idle` or `clear`) or a
+shell draws its next prompt (OSC 133;A), so a build killed mid-report leaves nothing behind.
+
 **Titles.** A pane is called by the title its program set (OSC 0 or 2); else, while a program
 runs in its foreground (the pty's process group, `tcgetpgrp`), by that program's command line
 (`cargo run --release`); else, with the shell at its prompt, by the shell's directory (OSC 7 when
@@ -430,6 +440,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   line) with what a click does with it (open, reveal in Finder, ignore) and what to show of a
   disguised one; both unit tested, and neither opens anything.
 - `notify.rs` — the dock's attention and macOS notifications, which need an app bundle.
+- `progress.rs` — what a program's OSC 9;4 and OSC 7501 reports say of its progress, and many
+  panes' progress as one; unit tested.
 - `view.rs` — `PaneView`, the GPUI view of one pane. A foreground task drains the pane's channel
   in batches: `Output` marks the view dirty, so however many arrive between two display
   refreshes, GPUI draws one frame (that is the coalescing). Each frame locks the terminal only to

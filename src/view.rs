@@ -32,6 +32,7 @@ use crate::keys;
 use crate::links::{self, Link};
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
+use crate::progress::{self, Progress};
 use crate::render::{self, CursorShape, Drawn, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
@@ -127,6 +128,9 @@ pub struct PaneView {
     flashed: Option<Instant>,
     /// What the pane is called, as of the last look (`refresh_title`).
     title: Title,
+    /// What the program last said of its progress, until it removes it or a shell draws its
+    /// next prompt (OSC 133;A).
+    progress: Option<Progress>,
     stats: Option<FrameStats>,
 }
 
@@ -153,6 +157,8 @@ pub enum PaneEvent {
     Bell,
     /// OSC 9, OSC 777;notify or OSC 99.
     Notification { title: Option<String>, body: Option<String> },
+    /// The program's progress changed (`PaneView::progress`).
+    Progress,
     /// The program exited, as its status says.
     Exited(String),
 }
@@ -300,6 +306,7 @@ impl PaneView {
             followed: Vec::new(),
             flashed: None,
             title: Title::default(),
+            progress: None,
             stats,
         };
         view.refresh_title();
@@ -464,6 +471,16 @@ impl PaneView {
         self.claims_keys
     }
 
+    pub fn progress(&self) -> Option<Progress> {
+        self.progress
+    }
+
+    fn set_progress(&mut self, progress: Option<Progress>, cx: &mut Context<Self>) {
+        if mem::replace(&mut self.progress, progress) != progress {
+            cx.emit(PaneEvent::Progress);
+        }
+    }
+
     /// The directory the shell last reported (OSC 7), else the foreground process's: most
     /// shells on macOS send OSC 7 only in Terminal.app.
     pub fn cwd(&self) -> Option<PathBuf> {
@@ -515,7 +532,16 @@ impl PaneView {
                 self.claims_keys = value == "pane"
             }
             Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
-                self.claims_keys = false
+                self.claims_keys = false;
+                self.set_progress(None, cx)
+            }
+            Notice::Event(Event::Progress { state, percent }) => {
+                self.set_progress(progress::reported(state, percent), cx)
+            }
+            Notice::Event(Event::ProgramStatus(body)) => {
+                if let Some(progress) = progress::status(&body) {
+                    self.set_progress(progress, cx)
+                }
             }
             Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
@@ -698,6 +724,9 @@ impl PaneView {
             writeln!(out, "size {rows}x{cols} top {top} screen_top {screen_top} oldest {oldest}");
         if let Some(at) = self.flashed {
             let _ = writeln!(out, "bell flashed {} ms ago", at.elapsed().as_millis());
+        }
+        if let Some(progress) = self.progress {
+            let _ = writeln!(out, "progress {progress:?}");
         }
         if self.link.is_some() || !self.followed.is_empty() {
             let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);

@@ -16,10 +16,10 @@ use std::time::Duration;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
-    EmptyView, Entity, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    EmptyView, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, Render, SharedString, Size, Stateful, StyleRefinement, TitlebarOptions, Window,
     WindowAppearance, WindowBounds, WindowHandle, WindowOptions, actions, div, point, prelude::*,
-    px, size, svg,
+    px, relative, size, svg, transparent_black,
 };
 use portable_pty::CommandBuilder;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
@@ -29,6 +29,7 @@ use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
 use crate::layout::{Amount, Closed, Direction, Orientation, PaneId, Rect, Tabs};
 use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
+use crate::progress::{self, Progress, State};
 use crate::scheme::Scheme;
 use crate::tabbar::{self, Bar, Hit};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
@@ -407,6 +408,7 @@ impl TerminalWindow {
                     cx.notify();
                 }
             }
+            PaneEvent::Progress => cx.notify(),
             PaneEvent::Bell if !window.is_window_active() => {
                 notify::request_attention();
                 self.attention.push(format!("bell in pane {id}: the dock asked for attention"));
@@ -783,14 +785,15 @@ impl TerminalWindow {
             let title = self.views.get(&layout.focus()).map(|view| view.read(cx).title().clone());
             let folder = title.as_ref().is_some_and(|title| title.dir.is_some());
             let text = title.map(|title| title.text);
-            let _ = writeln!(out, "bar title {text:?} folder {folder}");
+            let progress = self.tab_progress(0, cx);
+            let _ = writeln!(out, "bar title {text:?} folder {folder} progress {progress:?}");
         }
         for (index, pill) in bar.tabs.iter().enumerate() {
             let (fg, bg) = self.pill_colors(index);
             let close = self.pill_hovered(index);
             let _ = writeln!(
                 out,
-                "bar tab {} at {},{} {}x{} {:?} fg {} bg {}{}",
+                "bar tab {} at {},{} {}x{} {:?} fg {} bg {}{} progress {:?}",
                 index + 1,
                 pill.x,
                 pill.y,
@@ -800,6 +803,7 @@ impl TerminalWindow {
                 hex(fg),
                 hex(bg),
                 if close { " close shown" } else { "" },
+                self.tab_progress(index, cx),
             );
         }
         if let Some(new) = bar.new {
@@ -822,6 +826,12 @@ impl TerminalWindow {
         out
     }
 
+    /// Tab `index`'s panes' progress as one (`progress::combine`).
+    fn tab_progress(&self, index: usize, cx: &App) -> Option<Progress> {
+        let panes = self.tabs.all()[index].panes();
+        progress::combine(panes.iter().filter_map(|id| self.views.get(id)?.read(cx).progress()))
+    }
+
     /// A tab's number, for Cmd+1–9, and the title of its focused pane.
     fn tab_label(&self, index: usize, cx: &App) -> String {
         format!("{}: {}", index + 1, self.title(self.tabs.all()[index].focus(), cx))
@@ -836,6 +846,22 @@ impl TerminalWindow {
             div().absolute().left(px(rect.x)).top(px(rect.y)).w(px(rect.w)).h(px(rect.h))
         };
         let label = |text: String| div().min_w_0().truncate().child(text);
+        // A program's progress, a thin line over `track`: the scheme's blue, its yellow while
+        // held, its red on an error; all of it, faint, while there is no telling how far.
+        let meter = |progress: Progress, track: Hsla| {
+            let color = match progress.state {
+                State::Error => scheme.color(1),
+                State::Paused => scheme.color(3),
+                State::Normal | State::Indeterminate => scheme.color(4),
+            };
+            let (fill, opacity) = match (progress.state, progress.percent) {
+                (State::Indeterminate, _) => (1., 0.5),
+                (_, percent) => (percent.map_or(1., |percent| f32::from(percent) / 100.), 1.),
+            };
+            let done = div().h_full().w(relative(fill)).rounded_full();
+            let line = div().absolute().h(px(2.)).rounded_full().bg(track);
+            line.child(done.bg(hsla(color).opacity(opacity)))
+        };
         let mut parts: Vec<AnyElement> = Vec::new();
         if bar.tabs.is_empty() {
             let title =
@@ -862,6 +888,10 @@ impl TerminalWindow {
                 .children(folder)
                 .child(label(text));
             parts.push(centered.into_any_element());
+            if let Some(progress) = self.tab_progress(0, cx) {
+                let line = meter(progress, transparent_black()).left_0().right_0().bottom_0();
+                parts.push(line.into_any_element());
+            }
         }
         for (index, &pill) in bar.tabs.iter().enumerate() {
             let (fg, bg) = self.pill_colors(index);
@@ -890,6 +920,11 @@ impl TerminalWindow {
                     .child(format!("\u{2318}{}", index + 1))
             });
             let title = self.title(self.tabs.all()[index].focus(), cx);
+            // Along the pill's bottom, between its rounded ends.
+            let progress = self.tab_progress(index, cx).map(|progress| {
+                let inset = px(pill.h / 2.);
+                meter(progress, hsla(fg).opacity(0.15)).left(inset).right(inset).bottom(px(3.))
+            });
             let pill = at(pill)
                 .rounded_full()
                 .bg(hsla(bg))
@@ -900,7 +935,8 @@ impl TerminalWindow {
                 .px(px(32.))
                 .child(label(title))
                 .children(close)
-                .children(digit);
+                .children(digit)
+                .children(progress);
             parts.push(pill.into_any_element());
         }
         if let Some(new) = bar.new {
