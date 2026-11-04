@@ -237,6 +237,17 @@ impl Pane {
         self.scrolled = (top < term.screen_top()).then_some(top);
     }
 
+    /// Cmd+K: the scrollback goes and, on the primary screen, the screen too (`Terminal::clear`);
+    /// the view follows the output again. Whether the alternate screen is up.
+    pub fn clear(&mut self) -> bool {
+        let mut term = self.lock();
+        term.clear();
+        let alternate = term.modes().alt_screen;
+        drop(term);
+        (self.scrolled, self.selection) = (None, None);
+        alternate
+    }
+
     /// Cmd+Up and Cmd+Down: puts the shell's previous (`up`) or next prompt (OSC 133;A) above or
     /// below the view's top at the top of the view; a prompt on the screen goes back to following
     /// the output. `false` when there is none that way.

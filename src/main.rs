@@ -42,7 +42,7 @@ use config::{Action, Config};
 use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
-use view::{Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
+use view::{ClearScrollback, Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
     ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, SwapPane, ToggleZoom,
@@ -225,6 +225,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::Paste => KeyBinding::new(chord, Paste, pane),
         Action::PromptPrev => KeyBinding::new(chord, PreviousPrompt, pane),
         Action::PromptNext => KeyBinding::new(chord, NextPrompt, pane),
+        Action::ClearScrollback => KeyBinding::new(chord, ClearScrollback, pane),
         Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
         Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
         Action::Quit => KeyBinding::new(chord, Quit, None),

@@ -39,7 +39,7 @@ use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::title::{self, Title};
 use crate::window::{ClosePane, LastPane, MoveFocus, ResizePane};
 
-actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt]);
+actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt, ClearScrollback]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
@@ -601,6 +601,16 @@ impl PaneView {
         }
     }
 
+    /// Cmd+K, as Terminal.app's: the scrollback and the screen go, and the shell hears Ctrl+L to
+    /// draw its prompt again at the top. A full-screen program keeps its screen and hears nothing.
+    fn clear_scrollback(&mut self, _: &ClearScrollback, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.pane.clear() {
+            self.input(b"\x0c".to_vec(), cx);
+        }
+        self.research(false);
+        cx.notify();
+    }
+
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.paste_text(&text, cx);
@@ -683,7 +693,9 @@ impl PaneView {
         let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);
         self.highlight(&mut scene, top, rows);
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
-        let _ = writeln!(out, "size {rows}x{cols} top {top} screen_top {}", term.screen_top());
+        let (screen_top, oldest) = (term.screen_top(), term.oldest_row());
+        let _ =
+            writeln!(out, "size {rows}x{cols} top {top} screen_top {screen_top} oldest {oldest}");
         if let Some(at) = self.flashed {
             let _ = writeln!(out, "bell flashed {} ms ago", at.elapsed().as_millis());
         }
@@ -1663,6 +1675,7 @@ impl Render for PaneView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::find))
+            .on_action(cx.listener(Self::clear_scrollback))
             .on_action(cx.listener(|view, _: &PreviousPrompt, _, cx| {
                 view.pane.jump_to_prompt(true);
                 cx.notify();
