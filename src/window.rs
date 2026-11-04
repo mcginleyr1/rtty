@@ -16,10 +16,10 @@ use std::time::Duration;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
-    EmptyView, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Render, SharedString, Size, Stateful, StyleRefinement, TitlebarOptions, Window,
-    WindowAppearance, WindowBounds, WindowHandle, WindowOptions, actions, div, point, prelude::*,
-    px, relative, size, svg, transparent_black,
+    EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, SharedString, Size, Stateful, StyleRefinement,
+    TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle, WindowOptions, actions,
+    div, point, prelude::*, px, relative, size, svg, transparent_black,
 };
 use portable_pty::CommandBuilder;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
@@ -194,6 +194,32 @@ fn spawn(
         Err(err) => crate::note(&format!("pane {id}: {err}")),
     }
     spawned
+}
+
+/// The label last put on the dock's icon.
+#[derive(Default)]
+struct DockBadge(Option<String>);
+
+impl Global for DockBadge {}
+
+/// The dock's badge sums up every pane's progress in every window (`progress::badge`), and goes
+/// once every program is done. It shows whether rtty is in front or not: a pill shows its own
+/// tab's progress, and the badge is the one place an error in a tab or window out of sight shows.
+pub fn refresh_badge(cx: &mut App) {
+    let mut all = Vec::new();
+    for window in cx.windows() {
+        if let Some(Ok(this)) = window.downcast::<TerminalWindow>().map(|handle| handle.read(cx)) {
+            let tabs = 0..this.tabs.all().len();
+            all.extend(tabs.filter_map(|index| this.tab_progress(index, cx)));
+        }
+    }
+    let label = progress::badge(progress::combine(all));
+    let shown = &mut cx.default_global::<DockBadge>().0;
+    if *shown != label {
+        crate::note(&format!("dock badge {label:?}"));
+        notify::badge(label.as_deref());
+        *shown = label;
+    }
 }
 
 /// Answers `rtty cli` in the window holding the request's pane, or for none, the active window
@@ -408,7 +434,10 @@ impl TerminalWindow {
                     cx.notify();
                 }
             }
-            PaneEvent::Progress => cx.notify(),
+            PaneEvent::Progress => {
+                cx.notify();
+                cx.defer(refresh_badge);
+            }
             PaneEvent::Bell if !window.is_window_active() => {
                 notify::request_attention();
                 self.attention.push(format!("bell in pane {id}: the dock asked for attention"));
@@ -440,6 +469,7 @@ impl TerminalWindow {
     fn close(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(closed) = self.tabs.close(id) else { return };
         self.views.remove(&id);
+        cx.defer(refresh_badge);
         let with = match closed {
             Closed::Pane => "",
             Closed::Tab => ", and its tab",
@@ -460,6 +490,7 @@ impl TerminalWindow {
         for pane in panes {
             self.views.remove(&pane);
         }
+        cx.defer(refresh_badge);
         match closed {
             Closed::Window => window.remove_window(),
             Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
@@ -770,6 +801,8 @@ impl TerminalWindow {
             (0..self.tabs.all().len()).map(|index| self.tab_label(index, cx)).collect();
         let bundled = if notify::bundled() { "an app bundle" } else { "no app bundle" };
         let _ = writeln!(out, "windows {} tabs {labels:?} in {bundled}", cx.windows().len());
+        let badge = cx.try_global::<DockBadge>().and_then(|badge| badge.0.as_deref());
+        let _ = writeln!(out, "dock badge {badge:?}");
         // The bar as the next frame draws it, and the title macOS has (the Window menu's).
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
         let bar = self.bar(window);

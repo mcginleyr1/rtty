@@ -53,7 +53,7 @@ is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 **The log.** rtty appends to `$TMPDIR/rtty-<uid>/rtty.log`, next to its socket (`echo
 $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
 why, each pane's start, split, close (with the chord that closed it) and its program's exit
-status, a tab's close button, each Cmd chord as AppKit hands it to rtty and as GPUI dispatched it
+status, a tab's close button, the dock's progress badge as it changes, each Cmd chord as AppKit hands it to rtty and as GPUI dispatched it
 (the window's activation, the key contexts it met, the actions bound to it there and the one that
 ran), and every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
 keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
@@ -289,6 +289,12 @@ cannot say how far. A tab with several reporting panes shows an error first, els
 done. The line goes when the program removes it (`9;4;0`, or `done`, `idle` or `clear`) or a
 shell draws its next prompt (OSC 133;A), so a build killed mid-report leaves nothing behind.
 
+rtty's dock icon carries a badge that sums up every pane's progress in every window: `!` while
+one reports an error, else the percent of the least done, else `…` while a program cannot say
+how far; it goes once every program is done. It shows whether rtty is in front or not: a pill
+shows only its own tab, and the badge is the one place an error in a tab or window out of sight
+shows. (Checked through `--script`'s dump and the log's `dock badge` lines, not yet by eye.)
+
 **Titles.** A pane is called by the title its program set (OSC 0 or 2); else, while a program
 runs in its foreground (the pty's process group, `tcgetpgrp`), by that program's command line
 (`cargo run --release`); else, with the shell at its prompt, by the shell's directory (OSC 7 when
@@ -439,7 +445,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
   line) with what a click does with it (open, reveal in Finder, ignore) and what to show of a
   disguised one; both unit tested, and neither opens anything.
-- `notify.rs` — the dock's attention and macOS notifications, which need an app bundle.
+- `notify.rs` — the dock's attention and progress badge, and macOS notifications, which need an
+  app bundle.
 - `progress.rs` — what a program's OSC 9;4 and OSC 7501 reports say of its progress, and many
   panes' progress as one; unit tested.
 - `view.rs` — `PaneView`, the GPUI view of one pane. A foreground task drains the pane's channel

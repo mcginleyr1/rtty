@@ -429,6 +429,7 @@ fn run(options: Options) -> Result<(), String> {
         })
         .detach();
         cx.on_window_closed(|cx| {
+            window::refresh_badge(cx);
             if cx.windows().is_empty() {
                 note("quitting: the last window closed");
                 cx.quit()

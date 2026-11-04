@@ -1,4 +1,5 @@
-//! macOS's attention: the dock for a bell, Notification Center for a program's notification.
+//! macOS's attention: the dock for a bell and for progress, Notification Center for a program's
+//! notification.
 //!
 //! Notifications need rtty in an app bundle. Without a bundle identifier,
 //! `UNUserNotificationCenter` raises (`bundleProxyForCurrentProcess is nil`) and takes the process
@@ -29,6 +30,14 @@ pub fn request_attention() {
     if let Some(main_thread) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(main_thread);
         app.requestUserAttention(NSRequestUserAttentionType::InformationalRequest);
+    }
+}
+
+/// Puts `label` on rtty's dock icon, or with none takes the badge off.
+pub fn badge(label: Option<&str>) {
+    if let Some(main_thread) = MainThreadMarker::new() {
+        let tile = NSApplication::sharedApplication(main_thread).dockTile();
+        tile.setBadgeLabel(label.map(NSString::from_str).as_deref());
     }
 }
 

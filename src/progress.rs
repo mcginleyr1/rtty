@@ -63,6 +63,16 @@ pub fn combine(all: impl IntoIterator<Item = Progress>) -> Option<Progress> {
     })
 }
 
+/// The Dock's badge for it: `!` on an error, else its percent, else `…` while it cannot say.
+pub fn badge(progress: Option<Progress>) -> Option<String> {
+    let progress = progress?;
+    Some(match (progress.state, progress.percent) {
+        (State::Error, _) => "!".into(),
+        (_, Some(percent)) => format!("{percent}%"),
+        (_, None) => "…".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +115,15 @@ mod tests {
         assert_eq!(combine([forty, at(State::Error, None), going]), Some(at(State::Error, None)));
         assert_eq!(combine([going]), Some(going));
         assert_eq!(combine([]), None);
+    }
+
+    #[test]
+    fn the_badge_is_the_percent_or_an_error_or_going() {
+        let badge = |state, percent| badge(Some(at(state, percent)));
+        assert_eq!(badge(State::Normal, Some(40)).as_deref(), Some("40%"));
+        assert_eq!(badge(State::Paused, Some(70)).as_deref(), Some("70%"));
+        assert_eq!(badge(State::Error, Some(90)).as_deref(), Some("!"));
+        assert_eq!(badge(State::Indeterminate, None).as_deref(), Some("…"));
+        assert_eq!(super::badge(None), None, "none once every program is done");
     }
 }
