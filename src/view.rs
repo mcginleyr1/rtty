@@ -865,7 +865,9 @@ impl PaneView {
     /// A release over this pane, or anywhere after a press in it (the program hears it at the
     /// nearest cell); a release that ends another pane's press is not this pane's.
     pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
-        (self.selecting, self.autoscroll) = (None, None);
+        if event.button == MouseButton::Left {
+            (self.selecting, self.autoscroll) = (None, None);
+        }
         if mem::take(&mut self.pressed) {
             let button = mouse_button(event.button);
             self.report_mouse(button, Action::Release, event.position, event.modifiers);

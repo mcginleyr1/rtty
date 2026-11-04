@@ -19,10 +19,19 @@ bundle:
     plutil -replace CFBundleVersion -string "${id##*[#@]}" "$contents/Info.plist"
     codesign --force --sign - target/rtty.app
 
-# Put rtty.app in DEST, replacing the one there, and link BIN/rtty to its binary for `rtty cli`
+# Put rtty.app in DEST, replacing the one there, and link BIN/rtty to its binary for `rtty cli`;
+# a BIN/rtty that is not a link is left alone and stops the install
 install dest="/Applications" bin=(env_var("HOME") / ".local/bin"): bundle
+    #!/bin/sh
+    set -eu
+    if [ -e "{{bin}}/rtty" ] && [ ! -L "{{bin}}/rtty" ]; then
+        echo "{{bin}}/rtty is not a link install made; move it aside first" >&2
+        exit 1
+    fi
+    rm -rf "{{dest}}/rtty.app.new"
+    ditto target/rtty.app "{{dest}}/rtty.app.new"
     rm -rf "{{dest}}/rtty.app"
-    ditto target/rtty.app "{{dest}}/rtty.app"
+    mv "{{dest}}/rtty.app.new" "{{dest}}/rtty.app"
     mkdir -p "{{bin}}"
     ln -sf "{{dest}}/rtty.app/Contents/MacOS/rtty" "{{bin}}/rtty"
 

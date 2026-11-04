@@ -69,9 +69,10 @@ just bundle                           # only build target/rtty.app
 ```
 
 `just install` builds the release binary, assembles `rtty.app` (the binary, `bundle/Info.plist`
-with Cargo.toml's version filled in, the icon), signs it, replaces the `rtty.app` in the folder,
-and links `~/.local/bin/rtty` to the binary inside it, so `rtty cli` works from any shell with
-`~/.local/bin` on its `PATH`. `just uninstall` removes the app, and the link only when it is the
+with Cargo.toml's version filled in, the icon), signs it, replaces the `rtty.app` in the folder
+(the old one goes only once the new one is copied in), and links `~/.local/bin/rtty` to the
+binary inside it, so `rtty cli` works from any shell with `~/.local/bin` on its `PATH`. A
+`~/.local/bin/rtty` that is a file rather than a link stops the install untouched. `just uninstall` removes the app, and the link only when it is the
 one install made. The signature is ad hoc (`codesign --sign -`, no developer identity), which is
 all an app built on the Mac that runs it needs: Gatekeeper's notarization check applies to
 downloaded apps, and a local build is not one.
