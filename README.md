@@ -467,7 +467,10 @@ after the shell has started.
   turns it off). An arrow moves a character, so a wide character is one, clicked on either half; the
   line runs on across soft wraps; a click past what is typed goes to its end, and one on the prompt,
   off the line, or ending a drag moves nothing. A right prompt (zsh's `RPROMPT`) on the line counts
-  as typed, so a click between the two sends more arrows than the shell can take.
+  as typed, so a click between the two sends more arrows than the shell can take. It takes a shell
+  that marks a command's output, and once it has marked one, so not before a new pane's first
+  command: without that mark a prompt's end is the last mark while a command runs too (bash 3.2
+  with a DEBUG trap of your own), and a click would type arrows into the command.
 
 ## rtty cli and editors
 

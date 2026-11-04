@@ -64,10 +64,12 @@ pub fn command_line(term: &Terminal, output: &Mark) -> Option<String> {
 /// `at` of the command line being typed: the line, soft wraps included, from the end of the last
 /// prompt (B) with no command run since. `None` for a click off it, or while the cursor is. A wide
 /// character is one character, clicked on either half; a click past the end of what is typed goes
-/// to the end.
+/// to the end. Only from a shell that has marked a command's output (C): one that never does
+/// (bash 3.2 with a DEBUG trap of the user's) runs its commands after a B all the same.
 pub fn cursor_moves(term: &Terminal, at: (u64, u16)) -> Option<isize> {
-    let input = *marks(term).last().filter(|mark| mark.kind == MarkKind::CommandStart)?;
-    if term.modes().alt_screen {
+    let marks = marks(term);
+    let input = *marks.last().filter(|mark| mark.kind == MarkKind::CommandStart)?;
+    if !marks.iter().any(|mark| mark.kind == MarkKind::OutputStart) || term.modes().alt_screen {
         return None;
     }
     let mut last_row = input.row;
@@ -115,6 +117,11 @@ mod tests {
 
     fn end(status: i32) -> String {
         format!("\x1b]133;D;{status}\x07")
+    }
+
+    /// The marks of a command run earlier, so the shell is one that marks output (C).
+    fn ran() -> String {
+        format!("{C}{}", end(0))
     }
 
     /// The marks the stream's events told of, in order.
@@ -209,7 +216,7 @@ mod tests {
     #[test]
     fn a_click_on_the_command_line_moves_the_cursor_by_characters() {
         // "$ echo hello" with the cursor at its end, column 12.
-        let term = term(10, 40, &format!("{A}$ {B}echo hello"));
+        let term = term(10, 40, &format!("{}{A}$ {B}echo hello", ran()));
         assert_eq!(cursor_moves(&term, (0, 7)), Some(-5), "onto the h");
         assert_eq!(cursor_moves(&term, (0, 2)), Some(-10), "the first character");
         assert_eq!(cursor_moves(&term, (0, 30)), Some(0), "past the end: the end");
@@ -223,7 +230,7 @@ mod tests {
 
     #[test]
     fn wide_characters_are_one_character_on_either_half() {
-        let term = term(10, 40, &format!("{A}$ {B}echo 日本語 ok"));
+        let term = term(10, 40, &format!("{}{A}$ {B}echo 日本語 ok", ran()));
         // "$ echo " then 日, 本 and 語 at columns 7, 9 and 11, " ok" and the cursor at 16.
         assert_eq!(cursor_moves(&term, (0, 7)), Some(-6));
         assert_eq!(cursor_moves(&term, (0, 8)), Some(-6));
@@ -233,24 +240,37 @@ mod tests {
     #[test]
     fn a_soft_wrapped_command_line_is_one_line() {
         // 10 columns: "$ " and 15 characters wrap onto a second row.
-        let term = term(10, 10, &format!("{A}$ {B}0123456789abcde"));
+        let term = term(10, 10, &format!("{}{A}$ {B}0123456789abcde", ran()));
         assert_eq!(term.cursor_position(), (1, 7));
         assert_eq!(cursor_moves(&term, (0, 4)), Some(-13), "onto the 2");
         assert_eq!(cursor_moves(&term, (1, 0)), Some(-7), "onto the 8");
         // "$ 0123456" fills 9 of 10 columns: 日 goes to the next row, leaving a pad.
-        let wide = self::term(10, 10, &format!("{A}$ {B}0123456日"));
+        let wide = self::term(10, 10, &format!("{}{A}$ {B}0123456日", ran()));
         assert_eq!(cursor_moves(&wide, (1, 0)), Some(-1), "onto 日");
         assert_eq!(cursor_moves(&wide, (0, 8)), Some(-2), "onto the 6, past the pad");
     }
 
     #[test]
     fn no_command_line_while_a_command_runs_or_on_another_screen() {
-        let running = term(10, 40, &format!("{A}$ {B}sleep 5\r\n{C}"));
+        let running = term(10, 40, &format!("{}{A}$ {B}sleep 5\r\n{C}", ran()));
         assert_eq!(cursor_moves(&running, (0, 4)), None);
-        let elsewhere = term(10, 40, &format!("{A}$ {B}ls\r\nmore output"));
+        let elsewhere = term(10, 40, &format!("{}{A}$ {B}ls\r\nmore output", ran()));
         assert_eq!(cursor_moves(&elsewhere, (0, 3)), None, "the cursor left the line");
-        let mut alternate = term(10, 40, &format!("{A}$ {B}vim"));
+        let mut alternate = term(10, 40, &format!("{}{A}$ {B}vim", ran()));
         alternate.advance(b"\x1b[?1049h");
         assert_eq!(cursor_moves(&alternate, (0, 3)), None);
+    }
+
+    /// bash 3.2 with a DEBUG trap of the user's marks prompts and ends but never output: a B is
+    /// the last mark while a command runs, and `cat` waiting on the line it was typed on would
+    /// take arrows as typing.
+    #[test]
+    fn no_click_moves_the_cursor_for_a_shell_that_never_marks_output() {
+        let reading = term(10, 40, &format!("{A}$ {B}cat"));
+        assert_eq!(cursor_moves(&reading, (0, 2)), None);
+        let ended = term(10, 40, &format!("{A}$ {B}ls\r\na\r\n{}{A}$ {B}cat", end(0)));
+        assert_eq!(cursor_moves(&ended, (2, 2)), None, "ends and prompts say nothing of it");
+        let marking = term(10, 40, &format!("{}{A}$ {B}cat", ran()));
+        assert_eq!(cursor_moves(&marking, (0, 2)), Some(-3), "the same line, from one that does");
     }
 }
