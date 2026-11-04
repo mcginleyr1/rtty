@@ -43,6 +43,8 @@
 //!                        window, which a scripted window never is
 //! app active|inactive    what rtty does when macOS makes it the active app, the window the key
 //!                        one, and when rtty stops being it; the window takes no keyboard
+//! hotkey                 what the global hotkey does when pressed, which a scripted rtty keeps
+//!                        in its dump instead of doing
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -113,6 +115,7 @@ pub enum Step {
     Menu(String, String),
     /// Whether rtty is the active app.
     App(bool),
+    Hotkey,
     Appearance(WindowAppearance),
     Resize {
         rows: u16,
@@ -290,6 +293,7 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             }
             "dump" if !rest.is_empty() => Step::Dump(rest.trim().into()),
             "terminate" => Step::Terminate,
+            "hotkey" => Step::Hotkey,
             "quit" => Step::Quit,
             _ => return Err(error("unknown step")),
         };
@@ -515,6 +519,9 @@ async fn perform(
                 crate::app::set_active(*active, cx)
             })
             .map_err(|err| err.to_string())?,
+        Step::Hotkey => {
+            cx.update(|_, cx| crate::app::hotkey_pressed(cx)).map_err(|err| err.to_string())?
+        }
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -665,6 +672,7 @@ mod tests {
         assert!(matches!((&answers[0].1, &answers[1].1), (Step::Answer(0), Step::Answer(1))));
         assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
         assert!(matches!(parse("terminate").unwrap()[0].1, Step::Terminate));
+        assert!(matches!(parse("hotkey").unwrap()[0].1, Step::Hotkey));
         let app = parse("app active\napp inactive").unwrap();
         assert!(matches!((&app[0].1, &app[1].1), (Step::App(true), Step::App(false))));
         assert!(parse("app front").unwrap_err().contains("active or inactive expected"));

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
+use global_hotkey::hotkey::HotKey;
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, ContentMask, Context, Corners, DispatchPhase, Div,
     ElementInputHandler, EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font,
@@ -118,6 +119,8 @@ pub struct Settings {
     /// it at a password prompt (`app::refresh_secure_input`).
     pub secure_input: bool,
     pub auto_secure_input: bool,
+    /// `global_hotkey`, as macOS registers it (`app::hotkey_pressed`).
+    pub hotkey: Option<HotKey>,
     pub launch: Launch,
     /// `graphics`: programs show images with kitty's graphics protocol.
     pub graphics: bool,

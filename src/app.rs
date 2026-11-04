@@ -1,5 +1,6 @@
 //! rtty as a macOS app: its menu bar, whose items run `[bind]`'s actions and show their chords,
-//! the question before quitting however macOS asks rtty to quit, and Secure Keyboard Entry.
+//! the question before quitting however macOS asks rtty to quit, Secure Keyboard Entry, and the
+//! global hotkey.
 
 use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
@@ -8,6 +9,8 @@ use std::mem;
 use std::ptr::{self, NonNull};
 
 use block2::RcBlock;
+use global_hotkey::hotkey::HotKey;
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui::{App, AsyncApp, Global, Menu, MenuItem, WindowHandle, actions};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
@@ -18,6 +21,7 @@ use objc2_app_kit::{
     NSEventModifierFlags as Flags, NSMenu,
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
+use portable_pty::CommandBuilder;
 
 use crate::config::Action;
 use crate::view::Settings;
@@ -32,9 +36,11 @@ unsafe extern "C" {
     fn IsSecureEventInputEnabled() -> u8;
 }
 
-/// rtty as the app: whether it is the active one, the window it gave the keyboard last, and
-/// Secure Keyboard Entry.
+/// rtty as the app: whether it is the active one, the window it gave the keyboard last, Secure
+/// Keyboard Entry, and the global hotkey.
 struct AppState {
+    /// Under `--script`, the hotkey tells the dump what it would do, and does nothing.
+    scripted: bool,
     /// rtty is the active app (NSApplication's notifications; `--script`'s `app` step).
     active: bool,
     key: Option<WindowHandle<TerminalWindow>>,
@@ -46,6 +52,10 @@ struct AppState {
     held: bool,
     /// The enable and disable calls made: as many of each, or one more enable while held.
     calls: (u32, u32),
+    /// `global_hotkey`, registered with macOS for as long as the manager lives.
+    hotkey: Option<(HotKey, GlobalHotKeyManager)>,
+    /// Under `--script`, what the hotkey would have done.
+    toggled: Vec<String>,
 }
 
 impl Global for AppState {}
@@ -130,14 +140,43 @@ const MENUS: &[(&str, &[Item])] = &[
     ),
 ];
 
-/// The menu bar and what its app-wide items do, and Secure Keyboard Entry, whose toggle
-/// `secure_input` turns on from the start.
+/// The menu bar and what its app-wide items do; Secure Keyboard Entry, whose toggle
+/// `secure_input` turns on from the start; and the global hotkey, which under `--script` only
+/// says what it would do.
 pub fn init(cx: &mut App) {
     APP.with(|app| app.set(cx.to_async()).ok().expect("rtty starts once"));
     let settings = cx.global::<Settings>();
     let (bindings, secure_input) = (settings.bindings.clone(), settings.secure_input);
-    let (active, key, password, held, calls) = (false, None, false, false, (0, 0));
-    cx.set_global(AppState { active, key, secure_input, password, held, calls });
+    let (hotkey, scripted) = (settings.hotkey, !settings.launch.prompts);
+    let hotkey = hotkey.and_then(|hotkey| {
+        let manager = GlobalHotKeyManager::new();
+        match manager.and_then(|manager| manager.register(hotkey).map(|()| manager)) {
+            Ok(manager) => Some((hotkey, manager)),
+            Err(err) => {
+                eprintln!("rtty: global hotkey {hotkey}: {err}");
+                crate::note(&format!("global hotkey {hotkey}: {err}"));
+                None
+            }
+        }
+    });
+    if hotkey.is_some() {
+        GlobalHotKeyEvent::set_event_handler(Some(|event: GlobalHotKeyEvent| {
+            if event.state == HotKeyState::Pressed {
+                later(hotkey_pressed)
+            }
+        }));
+    }
+    cx.set_global(AppState {
+        scripted,
+        active: false,
+        key: None,
+        secure_input,
+        password: false,
+        held: false,
+        calls: (0, 0),
+        hotkey,
+        toggled: Vec::new(),
+    });
     cx.on_action(|_: &About, _| {
         NSApplication::sharedApplication(main_thread()).orderFrontStandardAboutPanel(None)
     });
@@ -199,6 +238,47 @@ pub fn set_active(active: bool, cx: &mut App) {
 pub fn key_window(window: WindowHandle<TerminalWindow>, cx: &mut App) {
     cx.global_mut::<AppState>().key = Some(window);
     cx.defer(refresh_secure_input);
+}
+
+/// The global hotkey: hides rtty while it is the active app; else brings it forward at the
+/// window that had the keyboard last, else the first, else a new one.
+pub fn hotkey_pressed(cx: &mut App) {
+    let state = cx.global::<AppState>();
+    let (active, key, scripted) = (state.active, state.key, state.scripted);
+    let hidden = crate::window::hidden_window(cx);
+    let windows = cx.windows().into_iter().filter(|window| Some(window.window_id()) != hidden);
+    let windows: Vec<WindowHandle<TerminalWindow>> =
+        windows.filter_map(|window| window.downcast()).collect();
+    let front = key.filter(|key| windows.contains(key)).or(windows.first().copied());
+    let did = match (active, front) {
+        (true, _) => "hid rtty".to_owned(),
+        (false, Some(window)) => format!("brought window {} forward", number(window, cx)),
+        (false, None) => "opened a window".to_owned(),
+    };
+    crate::note(&format!("global hotkey: {did}"));
+    if scripted {
+        return cx.global_mut::<AppState>().toggled.push(did);
+    }
+    match (active, front) {
+        (true, _) => cx.hide(),
+        (false, Some(window)) => {
+            cx.activate(true);
+            window.update(cx, |_, window, _| window.activate_window()).ok();
+        }
+        (false, None) => {
+            cx.activate(true);
+            if let Err(err) = crate::window::open(CommandBuilder::new_default_prog(), cx) {
+                eprintln!("rtty: {err}");
+            }
+        }
+    }
+}
+
+/// `window`'s number, from 1, in the order rtty's windows opened.
+fn number(window: WindowHandle<TerminalWindow>, cx: &App) -> usize {
+    let windows =
+        cx.windows().into_iter().position(|other| other.window_id() == window.window_id());
+    windows.map_or(0, |index| index + 1)
 }
 
 /// Holds Secure Keyboard Entry while rtty is the active app and its toggle is on or the focused
@@ -353,8 +433,10 @@ fn native_menus() -> impl Iterator<Item = Retained<NSMenu>> {
 pub fn dump(cx: &App) -> String {
     let mut out = String::new();
     let state = cx.global::<AppState>();
-    let key = state.key.map(|key| key.window_id().as_u64());
+    let key = state.key.map(|key| number(key, cx));
     let _ = writeln!(out, "app active {} key window {key:?}", state.active);
+    let hotkey = state.hotkey.as_ref().map(|(hotkey, _)| hotkey.to_string());
+    let _ = writeln!(out, "global hotkey {hotkey:?} registered, would have {:?}", state.toggled);
     // SAFETY: a Carbon call taking nothing.
     let system = unsafe { IsSecureEventInputEnabled() } != 0;
     let _ = writeln!(

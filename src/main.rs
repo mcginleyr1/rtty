@@ -369,6 +369,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         graphics: config.graphics.unwrap_or(true),
         secure_input: config.secure_input.unwrap_or(false),
         auto_secure_input: config.auto_secure_input.unwrap_or(true),
+        hotkey: config.hotkey,
         launch,
     })
 }

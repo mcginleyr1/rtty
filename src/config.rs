@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use global_hotkey::hotkey::HotKey;
 use gpui::{Keystroke, WindowAppearance};
 use regex::Regex;
 use serde::Deserialize;
@@ -58,6 +59,11 @@ pub struct Config {
     pub secure_input: Option<bool>,
     /// Secure Keyboard Entry while the pane with the keyboard reads a password.
     pub auto_secure_input: Option<bool>,
+    /// A chord, in `[bind]`'s syntax, that shows and hides rtty from any app (`hotkey`).
+    global_hotkey: Option<Spanned<String>>,
+    /// `global_hotkey` as macOS registers it.
+    #[serde(skip)]
+    pub hotkey: Option<HotKey>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -191,6 +197,25 @@ fn feature(text: &str) -> Option<(String, u32)> {
     };
     let tag_like = tag.len() == 4 && tag.chars().all(|c| c.is_ascii_alphanumeric());
     tag_like.then(|| (tag.to_owned(), value))
+}
+
+/// `text`, a chord as `[bind]` writes one, as a hotkey macOS can register for rtty: modifiers and
+/// a key a US keyboard has (a shifted symbol is Shift and its key, `ctrl-~` is ctrl-shift-
+/// backquote), with at least one modifier unless the key is a function key, since the hotkey
+/// takes its chord from every app.
+fn hotkey(text: &str) -> Result<HotKey, String> {
+    let chord = chord(text).ok_or("not a chord: modifiers and one key, joined by -")?;
+    let keystroke = Keystroke::parse(&chord).expect("a chord parses");
+    let held = keystroke.modifiers;
+    let function = (1..=24).any(|n| keystroke.key == format!("f{n}"));
+    if held.function || !(held.modified() || function) {
+        return Err("ctrl, alt, shift or cmd with a key, or a function key".into());
+    }
+    let names =
+        [(held.control, "ctrl"), (held.alt, "alt"), (held.shift, "shift"), (held.platform, "cmd")];
+    let names = names.into_iter().filter_map(|(held, name)| held.then_some(name));
+    let parts: Vec<&str> = names.chain([keystroke.key.as_str()]).collect();
+    parts.join("+").parse().map_err(|_| format!("no key a global hotkey can be: {}", keystroke.key))
 }
 
 /// rtty's own chords and, with `keys = "tutti"`, tutti's direct keys.
@@ -380,6 +405,13 @@ impl Config {
                 "font_features: {wrong:?} is not a feature: a four-letter OpenType tag, alone \
                  (on), after - (off), or with =n (alternate n)"
             ));
+        }
+        if let Some(text) = &config.global_hotkey {
+            let line = source[..text.span().start].matches('\n').count() + 1;
+            let hotkey = hotkey(text.get_ref()).map_err(|what| {
+                format!("line {line}: global_hotkey {:?}: {what}", text.get_ref())
+            })?;
+            config.hotkey = Some(hotkey);
         }
         config.bindings = defaults(config.keys.unwrap_or_default());
         let mut lines = HashMap::new();
@@ -722,6 +754,32 @@ mod tests {
         assert_eq!(read(source).unwrap(), (Some(true), Some(false)));
         assert!(read("secure-input = true").is_err(), "keys are written with underscores");
         assert!(read("secure_input = 'yes'").is_err());
+    }
+
+    #[test]
+    fn the_global_hotkey_is_a_chord_macos_can_register() {
+        use global_hotkey::hotkey::{Code, Modifiers};
+        let hotkey = |chord: &str| Config::parse(&format!("global_hotkey = {chord:?}"));
+        assert_eq!(Config::parse("").unwrap().hotkey, None);
+        let backquote = HotKey::new(Some(Modifiers::CONTROL), Code::Backquote);
+        assert_eq!(hotkey("ctrl-`").unwrap().hotkey, Some(backquote));
+        let all = Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::META;
+        let space = HotKey::new(Some(all), Code::Space);
+        assert_eq!(hotkey("cmd-shift-alt-ctrl-space").unwrap().hotkey, Some(space));
+        assert_eq!(
+            hotkey("alt-T").unwrap().hotkey,
+            Some(HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyT))
+        );
+        assert_eq!(hotkey("f13").unwrap().hotkey, Some(HotKey::new(None, Code::F13)));
+        let err = |chord| hotkey(chord).unwrap_err();
+        assert_eq!(
+            err("ctrl-~"),
+            "line 1: global_hotkey \"ctrl-~\": no key a global hotkey can be: ~"
+        );
+        for alone in ["a", "space", "fn-f1"] {
+            assert!(err(alone).ends_with("a function key"), "{alone}");
+        }
+        assert!(err("ctrl-a b").ends_with("not a chord: modifiers and one key, joined by -"));
     }
 
     #[test]

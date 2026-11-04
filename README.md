@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, rtty becoming the active app and not, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, rtty becoming the active app and not, a press of the global hotkey, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--restore` | with `--script`: restore the saved layout and save it, as a normal launch does ([Restoring windows](#configuration)); the script drives the first window |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
@@ -126,6 +126,7 @@ restore_layout = true             # the default: the windows come back at the ne
 graphics = true                   # the default: programs show images (Images); false drops their commands
 secure_input = false              # the default: Secure Keyboard Entry starts off (Keys)
 auto_secure_input = true          # the default: Secure Keyboard Entry at a password prompt (Keys)
+global_hotkey = "ctrl-`"          # a chord that shows and hides rtty from any app; unset by default (Keys)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -379,6 +380,15 @@ while the focused pane of the window with the keyboard reads a password, as Ghos
 pty's echo off and canonical mode on (`sudo`, `ssh`, `read -s`), looked at with `tcgetattr` as
 the pane prints, as its focus moves, and once a second. A lock before the shown tab's title in the
 bar says it is on.
+
+**The global hotkey.** `global_hotkey`, a chord in `[bind]`'s syntax, works from any app: while
+rtty is the active app it hides rtty, else it brings rtty forward at the window that had the
+keyboard last (else the first, else a new one). macOS registers it for rtty through Carbon's
+`RegisterEventHotKey` (the `global-hotkey` crate), which needs no Accessibility permission, and
+takes the chord from every other app while rtty runs. It needs a modifier, unless its key is a
+function key, and a key a US keyboard has: a shifted symbol is Shift and its key
+(`` ctrl-shift-` ``, not `ctrl-~`). A chord macOS will not register is reported on stderr and in
+the log, and rtty runs without it.
 
 New panes, tabs and windows run the login shell in the focused pane's working directory: as its
 shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else the directory of the
@@ -798,7 +808,7 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   `applicationShouldTerminate:`, added to GPUI's application delegate at startup, which asks
   `window::quit`'s question and answers AppKit later (`NSTerminateLater`); and Secure Keyboard
   Entry, held from one place (`refresh_secure_input`) as rtty's activation, the toggle and the
-  focused pane's password prompt (`Pane::reads_password`) change.
+  focused pane's password prompt (`Pane::reads_password`) change; and the global hotkey.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
   escaped for a shell, unit tested (the escaping against sh and zsh themselves).
@@ -937,7 +947,9 @@ click on an item are not yet checked by eye. Secure Keyboard Entry is checked th
 with `--script`'s `app` step standing in for macOS making rtty active and not: the enable and
 disable calls rtty made, one each way, macOS's own word (`IsSecureEventInputEnabled`), a
 password prompt holding it, and none held after quitting; the lock and the menu's check mark
-are not yet checked by eye.
+are not yet checked by eye. The global hotkey is registered with macOS in a scripted run too, and
+`--script`'s `hotkey` step runs what a press runs, which a scripted rtty keeps in its dump
+instead of doing; a real press is not yet checked.
 
 ## The GPUI pin
 
@@ -949,10 +961,10 @@ Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
 machine that has not fetched it. The cost is a shader compile at startup.
 
-Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT; the image crates (`png` and
-`miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or Apache-2.0. rtty takes nothing
-from Zed's GPL `terminal` / `terminal_view` crates, and nothing from kitty's GPL source: the
-graphics protocol is implemented from its documentation.
+Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT, global-hotkey is Apache-2.0 or
+MIT; the image crates (`png` and `miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or
+Apache-2.0. rtty takes nothing from Zed's GPL `terminal` / `terminal_view` crates, and nothing
+from kitty's GPL source: the graphics protocol is implemented from its documentation.
 
 ## Roadmap
 

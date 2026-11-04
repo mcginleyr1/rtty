@@ -293,7 +293,7 @@ fn leave_undo(pane: PaneId, cx: &mut App) {
 }
 
 /// The window a close hid, while `undo-close` can bring it back.
-fn hidden_window(cx: &App) -> Option<WindowId> {
+pub fn hidden_window(cx: &App) -> Option<WindowId> {
     let undo = cx.try_global::<LastClose>()?.0.as_ref()?;
     matches!(undo.reopen, Reopen::Window).then(|| undo.window.window_id())
 }
