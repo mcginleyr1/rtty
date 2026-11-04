@@ -1,0 +1,26 @@
+# rtty's config. Every key is optional: each is here, commented out, at its default.
+# rtty reads this file again as it is saved, and Cmd+Shift+, reads it at once.
+# What each key does: rtty's README, under Configuration.
+
+# font = "Menlo"
+# fallback = ["Symbols Nerd Font Mono"]  # unset: an installed Nerd Font
+# size = 14
+# ligatures = true
+# scheme_dark = "OneDark Pro"
+# scheme_light = "Solarized Light"
+# scheme = "Solarized Dark"              # one scheme whatever the appearance, for the two above
+# keys = "rtty"                          # or "tutti": Ctrl+h/j/k/l and Alt+h/j/k/l too
+# bell = "visual"                        # or "none"
+# option_as_alt = "both"                 # or "left", "right", "none"
+# minimum_contrast = 1                   # 4.5 keeps text legible
+# confirm_close = true
+# undo_timeout = 5
+# shell_integration = "auto"             # or "none"
+# notify_after = 10
+# click_to_move = true
+# editor = ["nvim", "+{line}", "{path}"]  # what edits a file Cmd+click opens; unset: $EDITOR
+# quick_select_patterns = []             # regexes quick select labels too
+
+# [bind]                                 # chords and the actions they run, over the defaults
+# "alt-\\" = "split-right"
+# "cmd-shift-d" = "none"                 # unbinds a default

@@ -31,6 +31,7 @@ use raw_window_handle::RawWindowHandle;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
 
 use crate::cli::RESIZE_STEP;
+use crate::config;
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
 use crate::editor;
 use crate::layout::{Amount, Closed, Direction, Layout, Orientation, PaneId, Place, Rect, Tabs};
@@ -44,8 +45,23 @@ use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
 actions!(
     rtty,
-    [NewWindow, NewTab, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab, UndoClose]
+    [
+        NewWindow,
+        NewTab,
+        SplitRight,
+        SplitDown,
+        ToggleZoom,
+        PreviousTab,
+        NextTab,
+        UndoClose,
+        OpenConfig
+    ]
 );
+
+/// What `open-config` has the user's login shell run, as an interactive login shell so that its
+/// dotfiles set `EDITOR` (a GUI app's environment has none): the editor on the file, else
+/// `open -t`. In the words zsh, bash and fish share.
+const EDIT_CONFIG: &str = r#"test -z "$EDITOR" && exec open -t "$RTTY_CONFIG_FILE"; eval "$EDITOR \"\$RTTY_CONFIG_FILE\"""#;
 
 /// Moves the keyboard to the nearest pane that way. `keystroke` is the chord bound to it, which
 /// goes to the pane instead when the pane claimed the keys (`PaneView::claimed_chord`).
@@ -429,12 +445,7 @@ pub fn reloaded(said: &str, cx: &mut App) {
     for handle in windows {
         let _ = handle.update(cx, |this, window, cx| {
             this.follow_appearance(window.appearance(), cx);
-            this.said = Some((said.to_owned(), Instant::now()));
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SAID).await;
-                this.update(cx, |_, cx| cx.notify()).ok();
-            })
-            .detach();
+            this.say(said, cx);
         });
     }
 }
@@ -1143,6 +1154,46 @@ impl TerminalWindow {
         }
     }
 
+    /// Shows `said` along the window's bottom for a moment: what came of the config's reload or
+    /// of opening it.
+    fn say(&mut self, said: &str, cx: &mut Context<Self>) {
+        self.said = Some((said.to_owned(), Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAID).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// `open-config`: the config file in a new tab, after the current one, in the user's editor
+    /// (`EDIT_CONFIG`); first written from rtty's commented template when there is none.
+    fn open_config(&mut self, _: &OpenConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = cx.global::<Settings>().launch.config.clone() else {
+            return self.say("no config file: neither XDG_CONFIG_HOME nor HOME is set", cx);
+        };
+        if let Err(err) = config::create(&path) {
+            return self.say(&format!("{}: {err}", path.display()), cx);
+        }
+        let shell = CommandBuilder::new_default_prog().get_shell();
+        let mut command = CommandBuilder::from_argv(
+            [shell.as_str(), "-l", "-i", "-c", EDIT_CONFIG].map(Into::into).to_vec(),
+        );
+        command.env("RTTY_CONFIG_FILE", &path);
+        if let Some(dir) = path.parent() {
+            command.cwd(dir);
+        }
+        let (area, ..) = self.area(window, cx);
+        let id = next_pane_id();
+        match spawn(command, id, area.rows, area.cols, &self.scheme, cx) {
+            Ok((pane, notices)) => {
+                self.tabs.open(id);
+                self.add(id, pane, notices, window, cx);
+            }
+            Err(err) => self.say(&err, cx),
+        }
+    }
+
     fn new_window(&mut self, _: &NewWindow, _: &mut Window, cx: &mut Context<Self>) {
         let command = shell(self.focused_cwd(cx));
         // Opened once this window's update is done, so it cascades from this one.
@@ -1593,6 +1644,7 @@ impl Render for TerminalWindow {
             }))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_window))
+            .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(|this, action: &SelectTab, window, cx| {
                 this.select_tab(action.0, window, cx)
             }))
@@ -1631,6 +1683,33 @@ mod tests {
         assert!(pane.without(1));
         assert!(!pane.without(3));
         assert!(Reopen::Window.without(5));
+    }
+
+    #[test]
+    fn the_config_opens_in_the_editor_else_with_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rtty-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Stands in for macOS's `open`, which would launch TextEdit.
+        let open = dir.join("open");
+        std::fs::write(&open, "#!/bin/sh\nprintf 'open %s' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = "/tmp/a dir/it's.toml";
+        let run = |shell: &str, editor: &str| {
+            let output = std::process::Command::new(shell)
+                .args(["-c", EDIT_CONFIG])
+                .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+                .env("EDITOR", editor)
+                .env("RTTY_CONFIG_FILE", file)
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            assert_eq!(run(shell, "printf %s."), format!("{file}."), "{shell}");
+            assert_eq!(run(shell, ""), format!("open -t {file}"), "{shell}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

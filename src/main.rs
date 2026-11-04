@@ -55,8 +55,8 @@ use view::{
     QuickOpen, QuickSelect, Settings,
 };
 use window::{
-    ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
-    SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
+    ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, OpenConfig, PreviousTab,
+    ResizePane, SelectTab, SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
 };
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize, ReloadConfig]);
@@ -251,6 +251,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
         Action::FontReset => KeyBinding::new(chord, ResetFontSize, None),
         Action::ReloadConfig => KeyBinding::new(chord, ReloadConfig, None),
+        Action::OpenConfig => KeyBinding::new(chord, OpenConfig, None),
         Action::Quit => KeyBinding::new(chord, Quit, None),
     }
 }

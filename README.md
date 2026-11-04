@@ -93,6 +93,13 @@ reads small.
 optional; an unknown key, an unknown scheme name or a malformed file is an error that names it,
 and rtty does not start. Once rtty runs, a saved change takes effect by itself (below).
 
+`Cmd+,` (`open-config`) opens the file in a new tab. With no file there it first writes
+[`config.template.toml`](config.template.toml), every key commented out at its default. The tab
+runs your login shell as an interactive login shell, so that its dotfiles set `EDITOR` (an app
+started from the Dock or Finder has no `EDITOR` of its own), and the shell runs `$EDITOR` on the
+file, or `open -t` (TextEdit, or your default text editor) when `EDITOR` is empty; the tab closes
+with the editor. The words it runs are the same in zsh, bash and fish (fish untried).
+
 ```toml
 font = "FiraCode Nerd Font"
 fallback = ["Symbols Nerd Font Mono"]  # for what `font` lacks, in order (Fonts, below)
@@ -283,6 +290,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
 | `Cmd+0` | `font-reset` | font size back to the configured one (`size`, or `--size`) |
 | `Cmd+Shift+,` | `reload-config` | read the config file again now ([Configuration](#configuration)); rtty also does when it changes |
+| `Cmd+,` | `open-config` | the config file in your editor, in a new tab; written first from rtty's commented template when there is none ([Configuration](#configuration)) |
 | `Cmd` over a link, `Cmd+click` | | underline the link (a URL, or a path such as `src/main.rs:12:5`) under the pointer; open it (below) |
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |

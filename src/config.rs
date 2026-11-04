@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, OpenOptions};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +88,7 @@ pub enum Action {
     QuickSelect,
     QuickOpen,
     ReloadConfig,
+    OpenConfig,
     Quit,
 }
 
@@ -124,6 +125,7 @@ impl Action {
             "quick-select" => QuickSelect,
             "quick-open" => QuickOpen,
             "reload-config" => ReloadConfig,
+            "open-config" => OpenConfig,
             "quit" => Quit,
             _ => {
                 return toward("focus")
@@ -178,8 +180,9 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
         // Cmd+Shift+[ and ], as macOS reports them.
         ("cmd-{", PrevTab),
         ("cmd-}", NextTab),
-        // Cmd+Shift+, as macOS reports it: Ghostty's chord.
+        // Cmd+Shift+, as macOS reports it, and Cmd+, (a Mac app's settings): Ghostty's chords.
         ("cmd-<", ReloadConfig),
+        ("cmd-,", OpenConfig),
     ];
     let fixed = fixed.into_iter().map(|(chord, action)| (chord.to_owned(), action));
     let arrows = Direction::ALL.into_iter().flat_map(|direction| {
@@ -277,6 +280,21 @@ pub fn home() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+}
+
+/// Every key, commented out at its default: what `open-config` starts a config file from.
+pub const TEMPLATE: &str = include_str!("../config.template.toml");
+
+/// Writes `TEMPLATE` to `path`, and the directories it is in, unless a file is there already.
+pub fn create(path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => file.write_all(TEMPLATE.as_bytes()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 impl Config {
@@ -401,6 +419,49 @@ mod tests {
     }
 
     #[test]
+    fn the_template_holds_every_key_commented_out_at_its_default() {
+        let defaults = Config::parse(TEMPLATE).unwrap();
+        assert_eq!(defaults.bindings, Config::parse("").unwrap().bindings);
+        // Each setting line, as it would read uncommented.
+        let uncommented: Vec<&str> = TEMPLATE
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(setting) if setting.contains(" = ") || setting.starts_with("[bind]") => {
+                    setting
+                }
+                _ => line,
+            })
+            .collect();
+        let config = Config::parse(&uncommented.join("\n")).unwrap();
+        assert_eq!(
+            (config.font.as_deref(), config.size, config.ligatures),
+            (Some("Menlo"), Some(14.), Some(true))
+        );
+        assert_eq!(config.keys.unwrap_or_default(), Keys::default());
+        assert_eq!(config.bell.unwrap_or_default(), Bell::default());
+        assert_eq!(config.option_as_alt.unwrap_or_default(), OptionAsAlt::default());
+        assert_eq!(config.shell_integration.unwrap_or_default(), ShellIntegration::default());
+        assert_eq!((config.minimum_contrast, config.undo_timeout), (Some(1.), Some(5)));
+        assert_eq!(config.notify_after(), defaults.notify_after());
+        assert_eq!((config.confirm_close, config.click_to_move), (Some(true), Some(true)));
+        assert!(config.editor.is_some() && config.quick_select.is_empty());
+        assert_eq!(config.bindings["alt-\\"], Action::SplitRight);
+        assert!(!config.bindings.contains_key("cmd-shift-d"));
+    }
+
+    #[test]
+    fn creating_the_config_leaves_one_that_is_there() {
+        let dir = std::env::temp_dir().join(format!("rtty-config-{}", std::process::id()));
+        let path = dir.join("rtty/config.toml");
+        create(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
+        fs::write(&path, "size = 9").unwrap();
+        create(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "size = 9");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_theme_is_watched_through_its_schemes_files() {
         let source = "[colors]\nforeground = '#ffffff'\nbackground = '#000000'\n\
                       ansi = ['#000000', '#000000', '#000000', '#000000', '#000000', '#000000', \
@@ -454,9 +515,9 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 40);
+        assert_eq!(defaults.len(), 41);
         assert_eq!(defaults["cmd-d"], SplitRight);
-        assert_eq!(defaults["cmd-<"], ReloadConfig);
+        assert_eq!((defaults["cmd-<"], defaults["cmd-,"]), (ReloadConfig, OpenConfig));
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
         assert_eq!(defaults["cmd-z"], UndoClose);
         assert_eq!(defaults["cmd-shift-a"], CopyLastOutput);
@@ -471,7 +532,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 48);
+        assert_eq!(tutti.len(), 49);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -481,7 +542,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 48 + 3 - 2);
+        assert_eq!(mine.len(), 49 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -494,7 +555,7 @@ mod tests {
                      split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
                      prompt-prev prompt-next clear-scrollback quick-select quick-open reload-config \
-                     quit";
+                     open-config quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
