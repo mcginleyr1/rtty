@@ -371,7 +371,11 @@ only while `Cmd` is held over it and at the click, never per frame. A click on
 
 - **text** (a file with no NUL byte in its first 8 KiB) edits it at the line and column:
   1. in a Neovim running rtty's plugin, in that pane or else in another pane of its tab, which
-     then takes the keyboard (the plugin names its server to rtty: [editors](editors/README.md));
+     then takes the keyboard (the plugin names its server to rtty: [editors](editors/README.md)).
+     rtty believes that name only while `nvim` is the pane's foreground program and the server is
+     a socket of yours, since any output can claim it. It asks off the window's thread, and the
+     Neovims have half a second together; one that reads the request later refuses it, so the
+     file never opens both there and in a pane;
   2. else in a new pane to the right, which runs `editor` with `{path}`, `{line}` and `{col}`
      filled in, or with no `editor`, `$EDITOR +line path` (`vi` without an EDITOR). Your login
      shell runs it, interactive, so it finds the PATH and EDITOR your dotfiles set, which an app
@@ -597,9 +601,10 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   line, else a path with its line and column to a file that exists) with what a click does with
   it (open, reveal in Finder, edit, ignore) and what to show of a disguised one; both unit tested,
   and neither opens anything.
-- `editor.rs` — editing a file at a line: the msgpack-rpc call that has a Neovim running rtty's
-  plugin open it, and what a new pane runs otherwise (`editor`, else `$EDITOR`, through the login
-  shell); unit tested, against sh and a stand-in Neovim socket.
+- `editor.rs` — editing a file at a line: which Neovim to believe, the msgpack-rpc call (with its
+  deadline) that has one running rtty's plugin open it, and what a new pane runs otherwise
+  (`editor`, else `$EDITOR`, through the login shell); unit tested, against sh and a stand-in
+  Neovim socket.
 - `quick.rs` — what quick select finds on screen, as cells, and its labels, nearest the cursor
   first and none a prefix of another; unit tested. The view takes every key while they show
   (a keystroke interceptor, ahead of the bindings).

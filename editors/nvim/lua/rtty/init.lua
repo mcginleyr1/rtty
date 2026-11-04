@@ -42,8 +42,13 @@ function M.announce(on)
 end
 
 -- Edits `path` with the cursor on `line` and `col` (from 1), in the window that shows it if one
--- does, else in the current one. rtty calls it through the server.
-function M.open(path, line, col)
+-- does, else in the current one. rtty calls it through the server, with `deadline` in
+-- milliseconds since the epoch: past it, rtty has opened the file elsewhere, so this refuses.
+function M.open(path, line, col, deadline)
+  local seconds, micros = vim.uv.gettimeofday()
+  if deadline and seconds * 1000 + micros / 1000 > deadline then
+    error('rtty: asked to open a file past its deadline')
+  end
   vim.cmd.drop(vim.fn.fnameescape(path))
   pcall(vim.api.nvim_win_set_cursor, 0, { line, col - 1 })
 end

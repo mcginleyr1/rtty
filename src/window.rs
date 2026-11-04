@@ -11,10 +11,11 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::oneshot;
+use futures::future::{self, Either};
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
     EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -666,25 +667,58 @@ impl TerminalWindow {
 
     /// Edits `at` for pane `from`: in the Neovim with rtty's plugin running there, else in one
     /// running in another pane of its tab, which takes the keyboard; else in a new pane to
-    /// `from`'s right (`editor::command`).
+    /// `from`'s right (`editor::command`). The Neovims are asked one after another on a
+    /// background thread, all by one deadline (`editor::NVIM_WAIT`), and the window waits for
+    /// them no longer than that and its grace.
     fn edit(&mut self, from: PaneId, at: &Location, window: &mut Window, cx: &mut Context<Self>) {
         let mut panes = self.tabs.active().panes();
         panes.sort_by_key(|&pane| pane != from);
         let server = |pane| Some((pane, self.views.get(&pane)?.read(cx).nvim()?));
         let servers: Vec<_> = panes.into_iter().filter_map(server).collect();
-        let opened = servers.into_iter().find(|(pane, server)| match editor::nvim(server, at) {
-            Ok(()) => true,
-            Err(err) => {
-                crate::note(&format!(
-                    "pane {from}: pane {pane}'s Neovim did not open a file: {err}"
-                ));
-                false
-            }
-        });
-        if let Some((pane, _)) = opened {
-            crate::note(&format!("pane {from}: opened a file in pane {pane}'s Neovim"));
-            return self.show(pane, window, cx);
+        if servers.is_empty() {
+            return self.edit_in_pane(from, at, window, cx);
         }
+        let (asked, deadline) = (at.clone(), SystemTime::now() + editor::NVIM_WAIT);
+        let opened = cx.background_spawn(async move {
+            let open =
+                |(pane, server): (PaneId, PathBuf)| match editor::nvim(&server, &asked, deadline) {
+                    Ok(()) => Some(pane),
+                    Err(err) => {
+                        crate::note(&format!(
+                            "pane {from}: pane {pane}'s Neovim opened nothing: {err}"
+                        ));
+                        None
+                    }
+                };
+            servers.into_iter().find_map(open)
+        });
+        let at = at.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let waited = cx.background_executor().timer(editor::NVIM_WAIT + editor::NVIM_GRACE);
+            let opened = match future::select(opened, waited).await {
+                Either::Left((opened, _)) => opened,
+                Either::Right(_) => None,
+            };
+            this.update_in(cx, |this, window, cx| match opened {
+                Some(pane) => {
+                    crate::note(&format!("pane {from}: opened a file in pane {pane}'s Neovim"));
+                    this.show(pane, window, cx)
+                }
+                None => this.edit_in_pane(from, &at, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Edits `at` in a new pane to `from`'s right (`editor::command`).
+    fn edit_in_pane(
+        &mut self,
+        from: PaneId,
+        at: &Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let command = editor::command(cx.global::<Settings>().editor.as_deref(), at);
         if let Err(err) = self.split(from, Direction::Right, Some(command), window, cx) {
             eprintln!("rtty: {err}");

@@ -28,6 +28,7 @@ use rtty_vt::{
 };
 
 use crate::config::{Bell, Theme};
+use crate::editor;
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
 use crate::links::{self, Link, Location, Opening, Target};
@@ -560,8 +561,12 @@ impl PaneView {
         self.claims_keys
     }
 
+    /// The server the pane's Neovim named, while `nvim` is the pane's foreground program and the
+    /// server a socket of this user's (`editor::trusted`).
     pub fn nvim(&self) -> Option<PathBuf> {
-        self.nvim.clone()
+        let server = self.nvim.clone()?;
+        let program = self.pane.foreground()?.argv.into_iter().next()?;
+        editor::trusted(&server, &program).then_some(server)
     }
 
     pub fn progress(&self) -> Option<Progress> {

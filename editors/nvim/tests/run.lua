@@ -184,6 +184,18 @@ test('open edits the file at the line and column, in the window that shows it', 
   vim.cmd('silent! %bwipeout!')
 end)
 
+test('open refuses past its deadline, when rtty has opened the file elsewhere', function()
+  local file = vim.fn.tempname()
+  vim.fn.writefile({ 'one', 'two' }, file)
+  local seconds, micros = vim.uv.gettimeofday()
+  local now = seconds * 1000 + micros / 1000
+  eq(false, (pcall(rtty.open, file, 2, 1, now - 1)))
+  assert(vim.api.nvim_buf_get_name(0) == '', 'opened it anyway')
+  rtty.open(file, 2, 1, now + 60000)
+  eq({ 2, 0 }, vim.api.nvim_win_get_cursor(0))
+  vim.cmd('silent! %bwipeout!')
+end)
+
 test("setup({ keys = true }) maps tutti's keys and rtty's chords and claims them", function()
   sent = {}
   rtty.setup({ keys = true })

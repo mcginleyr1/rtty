@@ -45,9 +45,12 @@ the claim also ends at the shell's next prompt, when the shell marks it with OSC
 **Opening files here.** A Neovim also sets the user var `RTTY_NVIM` to its server's socket
 (`v:servername`) while it runs, and clears it the same way. A path that rtty opens from this pane
 or another in its tab (a `Cmd+click`, `quick-open`) then goes to that Neovim: rtty calls
-`require('rtty').open(path, line, col)` over the server's msgpack-rpc, and gives the pane the
-keyboard. With no such Neovim, rtty opens a new pane with the configured editor
-([Links](../README.md#keys)).
+`require('rtty').open(path, line, col, deadline)` over the server's msgpack-rpc, and gives the
+pane the keyboard. rtty takes the var only while `nvim` is the pane's foreground program and the
+socket is the user's own, since any output (an ssh session's) can set it. With no such Neovim, or
+none that answers within half a second, rtty opens a new pane with the configured editor
+([Links](../README.md#keys)); `open` refuses a request it reads past `deadline`, so the file
+never opens in both.
 
 Past the editor's edge, the plugins call the CLI with `--from` set to the editor's own
 `$RTTY_PANE`:
@@ -102,8 +105,9 @@ The Lua API is `require('rtty')`:
 - `resize(direction, amount)`: move rtty's split border; `amount` under 1 is a share of the split,
   1 or more a number of cells, nil rtty's step.
 - `split(direction)`: open an rtty pane that way.
-- `open(path, line, col)`: edit `path` with the cursor at `line` and `col` (from 1), in the window
-  showing it (`:drop`), else the current one; what rtty calls through the server.
+- `open(path, line, col, deadline)`: edit `path` with the cursor at `line` and `col` (from 1), in
+  the window showing it (`:drop`), else the current one; what rtty calls through the server. Past
+  `deadline` (milliseconds since the epoch; optional) it raises an error instead.
 - `here()`: true in an rtty pane outside tutti.
 
 `focus`, `resize`, `split` and `navigate` give rtty 500 ms (`require('rtty').timeout`) and never
