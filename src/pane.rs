@@ -635,6 +635,18 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    fn wait_for_output(pane: &Pane, output: &str) {
+        let started = Instant::now();
+        while prompt::last_output(&pane.lock()).as_deref() != Some(output) {
+            let term = pane.lock();
+            let (last, screen) = (prompt::last_output(&term), term.contents());
+            let waited = started.elapsed() < Duration::from_secs(5);
+            assert!(waited, "never output {output:?}, last {last:?} on {screen:?}");
+            drop(term);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Real zsh and bash (macOS's 3.2, and Homebrew's where it is installed) as login shells, each
     /// with a home of its own whose startup files know nothing of rtty: they load the integration,
     /// still count as the pane's shell, mark prompts, command lines, output and ends, and leave
@@ -660,8 +672,10 @@ mod tests {
             let (pane, _) = Pane::spawn(shell, 24, 80, None, None, Some(&integration)).unwrap();
             wait_for(&pane, "ready>");
             assert!(foreground_when(&pane, |process| process.shell).shell, "{path}");
+            pane.write(b"echo one two\n".to_vec());
+            wait_for_output(&pane, "one two");
             pane.write(b"env | grep -c rtty-int; echo $ZDOTDIR\n".to_vec());
-            wait_for(&pane, &format!("\n0\n{}\nready>", home.join("zdotdir").display()));
+            wait_for_output(&pane, &format!("0\n{}", home.join("zdotdir").display()));
             let marks = prompt::marks(&pane.lock());
             let kinds = [MarkKind::PromptStart, MarkKind::CommandStart, MarkKind::OutputStart];
             for kind in kinds {

@@ -41,7 +41,7 @@ use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::title::{self, Title};
 use crate::window::{ClosePane, LastPane, MoveFocus, ResizePane};
 
-actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt, ClearScrollback]);
+actions!(rtty, [Copy, CopyLastOutput, Paste, Find, PreviousPrompt, NextPrompt, ClearScrollback]);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
@@ -51,6 +51,9 @@ const SEARCH_REFRESH: Duration = Duration::from_millis(100);
 
 /// How long a bell flashes the pane.
 const FLASH: Duration = Duration::from_millis(150);
+
+/// How long a word on what a key did (copied the last output) stays over the pane.
+const STATUS: Duration = Duration::from_millis(1500);
 
 /// A blinking cursor is on for this long, then off for as long; it holds still once the
 /// keyboard has been idle for `BLINK_FOR`, so an idle window draws nothing.
@@ -75,6 +78,9 @@ pub struct Settings {
     /// Cmd+click opens links with the system's handler; under `--script` it records them in the
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,
+    /// The last command's output goes to the clipboard; under `--script` to the pane's dump
+    /// only, so a scripted run leaves the clipboard alone.
+    pub clipboard: bool,
     pub bell: Bell,
     /// `minimum_contrast`: the WCAG contrast ratio text keeps with its background.
     pub minimum_contrast: f32,
@@ -136,6 +142,10 @@ pub struct PaneView {
     followed: Vec<String>,
     /// When the last bell flashed the pane.
     flashed: Option<Instant>,
+    /// A word on what a key did, and when, shown over the pane for `STATUS`.
+    status: Option<(&'static str, Instant)>,
+    /// What the last command's output key copied, or under `--script` would have.
+    copied: Option<String>,
     /// What the pane is called, as of the last look (`refresh_title`).
     title: Title,
     /// What the program last said of its progress, until it removes it or a shell draws its
@@ -315,6 +325,8 @@ impl PaneView {
             link: None,
             followed: Vec::new(),
             flashed: None,
+            status: None,
+            copied: None,
             title: Title::default(),
             progress: None,
             stats,
@@ -654,6 +666,30 @@ impl PaneView {
         cx.notify();
     }
 
+    /// Copies the last command's output (`prompt::last_output`), and says so over the pane for a
+    /// moment.
+    fn copy_last_output(&mut self, _: &CopyLastOutput, _: &mut Window, cx: &mut Context<Self>) {
+        let output = prompt::last_output(&self.pane.lock());
+        let status = match output.as_deref() {
+            None => "no command output to copy",
+            Some("") => "the last command printed nothing",
+            Some(text) => {
+                if cx.global::<Settings>().clipboard {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+                }
+                self.copied = Some(text.to_owned());
+                "copied the last command's output"
+            }
+        };
+        self.status = Some((status, Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(STATUS).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.paste_text(&text, cx);
@@ -750,6 +786,12 @@ impl PaneView {
             marks.map(|mark| format!("{:?} {},{}", mark.kind, mark.row, mark.col)).collect();
         if !marks.is_empty() {
             let _ = writeln!(out, "marks {}", marks.join(", "));
+        }
+        if let Some((text, at)) = self.status {
+            let _ = writeln!(out, "status {text:?} {} ms ago", at.elapsed().as_millis());
+        }
+        if let Some(copied) = &self.copied {
+            let _ = writeln!(out, "copied {copied:?}");
         }
         if self.link.is_some() || !self.followed.is_empty() {
             let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);
@@ -1725,6 +1767,7 @@ impl Render for PaneView {
             .track_focus(&self.focus)
             .key_context("Terminal")
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::copy_last_output))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::find))
             .on_action(cx.listener(Self::clear_scrollback))
@@ -1780,6 +1823,7 @@ impl Render for PaneView {
             )
             .children(self.search_bar(cx))
             .children(self.link_target(cx))
+            .children(self.status_label(cx))
     }
 }
 
@@ -1804,6 +1848,12 @@ impl PaneView {
     fn link_target(&self, cx: &App) -> Option<Div> {
         let (_, target) = self.link.as_ref()?;
         Some(self.label(target.clone()?, cx).bottom(px(0.)).left(px(0.)))
+    }
+
+    /// What a key just did, bottom right, for a moment.
+    fn status_label(&self, cx: &App) -> Option<Div> {
+        let (text, _) = self.status.filter(|(_, at)| at.elapsed() < STATUS)?;
+        Some(self.label(text.into(), cx).bottom(px(0.)).right(px(0.)))
     }
 
     /// A line over the pane, in the scheme's colors inverted.

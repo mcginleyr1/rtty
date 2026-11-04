@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from, with the shell's marks; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from, with the shell's marks and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -244,6 +244,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | none | `swap-left`, `-right`, `-up`, `-down` | trade places with the pane focus would go to that way; the splits stay, and the focus goes with the pane |
 | `Cmd+Shift+Enter` | `zoom` | zoom the pane to fill its tab, or back |
 | `Cmd+C` | `copy` | copy the selection |
+| `Cmd+Shift+A` | `copy-last-output` | copy the last command's output, scrollback included ([Shell integration](#shell-integration)), as iTerm2's chord does |
 | `Cmd+V` | `paste` | paste (bracketed when the program asked for it) |
 | `Cmd+F` | `find` | search the pane's scrollback and screen (below) |
 | `Cmd+Up` / `Cmd+Down` | `prompt-prev` / `prompt-next` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
@@ -439,14 +440,18 @@ another zsh or bash, or the shells tutti starts for its own panes, which are tut
 **Marked twice.** A prompt that marks itself as well (oh-my-posh, another terminal's integration
 copied into a dotfile) puts a second mark of a kind right after rtty's, on the same row. rtty's
 scripts add A and B to `PS1` only when it has none, and rtty counts a run of one kind of mark on one
-row as its first, so a prompt jump stops once per prompt, and what a command left on goes off once
-(above). Skipping rtty's
+row as its first, so a prompt jump stops once per prompt, the last output ends at its first end,
+and what a command left on goes off once (above). Skipping rtty's
 integration when the user has one was the other way, but a prompt's marks show only once it draws,
 after the shell has started.
 
 **What the marks give.**
 
 - `Cmd+Up` and `Cmd+Down` jump between prompts ([Keys](#keys)).
+- `Cmd+Shift+A` (`copy-last-output`) copies the output of the last command that finished, from its
+  output mark to its end (or the next prompt, from a shell that marks no end), scrollback included.
+  A label at the pane's bottom right says for a moment that it copied, that the command printed
+  nothing, or that there is no output to copy.
 
 ## rtty cli and editors
 
@@ -522,8 +527,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `shell.rs` and `shell/` — the shell integration scripts, written into rtty's directory at
   startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
   real zsh and bash through a pty.
-- `prompt.rs` — what the shell's OSC 133 marks say, as cells by absolute row: where prompts start;
-  a run of doubled marks counts once. Unit tested.
+- `prompt.rs` — what the shell's OSC 133 marks say, as cells by absolute row: where prompts start
+  and the last command's output; a run of doubled marks counts once. Unit tested.
 - `notify.rs` — the dock's attention and progress badge, and macOS notifications, which need an
   app bundle.
 - `progress.rs` — what a program's OSC 9;4 and OSC 7501 reports say of its progress, and many
@@ -638,7 +643,7 @@ and the dock's badge, a question before closing what runs a program and `Cmd+Z` 
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
 2031 reports), `rtty cli` and the editor plugins, the log, and shell integration that loads
-itself. Checked with `--script` against Neovim in two
+itself (prompt jumps, the last command's output). Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key
@@ -647,8 +652,8 @@ keys and hands a move or resize past its own edge on to `rtty cli`, so the same 
 through Neovim's windows, tutti's panes and rtty's (tutti's README, "tutti in rtty"). The shell
 integration is checked with `--script` against zsh 5.9, macOS's bash 3.2 and Homebrew's bash 5.3,
 each with a scratch home and no integration of its own, and against zsh with a prompt that marks
-itself too: the marks arrive and prompt jumps go from prompt to prompt. fish is not installed
-here, so its script is unchecked.
+itself too: the marks arrive, prompt jumps go from prompt to prompt, and `Cmd+Shift+A` copies the
+last output out of the scrollback. fish is not installed here, so its script is unchecked.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when

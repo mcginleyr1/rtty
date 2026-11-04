@@ -45,7 +45,9 @@ use config::{Action, Config, ShellIntegration};
 use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
-use view::{ClearScrollback, Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
+use view::{
+    ClearScrollback, Copy, CopyLastOutput, Find, NextPrompt, Paste, PreviousPrompt, Settings,
+};
 use window::{
     ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
@@ -226,6 +228,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::NewWindow => KeyBinding::new(chord, NewWindow, None),
         Action::Find => KeyBinding::new(chord, Find, pane),
         Action::Copy => KeyBinding::new(chord, Copy, pane),
+        Action::CopyLastOutput => KeyBinding::new(chord, CopyLastOutput, pane),
         Action::Paste => KeyBinding::new(chord, Paste, pane),
         Action::PromptPrev => KeyBinding::new(chord, PreviousPrompt, pane),
         Action::PromptNext => KeyBinding::new(chord, NextPrompt, pane),
@@ -284,7 +287,7 @@ fn run(options: Options) -> Result<(), String> {
         return Err("--activate goes with --script".into());
     }
     let activate = script.is_none() || options.activate;
-    let open_links = script.is_none();
+    let (open_links, clipboard) = (script.is_none(), script.is_none());
     let trace = options
         .trace
         .as_ref()
@@ -462,6 +465,7 @@ fn run(options: Options) -> Result<(), String> {
             trace,
             socket,
             open_links,
+            clipboard,
             bell,
             minimum_contrast,
             confirm_close,

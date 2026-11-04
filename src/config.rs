@@ -63,6 +63,7 @@ pub enum Action {
     NewWindow,
     Find,
     Copy,
+    CopyLastOutput,
     Paste,
     FontBigger,
     FontSmaller,
@@ -95,6 +96,7 @@ impl Action {
             "new-window" => NewWindow,
             "find" => Find,
             "copy" => Copy,
+            "copy-last-output" => CopyLastOutput,
             "paste" => Paste,
             "font-bigger" => FontBigger,
             "font-smaller" => FontSmaller,
@@ -133,6 +135,8 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
     let fixed = [
         ("cmd-q", Quit),
         ("cmd-c", Copy),
+        // iTerm2's chord for the output of the last command.
+        ("cmd-shift-a", CopyLastOutput),
         ("cmd-v", Paste),
         ("cmd-f", Find),
         ("cmd-up", PromptPrev),
@@ -376,10 +380,11 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 36);
+        assert_eq!(defaults.len(), 37);
         assert_eq!(defaults["cmd-d"], SplitRight);
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
         assert_eq!(defaults["cmd-z"], UndoClose);
+        assert_eq!(defaults["cmd-shift-a"], CopyLastOutput);
         assert_eq!(defaults["cmd-{"], PrevTab);
         assert_eq!(defaults["cmd-9"], Tab(8));
         // As GPUI writes chords: ctrl, alt, cmd, shift.
@@ -387,7 +392,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 44);
+        assert_eq!(tutti.len(), 45);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -397,7 +402,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 44 + 3 - 2);
+        assert_eq!(mine.len(), 45 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -408,8 +413,8 @@ mod tests {
         let names = "focus-left focus-right focus-up focus-down resize-left resize-right \
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
                      split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
-                     new-window find copy paste font-bigger font-smaller font-reset prompt-prev \
-                     prompt-next clear-scrollback quit";
+                     new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
+                     prompt-prev prompt-next clear-scrollback quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
