@@ -74,6 +74,8 @@ pub struct Mark {
     pub kind: MarkKind,
     /// The absolute row (`Terminal::row`).
     pub row: u64,
+    /// The cursor's column; the row's width, one past its last column, when a character filled
+    /// that column and the next would wrap.
     pub col: u16,
 }
 

@@ -273,7 +273,8 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
     }
     for (point, kind) in marks {
         if let Some(row) = out.get_mut(point.row) {
-            row.marks.push((point.col.min(cols - 1) as u16, kind));
+            // Just past a full row stays past it (`Mark::col`).
+            row.marks.push((point.col.min(cols) as u16, kind));
         }
     }
     (out, mapped)

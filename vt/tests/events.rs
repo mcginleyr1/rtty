@@ -183,6 +183,28 @@ fn shell_marks_land_on_absolute_rows_and_travel_with_them() {
     assert_eq!(all.len(), 5);
 }
 
+/// A command's output that fills its row leaves a wrap pending: the end
+/// mark sits past the last column, where the next character goes, so
+/// reading up to it keeps the last character. A reflow carries it along.
+#[test]
+fn a_mark_after_a_full_row_sits_past_its_last_column() {
+    let mut term = Terminal::new(4, 5, 100);
+    term.advance(b"abcde\x1b]133;D;0\x07");
+    assert!(term.wrap_pending());
+    let end = term.marks(0, 4)[0];
+    assert_eq!((end.row, end.col), (0, 5));
+    assert_eq!(term.text((0, 0), (end.row, end.col - 1)), "abcde");
+    term.resize(4, 3);
+    let end = term.marks(0, 4)[0];
+    assert_eq!((end.row, end.col), (1, 2), "after the e, mid-row");
+    // Two full rows rejoined into one exactly as wide: past it again.
+    let mut term = Terminal::new(4, 5, 100);
+    term.advance(b"abcdefghij\x1b]133;D;0\x07");
+    term.resize(4, 10);
+    let end = term.marks(0, 4)[0];
+    assert_eq!((end.row, end.col), (0, 10));
+}
+
 /// nvim killed with SIGKILL, as its shell's integration marks it: with the
 /// host's say-so, the reports and key encodings it left on go off at the
 /// command's end, however reads cut the stream, and what the shell sets after

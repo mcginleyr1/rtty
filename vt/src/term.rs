@@ -1204,8 +1204,11 @@ impl Terminal {
 
     // Shell integration.
 
+    /// A mark sits where the next character would go: past the last column when one filled it
+    /// and a wrap is pending, so a command's output ending on the edge keeps its last character.
     pub(crate) fn mark(&mut self, kind: MarkKind) {
-        let (row, col) = (self.cursor.row, self.cursor.col);
+        let row = self.cursor.row;
+        let col = self.cursor.col + u16::from(self.cursor.pending_wrap);
         let index = self.screen_top() + u64::from(row);
         if !self.grid.alt_active {
             let line = self.grid.line_mut(row);

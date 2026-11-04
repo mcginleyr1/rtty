@@ -182,6 +182,12 @@ mod tests {
         assert_eq!(last_output(&term(10, 20, &text)).as_deref(), Some("foo"));
         let none = format!("{A}% {B}true\r\n{C}{}{A}% {B}", end(0));
         assert_eq!(last_output(&term(10, 20, &none)).as_deref(), Some(""));
+        // Output that fills its row exactly leaves a wrap pending at the end: its last character
+        // is output. One a column short leaves zsh's mark on that column, which is not.
+        let full = format!("{A}% {B}x\r\n{C}0123456789{}%\r\n{}{A}% {B}", end(0), end(0));
+        assert_eq!(last_output(&term(10, 10, &full)).as_deref(), Some("0123456789"));
+        let short = format!("{A}% {B}x\r\n{C}012345678{}%\r\n{}{A}% {B}", end(0), end(0));
+        assert_eq!(last_output(&term(10, 10, &short)).as_deref(), Some("012345678"));
         // A shell that marks no end: up to the next prompt.
         let endless = format!("{A}% {B}ls\r\n{C}a\r\n{A}% {B}");
         assert_eq!(last_output(&term(10, 20, &endless)).as_deref(), Some("a"));
