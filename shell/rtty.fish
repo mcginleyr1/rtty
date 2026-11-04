@@ -24,9 +24,10 @@ if status is-interactive
         functions -q __rtty_user_prompt; and return
         functions -c fish_prompt __rtty_user_prompt
         # The user's prompt runs first, while $status and $pipestatus are still the command's, and
-        # its output goes out between the marks.
+        # its output goes out between the marks whole, a last newline (input on a line of its
+        # own) included.
         function fish_prompt
-            set -l prompt (__rtty_user_prompt | string collect)
+            set -l prompt (__rtty_user_prompt | string collect --no-trim-newlines)
             printf '\e]133;A\a%s\e]133;B\a' $prompt
         end
     end

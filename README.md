@@ -435,7 +435,8 @@ pane's login shell loads them; a `-e` program and any other shell are left alone
   does not see.
 - **fish** finds rtty's `vendor_conf.d` through a directory put first in `XDG_DATA_DIRS`, which the
   script puts back. It wraps `fish_prompt` at the first prompt for A and B and marks C and D from
-  `fish_preexec` and `fish_postexec`. Not yet tried with a real fish.
+  `fish_preexec` and `fish_postexec`. It needs fish 3.1 or newer (`string collect`). Not yet tried
+  with a real fish.
 
 Each script undoes its injection as it starts, so nothing of it reaches what the shell runs:
 another zsh or bash, or the shells tutti starts for its own panes, which are tutti's business.
