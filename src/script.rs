@@ -11,9 +11,9 @@
 //! sleep MS
 //! keys KEYSTROKE...      as gpui parses them: ctrl-a escape enter shift-tab cmd-d ...; each is
 //!                        pressed and released
-//! nskey KEYSTROKE...     the same, as AppKit events to the window, which go the way a key
-//!                        pressed on the keyboard does (key equivalent, text input context, key
-//!                        down); only keys of a US layout's keyboard
+//! nskey KEYSTROKE...     the same, as AppKit events handed to NSApplication, which go the way a
+//!                        key pressed on the keyboard does (event monitors, key equivalent, text
+//!                        input context, key down); only keys of a US layout's keyboard
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
 //! drag ROW COL ROW COL   with the left button
@@ -41,7 +41,8 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
     WeakEntity, Window, WindowAppearance, point,
 };
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
 use objc2_foundation::{NSPoint, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -397,14 +398,14 @@ fn stroke(
     }
 }
 
-/// A key pressed as AppKit delivers it from the keyboard: a chord with Cmd or Ctrl is offered to
-/// the window as a key equivalent first, and only if that is not taken comes as a key down; then
-/// the key comes up.
+/// A key pressed and released, its events handed to NSApplication as the window server hands it
+/// the keyboard's, so AppKit's own dispatch (event monitors, key equivalents, then the window's
+/// key down) decides where they go. In process: they reach no other app and take no focus.
 fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), String> {
     // SAFETY: GPUI's window handle is its live NSView, used on the main thread.
     let view: &NSView = unsafe { view.cast().as_ref() };
     let window = view.window().ok_or("the view is in no window")?;
-    let code = key_code(&keystroke.key).expect("parsed keys have a code");
+    let (code, c) = key_code(&keystroke.key).expect("parsed keys have a code");
     let held = keystroke.modifiers;
     let flags = [
         (held.platform, NSEventModifierFlags::Command),
@@ -416,10 +417,9 @@ fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), Str
         .into_iter()
         .filter(|(held, _)| *held)
         .fold(NSEventModifierFlags::empty(), |flags, (_, flag)| flags | flag);
-    let text = keystroke.key_char.clone().unwrap_or_else(|| match keystroke.key.as_str() {
-        key if key.chars().count() == 1 && held.shift => key.to_uppercase(),
-        key if key.chars().count() == 1 => key.to_owned(),
-        _ => String::new(),
+    let text = keystroke.key_char.clone().unwrap_or_else(|| match held.shift {
+        true => c.to_uppercase().to_string(),
+        false => c.to_string(),
     });
     let text = NSString::from_str(&text);
     let event = |kind| {
@@ -428,34 +428,33 @@ fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), Str
         )
         .ok_or("AppKit made no key event")
     };
-    let down = event(NSEventType::KeyDown)?;
-    if !((held.platform || held.control) && window.performKeyEquivalent(&down)) {
-        window.sendEvent(&down);
-    }
-    let up = event(NSEventType::KeyUp)?;
-    window.sendEvent(&up);
+    let app = NSApplication::sharedApplication(MainThreadMarker::new().expect("the main thread"));
+    app.sendEvent(&*event(NSEventType::KeyDown)?);
+    app.sendEvent(&*event(NSEventType::KeyUp)?);
     Ok(())
 }
 
-/// The key's virtual key code on a US keyboard.
-fn key_code(key: &str) -> Option<u16> {
+/// The key's virtual key code on a US keyboard, and the character AppKit's events give it (the
+/// arrows' are its function-key characters).
+fn key_code(key: &str) -> Option<(u16, char)> {
     // Codes 0 to 50, by the character the key types; return and tab stand in as \n and \t.
     const CHARACTERS: &str = "asdfhgzxcv§bqweryt123465=97-80]ou[ip\nlj'k;\\,/nm.\t `";
     let named = match key {
-        "enter" => Some(36),
-        "tab" => Some(48),
-        "space" => Some(49),
-        "backspace" => Some(51),
-        "escape" => Some(53),
-        "left" => Some(123),
-        "right" => Some(124),
-        "down" => Some(125),
-        "up" => Some(126),
+        "enter" => Some((36, '\r')),
+        "tab" => Some((48, '\t')),
+        "space" => Some((49, ' ')),
+        "backspace" => Some((51, '\u{7f}')),
+        "escape" => Some((53, '\u{1b}')),
+        "left" => Some((123, '\u{f702}')),
+        "right" => Some((124, '\u{f703}')),
+        "down" => Some((125, '\u{f701}')),
+        "up" => Some((126, '\u{f700}')),
         _ => None,
     };
     let mut chars = key.chars();
     let single = chars.next().filter(|_| chars.next().is_none());
-    named.or_else(|| CHARACTERS.chars().position(|c| Some(c) == single).map(|code| code as u16))
+    let typed = |c| CHARACTERS.chars().position(|key| key == c).map(|code| (code as u16, c));
+    named.or_else(|| typed(single?))
 }
 
 #[cfg(test)]
@@ -497,10 +496,11 @@ mod tests {
         let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
         assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
         assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));
-        assert_eq!([key_code("d"), key_code("f"), key_code("t")], [Some(2), Some(3), Some(17)]);
+        assert_eq!([key_code("d"), key_code("t")], [Some((2, 'd')), Some((17, 't'))]);
+        assert_eq!([key_code("`"), key_code("enter")], [Some((50, '`')), Some((36, '\r'))]);
         assert_eq!(
-            [key_code("`"), key_code("enter"), key_code("up")],
-            [Some(50), Some(36), Some(126)]
+            [key_code("escape"), key_code("up")],
+            [Some((53, '\u{1b}')), Some((126, '\u{f700}'))]
         );
     }
 }
