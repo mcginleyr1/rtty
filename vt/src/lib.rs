@@ -29,7 +29,8 @@
 //! `redraw(&take_damage())` brings that follower level again with only the
 //! rows that changed. A switch of screens or a resize calls for a new
 //! snapshot. `scrolled_snapshot(offset)` draws the view `offset` rows back
-//! into the scrollback, for a follower to browse.
+//! into the scrollback, for a follower to browse; `history(from, to)` prints
+//! rows as logical lines, for a terminal to replay into its own scrollback.
 //!
 //! # Unicode
 //!

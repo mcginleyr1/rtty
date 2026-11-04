@@ -13,6 +13,7 @@ for event in term.take_events() { … }    // replies for the pty, titles, marks
 let rows = term.take_damage();           // visible rows changed since last time
 let wire = term.redraw(&rows);           // escape bytes bringing a follower level
 let fresh = term.snapshot();             // escape bytes for a fresh terminal
+let past = term.history(from, to);       // scrollback rows, for its scrollback
 ```
 
 - Rows: every row the primary screen ever showed has an absolute index;
@@ -30,6 +31,13 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
 - `clear()`: the host's own clear (rtty's Cmd+K) drops the primary screen's
   scrollback whichever screen is up, and blanks the primary screen without
   ED 2's push into the scrollback; the alternate screen stays.
+- `history(from, to)`: rows as bytes a terminal replays into its own
+  scrollback (a `--inline` attach's history, in tutti). Each logical line —
+  soft-wrapped rows joined, for that terminal to wrap at its own width — in
+  its renditions, links and clusters, ended by `\r\n`; trailing plain blanks
+  and pads left out. A terminal that fills a row it scrolls in with the
+  current background (BCE) paints the rest of the row a coloured line wraps
+  onto, as it would the program's own output.
 - Resize reflows the primary screen (scrollback included); the alternate
   screen is cut or padded.
 - Unicode: `unicode-width` per character, grapheme clusters by

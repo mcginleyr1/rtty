@@ -419,6 +419,49 @@ impl Terminal {
         e.out.into_bytes()
     }
 
+    /// Escape sequences that print rows `from..to`, as `rows` reads them, for
+    /// a terminal to replay into its own scrollback: each logical line — its
+    /// soft-wrapped rows joined, for the terminal to wrap at its own width —
+    /// in its renditions, links and clusters, then `\r\n`, a line the range
+    /// cuts included. A line's trailing blanks in the plain rendition are
+    /// left out, whichever of its rows they fall on, and so are pads.
+    /// Written for a terminal in the plain rendition with no link open, and
+    /// leaves it so.
+    pub fn history(&self, from: u64, to: u64) -> Vec<u8> {
+        let mut e = Encoder { out: String::new(), pen: Pen::default() };
+        // The cells of the logical line in hand that print, by row and column.
+        let mut line: Vec<(&Row, usize)> = Vec::new();
+        let mut rows = self.rows(from, to).peekable();
+        while let Some((_, row)) = rows.next() {
+            let cells = &row.cells;
+            line.extend(
+                (0..cells.len())
+                    .filter(|&col| !cells[col].is_spacer() && !cells[col].is_pad())
+                    .map(|col| (row, col)),
+            );
+            if row.wrapped && rows.peek().is_some() {
+                continue;
+            }
+            let end = line
+                .iter()
+                .rposition(|&(row, col)| !row.cells[col].is_default())
+                .map_or(0, |at| at + 1);
+            let mut last = String::new();
+            for &(row, col) in &line[..end] {
+                if joins(&last, row.cells[col].ch) {
+                    let _ = write!(e.out, "\x1b[{}m", sgr(&e.pen));
+                }
+                e.cell(row, col);
+                last.clear();
+                row.push_grapheme(col, &mut last);
+            }
+            e.pen(&Pen::default());
+            e.out.push_str("\r\n");
+            line.clear();
+        }
+        e.out.into_bytes()
+    }
+
     /// The scroll region, cursor, rendition, character sets and modes, onto
     /// a screen drawn in the plain state. `explicit` also turns off what is
     /// off, for a terminal that may have had it on.
