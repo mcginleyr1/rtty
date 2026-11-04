@@ -13,7 +13,8 @@
 //!                        pressed and released
 //! nskey KEYSTROKE...     the same, as AppKit events handed to NSApplication, which go the way a
 //!                        key pressed on the keyboard does (event monitors, key equivalent, text
-//!                        input context, key down); only keys of a US layout's keyboard
+//!                        input context, key down); only keys of a US layout's keyboard. `->`
+//!                        gives what the key types, the event's characters: alt-h->˙ is Option+H
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
 //! drag ROW COL ROW COL [MS]  with the left button, held at the end for MS before the release;
@@ -433,14 +434,16 @@ fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), Str
         .into_iter()
         .filter(|(held, _)| *held)
         .fold(NSEventModifierFlags::empty(), |flags, (_, flag)| flags | flag);
-    let text = keystroke.key_char.clone().unwrap_or_else(|| match held.shift {
+    let plain = match held.shift {
         true => c.to_uppercase().to_string(),
         false => c.to_string(),
-    });
-    let text = NSString::from_str(&text);
+    };
+    // What the key types with its modifiers, as `alt-h->˙` gives it; AppKit's `characters`.
+    let typed = NSString::from_str(keystroke.key_char.as_deref().unwrap_or(&plain));
+    let plain = NSString::from_str(&plain);
     let event = |kind| {
         NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            kind, NSPoint::ZERO, flags, 0., window.windowNumber(), None, &text, &text, false, code,
+            kind, NSPoint::ZERO, flags, 0., window.windowNumber(), None, &typed, &plain, false, code,
         )
         .ok_or("AppKit made no key event")
     };
@@ -519,6 +522,9 @@ mod tests {
         let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
         assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
         assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));
+        let option = parse("nskey alt-shift-h->Ó").unwrap();
+        assert!(matches!(&option[0].1, Step::NsKeys(keys)
+            if keys[0].key == "h" && keys[0].key_char.as_deref() == Some("Ó")));
         assert_eq!([key_code("d"), key_code("t")], [Some((2, 'd')), Some((17, 't'))]);
         assert_eq!([key_code("`"), key_code("enter")], [Some((50, '`')), Some((36, '\r'))]);
         assert_eq!(
