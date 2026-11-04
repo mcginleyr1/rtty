@@ -30,11 +30,22 @@ local function send(data)
   end
 end
 
--- Claims rtty's keys while on (and `keys` is set), hands them back while off.
+-- While on: claims rtty's keys (when `keys` is set), and tells rtty where Neovim's server is, so
+-- a path Cmd+clicked in this pane or one beside it opens here (`open`). While off, neither.
 function M.announce(on)
   if M.here() then
-    send(user_var('RTTY_KEYS', on and M.keys and 'pane' or ''))
+    if M.keys then
+      send(user_var('RTTY_KEYS', on and 'pane' or ''))
+    end
+    send(user_var('RTTY_NVIM', on and vim.v.servername or ''))
   end
+end
+
+-- Edits `path` with the cursor on `line` and `col` (from 1), in the window that shows it if one
+-- does, else in the current one. rtty calls it through the server.
+function M.open(path, line, col)
+  vim.cmd.drop(vim.fn.fnameescape(path))
+  pcall(vim.api.nvim_win_set_cursor, 0, { line, col - 1 })
 end
 
 -- Runs `rtty cli <args>`, output discarded, and returns its exit code: -1 when it could not
@@ -107,15 +118,16 @@ function M.activate()
   end
 end
 
--- `keys = true` maps, in normal mode, tutti's Ctrl+h/j/k/l (navigate) and Alt+h/j/k/l (resize),
--- and rtty's Cmd+Opt+arrows (navigate) and Cmd+Ctrl+arrows (resize), which reach Neovim as
--- <D-M-arrow> and <D-C-arrow> once it claims them; then claims them.
+-- Announces Neovim to rtty (`announce`). `keys = true` first maps, in normal mode, tutti's
+-- Ctrl+h/j/k/l (navigate) and Alt+h/j/k/l (resize), and rtty's Cmd+Opt+arrows (navigate) and
+-- Cmd+Ctrl+arrows (resize), which reach Neovim as <D-M-arrow> and <D-C-arrow> once it claims them.
 function M.setup(opts)
-  if not M.here() or not (opts or {}).keys then
+  if not M.here() then
     return
   end
-  M.keys = true
-  for direction, key in pairs(wincmd) do
+  local keys = (opts or {}).keys == true
+  M.keys = M.keys or keys
+  for direction, key in pairs(keys and wincmd or {}) do
     local function navigate()
       M.navigate(direction)
     end

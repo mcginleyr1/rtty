@@ -1,6 +1,6 @@
-"""Drives a real nvim TUI inside a pty and checks the RTTY_KEYS user var reaches the terminal:
-set on start, cleared and set again across a suspend, cleared on quit; and never set without
-`keys` or inside tutti.
+"""Drives a real nvim TUI inside a pty and checks the RTTY_KEYS and RTTY_NVIM user vars reach the
+terminal: set on start, cleared and set again across a suspend, cleared on quit; RTTY_KEYS only
+with `keys`, and neither without setup or inside tutti.
 
     python3 -I osc.py <nvim> <editors/nvim dir>
 """
@@ -56,7 +56,9 @@ def read_while(fd, more, timeout=10.0):
 
 
 def user_vars(out):
-    return [(name.decode(), base64.b64decode(value).decode()) for name, value in SET.findall(out)]
+    """The vars set, in order; a server named by its absolute path reads `<server>`."""
+    decoded = [(name.decode(), base64.b64decode(value).decode()) for name, value in SET.findall(out)]
+    return [(name, "<server>" if value.startswith("/") else value) for name, value in decoded]
 
 
 def count_until(n):
@@ -68,23 +70,23 @@ def check(label, got, expected):
     return got == expected
 
 
-def run(nvim, plugin, setup, extra_env=None):
-    """The user vars nvim sends on start, on Ctrl-Z, on `fg` and on quit, and whether the shell
-    saw it stop. nvim runs under a job-control shell, as in a pane: a pty child's own process
-    group is orphaned, so its SIGTSTP would be dropped."""
+def run(nvim, plugin, setup, extra_env=None, count=2):
+    """The user vars nvim sends on start, on Ctrl-Z, on `fg` and on quit (each read until `count`
+    of them came), and whether the shell saw it stop. nvim runs under a job-control shell, as in a
+    pane: a pty child's own process group is orphaned, so its SIGTSTP would be dropped."""
     env = dict(os.environ, RTTY_PANE="7", TERM="xterm-256color", PS1="$ ", ENV="")
     env.pop("TUTTI_PANE", None)
     env.update(extra_env or {})
     pid, fd = spawn(["/bin/sh", "-i"], env)
     os.write(fd, f"{nvim} --clean --cmd 'set rtp^={plugin}' --cmd \"lua {setup}\"\r".encode())
-    started = user_vars(read_while(fd, count_until(1), timeout=3.0))
+    started = user_vars(read_while(fd, count_until(count), timeout=3.0))
     os.write(fd, b"\x1a")
-    out = read_while(fd, lambda out: len(user_vars(out)) < 1 or b"Stopped" not in out, 3.0)
+    out = read_while(fd, lambda out: len(user_vars(out)) < count or b"Stopped" not in out, 3.0)
     suspended, was_stopped = user_vars(out), b"Stopped" in out
     os.write(fd, b"fg\r")
-    resumed = user_vars(read_while(fd, count_until(1), timeout=3.0))
+    resumed = user_vars(read_while(fd, count_until(count), timeout=3.0))
     os.write(fd, b":qa!\r")
-    quit = user_vars(read_while(fd, count_until(1), timeout=3.0))
+    quit = user_vars(read_while(fd, count_until(count), timeout=3.0))
     # Hang up before reaping: an exiting tty session leader waits for its unread output to drain.
     os.close(fd)
     os.kill(pid, signal.SIGKILL)
@@ -93,18 +95,22 @@ def run(nvim, plugin, setup, extra_env=None):
 
 
 def main(nvim, plugin):
-    claim, cleared = [("RTTY_KEYS", "pane")], [("RTTY_KEYS", "")]
+    claim = [("RTTY_KEYS", "pane"), ("RTTY_NVIM", "<server>")]
+    cleared = [("RTTY_KEYS", ""), ("RTTY_NVIM", "")]
     keys = "require('rtty').setup({ keys = true })"
     started, suspended, was_stopped, resumed, quit = run(nvim, plugin, keys)
+    server = run(nvim, plugin, "require('rtty').setup({})", count=1)
     plain = run(nvim, plugin, "vim.g.rtty_plain = true")
     in_tutti = run(nvim, plugin, keys, {"TUTTI_PANE": "3"})
     results = [
-        check("start claims the keys", started, claim),
+        check("start claims the keys and names the server", started, claim),
         check("suspend hands them back", suspended, cleared),
         check("suspend stops nvim", was_stopped, True),
         check("resume claims again", resumed, claim),
         check("quit hands them back", quit, cleared),
-        check("without keys, nothing is said", [plain[0], plain[1], plain[3], plain[4]], [[]] * 4),
+        check("setup without keys names the server alone", [server[0], server[4]],
+              [[("RTTY_NVIM", "<server>")], [("RTTY_NVIM", "")]]),
+        check("without setup, nothing is said", [plain[0], plain[1], plain[3], plain[4]], [[]] * 4),
         check("inside tutti, nothing is said", [in_tutti[0], in_tutti[4]], [[], []]),
     ]
     return 0 if all(results) else 1

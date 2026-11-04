@@ -39,9 +39,14 @@ local sent = {}
 vim.api.nvim_ui_send = function(data)
   table.insert(sent, data)
 end
-local function keys(value)
-  return ('\27]1337;SetUserVar=RTTY_KEYS=%s\7'):format(vim.base64.encode(value))
+local function user_var(name)
+  return function(value)
+    return ('\27]1337;SetUserVar=%s=%s\7'):format(name, vim.base64.encode(value))
+  end
 end
+local keys, nvim = user_var('RTTY_KEYS'), user_var('RTTY_NVIM')
+local server = vim.v.servername
+assert(server ~= '', 'nvim started no server')
 
 local rtty = require('rtty')
 local backend = require('rtty.smart_splits')
@@ -136,31 +141,53 @@ test("backend: resize takes smart-splits' cells; rtty.resize takes a fraction to
   }, calls())
 end)
 
-test('backend: activate claims the keys', function()
+test('backend: activate claims the keys and names the server', function()
   sent = {}
   backend.activate()
-  eq({ keys('pane') }, sent)
+  eq({ keys('pane'), nvim(server) }, sent)
   sent = {}
   vim.api.nvim_exec_autocmds('VimResume', {})
-  eq({ keys('pane') }, sent)
+  eq({ keys('pane'), nvim(server) }, sent)
   rtty.keys = false
 end)
 
-test('suspend and leave hand the keys back, resume claims them again', function()
+test('suspend and leave hand the keys and the server back, resume claims them again', function()
   rtty.keys = true
   rtty.activate()
   sent = {}
   vim.api.nvim_exec_autocmds('VimSuspend', {})
   vim.api.nvim_exec_autocmds('VimResume', {})
   vim.api.nvim_exec_autocmds('VimLeavePre', {})
-  eq({ keys(''), keys('pane'), keys('') }, sent)
+  eq({ keys(''), nvim(''), keys('pane'), nvim(server), keys(''), nvim('') }, sent)
   rtty.keys = false
+end)
+
+test('setup without keys names the server alone and maps nothing', function()
+  sent = {}
+  rtty.setup({})
+  eq({ nvim(server) }, sent)
+  eq('', vim.fn.maparg('<C-h>', 'n'))
+end)
+
+test('open edits the file at the line and column, in the window that shows it', function()
+  local file = vim.fn.tempname()
+  vim.fn.writefile({ 'one', 'two words', 'three' }, file)
+  rtty.open(file, 2, 5)
+  eq({ vim.fn.resolve(file), { 2, 4 } }, { vim.fn.resolve(vim.api.nvim_buf_get_name(0)), vim.api.nvim_win_get_cursor(0) })
+  local shows = vim.api.nvim_get_current_win()
+  vim.cmd.vnew()
+  rtty.open(file, 3, 1)
+  eq({ shows, { 3, 0 } }, { vim.api.nvim_get_current_win(), vim.api.nvim_win_get_cursor(0) })
+  -- Past the end it still opens, the cursor where it was.
+  rtty.open(file, 99, 1)
+  eq({ shows, { 3, 0 } }, { vim.api.nvim_get_current_win(), vim.api.nvim_win_get_cursor(0) })
+  vim.cmd('silent! %bwipeout!')
 end)
 
 test("setup({ keys = true }) maps tutti's keys and rtty's chords and claims them", function()
   sent = {}
   rtty.setup({ keys = true })
-  eq({ keys('pane') }, sent)
+  eq({ keys('pane'), nvim(server) }, sent)
   vim.cmd.vsplit()
   vim.api.nvim_feedkeys(vim.keycode('<C-l><C-l><C-h><C-h><C-j><M-k>'), 'x', false)
   -- Back in the left window: the chords move right within Neovim, then left past its edge.

@@ -42,6 +42,13 @@ Both plugins claim the keys when the editor starts or resumes and give them back
 (`Ctrl-Z`) or exits, so the shell underneath gets rtty's keys back. An editor that crashes cannot;
 the claim also ends at the shell's next prompt, when the shell marks it with OSC 133;A.
 
+**Opening files here.** A Neovim also sets the user var `RTTY_NVIM` to its server's socket
+(`v:servername`) while it runs, and clears it the same way. A path that rtty opens from this pane
+or another in its tab (a `Cmd+click`, `quick-open`) then goes to that Neovim: rtty calls
+`require('rtty').open(path, line, col)` over the server's msgpack-rpc, and gives the pane the
+keyboard. With no such Neovim, rtty opens a new pane with the configured editor
+([Links](../README.md#keys)).
+
 Past the editor's edge, the plugins call the CLI with `--from` set to the editor's own
 `$RTTY_PANE`:
 
@@ -79,7 +86,8 @@ Any plugin manager works. Put `editors/nvim` on the runtimepath and call
 | `Ctrl+h/j/k/l`, `Cmd+Opt+arrows` | `require('rtty').navigate(direction)` |
 | `Alt+h/j/k/l`, `Cmd+Ctrl+arrows` | `require('rtty').resize(direction)` |
 
-and claims them. `navigate` moves to the Neovim window that way, and from the last window on to the
+and claims them. Any `setup`, `keys` or not, names Neovim's server to rtty, for files it opens
+(the contract). `navigate` moves to the Neovim window that way, and from the last window on to the
 rtty pane beyond. `resize` moves rtty's split border. With rtty's default keys, `Ctrl+h` reaches
 Neovim anyway; the claim is what brings it `Cmd+Opt+arrows`. It also brings Neovim every chord
 rtty's `[bind]` gives focus, resize, close or last pane, mapped there or not, so map those in
@@ -94,6 +102,8 @@ The Lua API is `require('rtty')`:
 - `resize(direction, amount)`: move rtty's split border; `amount` under 1 is a share of the split,
   1 or more a number of cells, nil rtty's step.
 - `split(direction)`: open an rtty pane that way.
+- `open(path, line, col)`: edit `path` with the cursor at `line` and `col` (from 1), in the window
+  showing it (`:drop`), else the current one; what rtty calls through the server.
 - `here()`: true in an rtty pane outside tutti.
 
 `focus`, `resize`, `split` and `navigate` give rtty 500 ms (`require('rtty').timeout`) and never
@@ -175,8 +185,8 @@ emacs --batch -l ert -l "$PWD/editors/emacs/rtty.el" -l "$PWD/editors/emacs/rtty
 ```
 
 `editors/nvim/tests/osc.py` runs a real Neovim TUI in a pty under a job-control shell. It checks
-the exact OSC bytes that reach the terminal on start, `Ctrl-Z`, `fg` and quit, and that nothing is
-said without `keys` or inside tutti:
+the exact OSC bytes that reach the terminal on start, `Ctrl-Z`, `fg` and quit, that only the server
+is named without `keys`, and that nothing is said without `setup` or inside tutti:
 
 ```sh
 python3 -I editors/nvim/tests/osc.py "$(command -v nvim)" "$PWD/editors/nvim"
