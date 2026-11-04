@@ -52,9 +52,29 @@ fn graphics_command() -> impl Strategy<Value = Vec<u8>> {
     })
 }
 
+/// Unicode placeholders in a few colours, each with up to four diacritics
+/// (the first three of the row and column list, and an acute that is not on
+/// it).
+fn placeholders() -> impl Strategy<Value = Vec<u8>> {
+    let colors = prop::sample::select(vec!["38;5;1", "38;5;2", "38;2;0;0;1", "58:5:1", "0"]);
+    let marks = prop::collection::vec(
+        prop::sample::select(vec!['\u{305}', '\u{30D}', '\u{30E}', '\u{301}']),
+        0..4,
+    );
+    prop::collection::vec((colors, marks), 0..12).prop_map(|cells| {
+        let mut text = String::new();
+        for (color, marks) in cells {
+            text.push_str(&format!("\x1b[{color}m\u{10EEEE}"));
+            text.extend(marks);
+        }
+        text.into_bytes()
+    })
+}
+
 fn graphics_step() -> impl Strategy<Value = Step> {
     prop_oneof![
         4 => graphics_command().prop_map(Step::Feed),
+        2 => placeholders().prop_map(Step::Feed),
         4 => prop::collection::vec(byte(), 0..100).prop_map(Step::Feed),
         1 => (0u16..30, 0u16..90).prop_map(|(rows, cols)| Step::Resize(rows, cols)),
     ]

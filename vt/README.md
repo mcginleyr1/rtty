@@ -48,6 +48,12 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
   - Put (`a=p`, `a=T`): `c`/`r` (one keeps the shape, both letterbox),
     `x`/`y`/`w`/`h`, `X`/`Y`, `z`, `p`; the cursor goes to the image's last
     row, past its right edge, unless `C=1`.
+  - Unicode placeholders: a virtual placement (`U=1`) lays an image out over
+    a block of cells; cells of U+10EEEE show it, their diacritics naming the
+    row and column of the block (a third the image id's high byte), their
+    foreground the image and their underline colour the placement, a
+    diacritic left out carried on from the cell to the left. Being text,
+    they pass through tmux and tutti, and `snapshot()` carries them.
   - Delete (`a=d`): `d=` `a c i n p q r x y z`, and their capitals, which
     also free the images then placed nowhere.
   - Not supported, each answering `EINVAL`: shared memory (`t=s`),
@@ -56,7 +62,8 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
   - Images are held as RGBA up to `GRAPHICS_QUOTA` (256 MiB) per terminal;
     past it the oldest go, those placed nowhere first. However small they
     are, a terminal holds at most 4096 images (the oldest going as past the
-    quota) and 4096 placements (the oldest going first). `placements(from,
+    quota) and 4096 placements, virtual ones included (the oldest going
+    first). `placements(from,
     to)` gives the host each image over those rows (the image, the cell it
     counts from, where in cells, which part of it, `z`); `images()` the ones
     held, each with a generation unique in the process.

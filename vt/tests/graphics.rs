@@ -1,11 +1,12 @@
 //! The kitty graphics protocol, from its specification: transmission in each
 //! format, medium and chunking, queries and quiet modes, placements and where
-//! they go, deletion by every specifier, the storage quota, and placements
-//! riding their rows through scrolling, trimming, erasing and reflow.
+//! they go, deletion by every specifier, the storage quota, placements
+//! riding their rows through scrolling, trimming, erasing and reflow, and
+//! Unicode placeholders.
 
 use std::sync::Arc;
 
-use rtty_vt::{Event, GRAPHICS_QUOTA, Image, Placement, Terminal};
+use rtty_vt::{Event, GRAPHICS_QUOTA, Image, PLACEHOLDER, Placement, Terminal};
 
 /// Standard base64, padded.
 fn encode(bytes: &[u8]) -> String {
@@ -591,4 +592,153 @@ fn turning_graphics_off_forgets_every_image() {
     term.set_graphics(true);
     assert!(placements(&term).is_empty());
     assert_eq!(image.rgba.len(), 4, "a host's copy stays whole");
+}
+
+/// A piece as (image id, row, column, dest, source).
+type Piece = (u32, u64, u16, [f32; 4], [f32; 4]);
+
+fn pieces(term: &Terminal) -> Vec<Piece> {
+    placements(term).iter().map(|p| (p.image.id, p.row, p.col, p.dest, p.source)).collect()
+}
+
+/// Image `id`, 20×40 pixels, quietly sent, and its virtual placement over `c`×`r` cells.
+fn virtual_image(term: &mut Terminal, id: u32, keys: &str) {
+    term.advance(&command(&format!("a=t,i={id},f=24,s=20,v=40,q=2"), &rgb(20, 40, [1, 2, 3])));
+    term.advance(&command(&format!("a=p,U=1,i={id},q=2,{keys}"), b""));
+}
+
+/// The specification's 2×2 placeholder for image 42: each row of cells shows its half.
+#[test]
+fn placeholders_show_their_cells_of_a_virtual_placement() {
+    let mut term = term();
+    virtual_image(&mut term, 42, "c=2,r=2");
+    assert!(placements(&term).is_empty(), "a virtual placement shows nothing itself");
+    assert_eq!(term.cursor_position(), (0, 0), "nor moves the cursor");
+    term.advance(
+        "\x1b[38;5;42m\u{10EEEE}\u{305}\u{305}\u{10EEEE}\u{305}\u{30D}\x1b[39m\r\n".as_bytes(),
+    );
+    term.advance(
+        "\x1b[38;5;42m\u{10EEEE}\u{30D}\u{305}\u{10EEEE}\u{30D}\u{30D}\x1b[39m\r\n".as_bytes(),
+    );
+    assert_eq!(term.screen_row(0).cells()[1].ch(), PLACEHOLDER, "one cell each");
+    assert_eq!(
+        pieces(&term),
+        [
+            (42, 0, 0, [0., 0., 2., 1.], [0., 0., 20., 20.]),
+            (42, 1, 0, [0., 0., 2., 1.], [0., 20., 20., 20.]),
+        ]
+    );
+    // They are text: they scroll, and a cell overwritten shows nothing more.
+    term.advance(b"\x1b[1;2Hx\x1b[10;1H\n");
+    assert_eq!(
+        pieces(&term),
+        [
+            (42, 0, 0, [0., 0., 1., 1.], [0., 0., 10., 20.]),
+            (42, 1, 0, [0., 0., 2., 1.], [0., 20., 20., 20.]),
+        ]
+    );
+    assert_eq!(term.screen_top(), 1);
+}
+
+/// Diacritics left out are carried on from the placeholder to the left: here only the first
+/// cell of each row names its row.
+#[test]
+fn missing_diacritics_follow_the_cell_to_the_left() {
+    let mut term = term();
+    virtual_image(&mut term, 42, "c=3,r=2");
+    term.advance("\x1b[38;5;42m\u{10EEEE}\u{305}\u{10EEEE}\u{10EEEE}\r\n".as_bytes());
+    term.advance("\u{10EEEE}\u{30D}\u{10EEEE}\u{10EEEE}\r\n".as_bytes());
+    // 20×40 fitted into 30×40 pixels: centred, half a cell in.
+    assert_eq!(
+        pieces(&term),
+        [
+            (42, 0, 0, [0.5, 0., 2., 1.], [0., 0., 20., 20.]),
+            (42, 1, 0, [0.5, 0., 2., 1.], [0., 20., 20., 20.]),
+        ]
+    );
+    // Another colour starts again from row 0, column 0 (of image 43, which there is not).
+    let mut term = self::term();
+    virtual_image(&mut term, 42, "c=3,r=2");
+    term.advance("\x1b[38;5;42m\u{10EEEE}\u{30D}\u{10EEEE}\x1b[38;5;43m\u{10EEEE}".as_bytes());
+    assert_eq!(pieces(&term), [(42, 0, 0, [0.5, 0., 1.5, 1.], [0., 20., 15., 20.])]);
+}
+
+/// Ids past 8 bits: a third diacritic's high byte, an RGB foreground's 24 bits; the underline
+/// colour picks the placement.
+#[test]
+fn ids_come_from_the_colours_and_a_third_diacritic() {
+    let mut term = term();
+    virtual_image(&mut term, 42 + (2 << 24), "c=2,r=2");
+    term.advance("\x1b[38;5;42m\u{10EEEE}\u{305}\u{305}\u{30E}\u{10EEEE}\r\n".as_bytes());
+    term.advance("\u{10EEEE}\u{305}\u{305}\r\n".as_bytes());
+    assert_eq!(pieces(&term), [(42 + (2 << 24), 0, 0, [0., 0., 2., 1.], [0., 0., 20., 20.])]);
+    // The 257th diacritic is no high byte: it names no image, image 42 least of all.
+    let mut term = self::term();
+    virtual_image(&mut term, 42, "c=2,r=2");
+    term.advance("\x1b[38;5;42m\u{10EEEE}\u{305}\u{305}\u{A8E6}".as_bytes());
+    assert!(pieces(&term).is_empty());
+
+    let mut term = self::term();
+    let id = 0x010203;
+    virtual_image(&mut term, id, "c=2,r=2,p=7");
+    term.advance(&command(&format!("a=p,U=1,i={id},c=4,r=4,p=8,q=2"), b""));
+    term.advance("\x1b[38;2;1;2;3;58:5:7m\u{10EEEE}\u{305}\u{305}\u{10EEEE}\r\n".as_bytes());
+    term.advance("\x1b[58:5:8m\u{10EEEE}\u{305}\u{305}\u{10EEEE}".as_bytes());
+    assert_eq!(
+        pieces(&term),
+        [
+            (id, 0, 0, [0., 0., 2., 1.], [0., 0., 20., 20.]),
+            (id, 1, 0, [0., 0., 2., 1.], [0., 0., 10., 10.]),
+        ]
+    );
+}
+
+/// Placeholders with no image or virtual placement behind them show nothing; deleting by id
+/// takes a virtual placement, deleting by place does not.
+#[test]
+fn placeholders_need_their_image_and_virtual_placement() {
+    let mut term = term();
+    term.advance("\x1b[38;5;9m\u{10EEEE}\u{305}\u{305}".as_bytes());
+    assert!(placements(&term).is_empty());
+    virtual_image(&mut term, 9, "c=1,r=1");
+    term.advance(&command("a=d,d=A", b""));
+    assert_eq!(pieces(&term).len(), 1);
+    term.advance(&command("a=d,d=i,i=9", b""));
+    assert!(placements(&term).is_empty());
+    assert_eq!(ids(&term), [9]);
+}
+
+/// What lets images through tmux and tutti: the placeholders are text, so a snapshot carries
+/// them to a follower, which shows the same image where it holds it too.
+#[test]
+fn placeholders_travel_as_text() {
+    let mut term = term();
+    virtual_image(&mut term, 42, "c=2,r=2");
+    term.advance("\x1b[3;5H\x1b[38;5;42;58:5:0m\u{10EEEE}\u{305}\u{305}\u{10EEEE}".as_bytes());
+    let mut follower = self::term();
+    virtual_image(&mut follower, 42, "c=2,r=2");
+    follower.advance(&term.snapshot());
+    assert_eq!(pieces(&follower), pieces(&term));
+    assert_eq!(pieces(&term).len(), 1);
+}
+
+#[test]
+fn a_feature_query_names_unicode_placeholders() {
+    let mut term = term();
+    let reply = replies(&mut term, b"\x1b_Ga=q,i=31,e=T,U=1,C=1\x1b\\");
+    assert_eq!(reply, ["\x1b_Gi=31,e=T,U=1,C=1;OK\x1b\\"]);
+}
+
+/// Virtual placements count among the 4096 placements: one for each id, the oldest going first.
+#[test]
+fn virtual_placements_are_bounded_too() {
+    let mut term = term();
+    virtual_image(&mut term, 42, "c=1,r=1,p=1");
+    let more: Vec<u8> =
+        (2..=4096).flat_map(|p| command(&format!("a=p,U=1,i=42,c=1,r=1,p={p},q=2"), b"")).collect();
+    term.advance(&more);
+    term.advance("\x1b[38;5;42;58:5:1m\u{10EEEE}\u{305}\u{305}".as_bytes());
+    assert_eq!(pieces(&term).len(), 1, "placement 1 is still there");
+    term.advance(&command("a=p,U=1,i=42,c=1,r=1,p=4097,q=2", b""));
+    assert!(pieces(&term).is_empty(), "placement 1, the oldest, went");
 }

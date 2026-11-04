@@ -7,6 +7,11 @@
 //! with the text into the scrollback, reflows with that cell, and goes when its row does: trimmed
 //! from the scrollback, scrolled out of a margin region, or reset whole (ED 2, the alternate
 //! screen's clearing, RIS). ED 0 and 1 and the other erases leave placements be.
+//!
+//! Unicode placeholders show an image through text instead, which passes through tmux and tutti
+//! as any text does: a virtual placement (`U=1`) lays the image out over a block of cells, and
+//! each cell holding `PLACEHOLDER` shows the cell of that block its diacritics name, of the image
+//! its foreground colour names (and the placement its underline colour does).
 
 use std::collections::HashSet;
 use std::fs::{Metadata, OpenOptions};
@@ -17,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::cell::Color;
 use crate::dispatch::base64;
+use crate::row::Row;
 use crate::term::Terminal;
 
 /// The most decoded image data (4 bytes a pixel) one terminal holds: a new image past it evicts
@@ -28,9 +35,57 @@ pub const GRAPHICS_QUOTA: usize = 256 << 20;
 /// past 4096 bytes of base64 in chunks, each a string of its own.
 pub const APC_MAX: usize = 16 << 20;
 
+/// U+10EEEE: a cell showing part of an image, which its colours and diacritics name.
+pub const PLACEHOLDER: char = '\u{10EEEE}';
+
 /// Every way a file transmission fails answers alike, so that a program learns nothing of files
 /// it cannot read itself.
 const UNREADABLE: &str = "EBADF:Failed to read image file";
+
+/// The diacritics that number a placeholder's row, column and the high byte of its image id, in
+/// order from 0: the combining characters of class 230 in Unicode 6.0 with no decomposition, but
+/// those normalization may fuse (kitty's rowcolumn-diacritics.txt).
+#[rustfmt::skip]
+const DIACRITICS: [char; 297] = [
+    '\u{305}', '\u{30d}', '\u{30e}', '\u{310}', '\u{312}', '\u{33d}', '\u{33e}', '\u{33f}',
+    '\u{346}', '\u{34a}', '\u{34b}', '\u{34c}', '\u{350}', '\u{351}', '\u{352}', '\u{357}',
+    '\u{35b}', '\u{363}', '\u{364}', '\u{365}', '\u{366}', '\u{367}', '\u{368}', '\u{369}',
+    '\u{36a}', '\u{36b}', '\u{36c}', '\u{36d}', '\u{36e}', '\u{36f}', '\u{483}', '\u{484}',
+    '\u{485}', '\u{486}', '\u{487}', '\u{592}', '\u{593}', '\u{594}', '\u{595}', '\u{597}',
+    '\u{598}', '\u{599}', '\u{59c}', '\u{59d}', '\u{59e}', '\u{59f}', '\u{5a0}', '\u{5a1}',
+    '\u{5a8}', '\u{5a9}', '\u{5ab}', '\u{5ac}', '\u{5af}', '\u{5c4}', '\u{610}', '\u{611}',
+    '\u{612}', '\u{613}', '\u{614}', '\u{615}', '\u{616}', '\u{617}', '\u{657}', '\u{658}',
+    '\u{659}', '\u{65a}', '\u{65b}', '\u{65d}', '\u{65e}', '\u{6d6}', '\u{6d7}', '\u{6d8}',
+    '\u{6d9}', '\u{6da}', '\u{6db}', '\u{6dc}', '\u{6df}', '\u{6e0}', '\u{6e1}', '\u{6e2}',
+    '\u{6e4}', '\u{6e7}', '\u{6e8}', '\u{6eb}', '\u{6ec}', '\u{730}', '\u{732}', '\u{733}',
+    '\u{735}', '\u{736}', '\u{73a}', '\u{73d}', '\u{73f}', '\u{740}', '\u{741}', '\u{743}',
+    '\u{745}', '\u{747}', '\u{749}', '\u{74a}', '\u{7eb}', '\u{7ec}', '\u{7ed}', '\u{7ee}',
+    '\u{7ef}', '\u{7f0}', '\u{7f1}', '\u{7f3}', '\u{816}', '\u{817}', '\u{818}', '\u{819}',
+    '\u{81b}', '\u{81c}', '\u{81d}', '\u{81e}', '\u{81f}', '\u{820}', '\u{821}', '\u{822}',
+    '\u{823}', '\u{825}', '\u{826}', '\u{827}', '\u{829}', '\u{82a}', '\u{82b}', '\u{82c}',
+    '\u{82d}', '\u{951}', '\u{953}', '\u{954}', '\u{f82}', '\u{f83}', '\u{f86}', '\u{f87}',
+    '\u{135d}', '\u{135e}', '\u{135f}', '\u{17dd}', '\u{193a}', '\u{1a17}', '\u{1a75}', '\u{1a76}',
+    '\u{1a77}', '\u{1a78}', '\u{1a79}', '\u{1a7a}', '\u{1a7b}', '\u{1a7c}', '\u{1b6b}', '\u{1b6d}',
+    '\u{1b6e}', '\u{1b6f}', '\u{1b70}', '\u{1b71}', '\u{1b72}', '\u{1b73}', '\u{1cd0}', '\u{1cd1}',
+    '\u{1cd2}', '\u{1cda}', '\u{1cdb}', '\u{1ce0}', '\u{1dc0}', '\u{1dc1}', '\u{1dc3}', '\u{1dc4}',
+    '\u{1dc5}', '\u{1dc6}', '\u{1dc7}', '\u{1dc8}', '\u{1dc9}', '\u{1dcb}', '\u{1dcc}', '\u{1dd1}',
+    '\u{1dd2}', '\u{1dd3}', '\u{1dd4}', '\u{1dd5}', '\u{1dd6}', '\u{1dd7}', '\u{1dd8}', '\u{1dd9}',
+    '\u{1dda}', '\u{1ddb}', '\u{1ddc}', '\u{1ddd}', '\u{1dde}', '\u{1ddf}', '\u{1de0}', '\u{1de1}',
+    '\u{1de2}', '\u{1de3}', '\u{1de4}', '\u{1de5}', '\u{1de6}', '\u{1dfe}', '\u{20d0}', '\u{20d1}',
+    '\u{20d4}', '\u{20d5}', '\u{20d6}', '\u{20d7}', '\u{20db}', '\u{20dc}', '\u{20e1}', '\u{20e7}',
+    '\u{20e9}', '\u{20f0}', '\u{2cef}', '\u{2cf0}', '\u{2cf1}', '\u{2de0}', '\u{2de1}', '\u{2de2}',
+    '\u{2de3}', '\u{2de4}', '\u{2de5}', '\u{2de6}', '\u{2de7}', '\u{2de8}', '\u{2de9}', '\u{2dea}',
+    '\u{2deb}', '\u{2dec}', '\u{2ded}', '\u{2dee}', '\u{2def}', '\u{2df0}', '\u{2df1}', '\u{2df2}',
+    '\u{2df3}', '\u{2df4}', '\u{2df5}', '\u{2df6}', '\u{2df7}', '\u{2df8}', '\u{2df9}', '\u{2dfa}',
+    '\u{2dfb}', '\u{2dfc}', '\u{2dfd}', '\u{2dfe}', '\u{2dff}', '\u{a66f}', '\u{a67c}', '\u{a67d}',
+    '\u{a6f0}', '\u{a6f1}', '\u{a8e0}', '\u{a8e1}', '\u{a8e2}', '\u{a8e3}', '\u{a8e4}', '\u{a8e5}',
+    '\u{a8e6}', '\u{a8e7}', '\u{a8e8}', '\u{a8e9}', '\u{a8ea}', '\u{a8eb}', '\u{a8ec}', '\u{a8ed}',
+    '\u{a8ee}', '\u{a8ef}', '\u{a8f0}', '\u{a8f1}', '\u{aab0}', '\u{aab2}', '\u{aab3}', '\u{aab7}',
+    '\u{aab8}', '\u{aabe}', '\u{aabf}', '\u{aac1}', '\u{fe20}', '\u{fe21}', '\u{fe22}', '\u{fe23}',
+    '\u{fe24}', '\u{fe25}', '\u{fe26}', '\u{10a0f}', '\u{10a38}', '\u{1d185}', '\u{1d186}',
+    '\u{1d187}', '\u{1d188}', '\u{1d189}', '\u{1d1aa}', '\u{1d1ab}', '\u{1d1ac}', '\u{1d1ad}',
+    '\u{1d242}', '\u{1d243}', '\u{1d244}',
+];
 
 /// Image generations, unique in the process.
 static GENERATIONS: AtomicU64 = AtomicU64::new(1);
@@ -99,12 +154,33 @@ pub(crate) struct Anchor {
     serial: u64,
 }
 
+/// A virtual placement (`U=1`): no cells of its own, it lays the image out over the block of
+/// cells placeholders show it in.
+struct Virtual {
+    generation: u64,
+    id: u32,
+    fit: Fit,
+    serial: u64,
+}
+
+/// A placeholder cell, decoded: the colours naming its image and placement, the high byte of the
+/// image id, and the cell of the virtual placement it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Spot {
+    fg: Color,
+    underline: Color,
+    high: u32,
+    row: u32,
+    col: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct Graphics {
     /// Oldest first, the order the quota evicts them in.
     images: Vec<Arc<Image>>,
     /// The bytes of their pixels.
     used: usize,
+    virtuals: Vec<Virtual>,
     /// A transmission still arriving in chunks: its first command and the data so far.
     transfer: Option<(Command, Vec<u8>)>,
     /// The most rows one placement covers: how far above a row one reaching it can be held.
@@ -146,6 +222,8 @@ struct Command {
     cells: (u32, u32),
     /// `C=1`.
     still: bool,
+    /// `U=1`.
+    virtual_placement: bool,
     z: i32,
     /// `P`.
     parent: u32,
@@ -188,6 +266,7 @@ fn parse(control: &[u8]) -> Option<Command> {
             b'c' => command.cells.0 = number()?,
             b'r' => command.cells.1 = number()?,
             b'C' => command.still = number()? == 1,
+            b'U' => command.virtual_placement = number()? == 1,
             b'z' => command.z = value.parse().ok()?,
             b'P' => command.parent = number()?,
             b'd' => command.delete = letter()?,
@@ -222,7 +301,7 @@ fn features(action: u8, control: &[u8]) -> String {
             b'x' | b'y' | b'z' => (places || action == b'd') && set,
             b'p' => (places || action == b'd') && set,
             b'w' | b'h' | b'X' | b'Y' | b'c' | b'r' => places && set,
-            b'C' => places && value == "1",
+            b'C' | b'U' => places && value == "1",
             b'd' => action == b'd' && value.len() == 1 && "AcCiInNpPqQrRxXyYzZ".contains(value),
             _ => false,
         };
@@ -239,9 +318,9 @@ impl Terminal {
     ///
     /// Programs transmit images (`a=t`, `a=T`; RGB, RGBA or PNG, zlib compressed or not, in
     /// chunks or not, in the string or from a file: `t=d`, `t=f`, `t=t`), query (`a=q`, feature
-    /// queries with `e`), place (`a=p`, `a=T`) and delete them (`a=d`). Placements size
-    /// themselves by the cell size `set_cell_pixels` gave; one before it fails. `placements`
-    /// says what to draw.
+    /// queries with `e`), place (`a=p`, `a=T`, virtual placements for Unicode placeholders with
+    /// `U=1`) and delete them (`a=d`). Placements size themselves by the cell size
+    /// `set_cell_pixels` gave; one before it fails. `placements` says what to draw.
     pub fn set_graphics(&mut self, on: bool) {
         if on == self.graphics.is_some() {
             return;
@@ -254,7 +333,8 @@ impl Terminal {
     }
 
     /// The images to draw over rows `from..to`, lowest first: each placement reaching into them,
-    /// whatever row holds it. Nothing while graphics are off.
+    /// whatever row holds it, and what their placeholder cells show, a run of neighbouring cells
+    /// in one row of one image as one piece. Nothing while graphics are off.
     pub fn placements(&self, from: u64, to: u64) -> Vec<Placement> {
         let Some(graphics) = self.graphics.as_deref() else { return Vec::new() };
         let mut placements = Vec::new();
@@ -274,6 +354,9 @@ impl Terminal {
                         z: anchor.fit.z,
                     });
                 }
+            }
+            if index >= from {
+                graphics.placeholders(row, index, &mut placements);
             }
         }
         placements.sort_by_key(|placement| (placement.z, placement.image.id));
@@ -410,13 +493,16 @@ impl Terminal {
         }
         graphics.images.retain(|image| !gone.contains(&image.generation));
         graphics.used = graphics.images.iter().map(|image| image.rgba.len()).sum();
+        graphics.virtuals.retain(|placement| !gone.contains(&placement.generation));
         self.unplace(false, |anchor, _, _| gone.contains(&anchor.generation));
     }
 
-    /// The generations of the images placed somewhere.
+    /// The generations of the images placed somewhere, virtually included.
     fn placed(&self) -> HashSet<u64> {
         let rows = self.grid.primary.iter().chain(&self.grid.alt);
-        rows.flat_map(|row| &row.images).map(|anchor| anchor.generation).collect()
+        let anchored = rows.flat_map(|row| &row.images).map(|anchor| anchor.generation);
+        let virtuals = self.graphics.iter().flat_map(|graphics| &graphics.virtuals);
+        anchored.chain(virtuals.map(|placement| placement.generation)).collect()
     }
 
     /// Take the placements `doomed` picks, given each one's rows and columns, off their rows:
@@ -457,8 +543,8 @@ impl Terminal {
     }
 
     /// Put `image` at the cursor as `command` lays it out, in place of a placement of the same
-    /// image and id. Unless `C=1`, the cursor goes down to the last row it covers (scrolling as a
-    /// linefeed does) and past its right edge.
+    /// image and id, or lay it out for placeholders (`U=1`). Unless `C=1`, the cursor goes down to
+    /// the last row it covers (scrolling as a linefeed does) and past its right edge.
     fn place(&mut self, command: &Command, image: &Image) -> Result<(), String> {
         if command.parent != 0 {
             return Err("EINVAL:relative placements are not supported".into());
@@ -468,6 +554,13 @@ impl Terminal {
         let (generation, id) =
             (image.generation, if image.id == 0 { 0 } else { command.placement });
         let graphics = self.graphics.as_deref_mut().expect("graphics are on");
+        if command.virtual_placement {
+            graphics.virtuals.retain(|old| (old.generation, old.id) != (generation, id));
+            let serial = SERIALS.fetch_add(1, Ordering::Relaxed);
+            graphics.virtuals.push(Virtual { generation, id, fit, serial });
+            self.bound_placements();
+            return Ok(());
+        }
         graphics.tallest = graphics.tallest.max(fit.cells.1);
         if id != 0 {
             self.unplace(false, |anchor, _, _| (anchor.generation, anchor.id) == (generation, id));
@@ -486,20 +579,23 @@ impl Terminal {
         Ok(())
     }
 
-    /// At most `PLACEMENTS_MAX` placements: past it the oldest goes.
+    /// At most `PLACEMENTS_MAX` placements, virtual ones included: past it the oldest goes.
     fn bound_placements(&mut self) {
+        let graphics = self.graphics.as_deref_mut().expect("graphics are on");
         let rows = self.grid.primary.iter().chain(&self.grid.alt);
-        let serials = rows.flat_map(|row| &row.images).map(|anchor| anchor.serial);
+        let anchored = rows.flat_map(|row| &row.images).map(|anchor| anchor.serial);
+        let serials = anchored.chain(graphics.virtuals.iter().map(|placement| placement.serial));
         let (count, oldest) =
             serials.fold((0, u64::MAX), |(count, oldest), serial| (count + 1, oldest.min(serial)));
         if count > PLACEMENTS_MAX {
+            graphics.virtuals.retain(|placement| placement.serial != oldest);
             self.unplace(false, |anchor, _, _| anchor.serial == oldest);
         }
     }
 
     /// `a=d`: placements by where they are, on the screen only (`a`, `c`, `p`, `q`, `x`, `y`,
-    /// `z`), or images by id (`i`, `n`, `r`). Upper case forgets the images then placed nowhere,
-    /// scrollback included.
+    /// `z`), or images by id (`i`, `n`, `r`), virtual placements too. Upper case forgets the
+    /// images then placed nowhere, scrollback included.
     fn delete(&mut self, command: &Command) {
         let top = self.screen_top();
         let screen = top..top + u64::from(self.grid.rows);
@@ -536,6 +632,7 @@ impl Terminal {
                 };
                 let p = command.placement;
                 let ours = |generation, id| images.contains(&generation) && (p == 0 || id == p);
+                graphics.virtuals.retain(|placement| !ours(placement.generation, placement.id));
                 self.unplace(false, |anchor, _, _| ours(anchor.generation, anchor.id));
                 images
             }
@@ -587,6 +684,94 @@ impl Graphics {
                 return self.chosen;
             }
         }
+    }
+
+    /// What the placeholder cells of `row`, absolute row `index`, show: each run of neighbouring
+    /// cells in one row of one virtual placement as one piece.
+    fn placeholders(&self, row: &Row, index: u64, out: &mut Vec<Placement>) {
+        let mut left = None;
+        let spots: Vec<Option<Spot>> = (0..row.cells().len())
+            .map(|col| {
+                left = spot(row, col, left);
+                left
+            })
+            .collect();
+        let next = |a: &Option<Spot>, b: &Option<Spot>| matches!((a, b), (Some(a), Some(b)) if Spot { col: a.col + 1, ..*a } == *b);
+        let mut col = 0;
+        for run in spots.chunk_by(next) {
+            if let Some(spot) = run[0] {
+                self.piece((col, spot, run.len() as u32), index, out);
+            }
+            col += run.len() as u16;
+        }
+    }
+
+    /// The part of an image a run of `len` placeholder cells from column `col` shows: the cells
+    /// `spot` and those after it name in the virtual placement's block, where the image covers
+    /// them. A high byte past 255 (the list has 297 diacritics) names no image.
+    fn piece(&self, (col, spot, len): (u16, Spot, u32), index: u64, out: &mut Vec<Placement>) {
+        let id = (spot.high < 256).then(|| bits(spot.fg) | spot.high << 24);
+        let Some(image) = id.and_then(|id| self.find(id, 0)) else { return };
+        let placement = bits(spot.underline);
+        let mut virtuals = self.virtuals.iter().rev();
+        let Some(layout) = virtuals.find(|virtual_placement| {
+            virtual_placement.generation == image.generation
+                && (placement == 0 || virtual_placement.id == placement)
+        }) else {
+            return;
+        };
+        let ([dx, dy, dw, dh], [sx, sy, sw, sh]) = (layout.fit.dest, layout.fit.source);
+        let (first, top) = (spot.col as f32, spot.row as f32);
+        let (left, right) = (first.max(dx), (first + len as f32).min(dx + dw));
+        let (upper, lower) = (top.max(dy), (top + 1.).min(dy + dh));
+        if left < right && upper < lower {
+            out.push(Placement {
+                image,
+                row: index,
+                col,
+                dest: [left - first, upper - top, right - left, lower - upper],
+                source: [
+                    sx + (left - dx) * sw / dw,
+                    sy + (upper - dy) * sh / dh,
+                    (right - left) * sw / dw,
+                    (lower - upper) * sh / dh,
+                ],
+                z: layout.fit.z,
+            });
+        }
+    }
+}
+
+/// The placeholder at `col` of `row`, if it holds one: its first three diacritics number its
+/// row, its column and its image id's high byte; one missing is carried on from a placeholder
+/// just `left` of it in the same colours, as the specification lays out, else 0.
+fn spot(row: &Row, col: usize, left: Option<Spot>) -> Option<Spot> {
+    let cell = &row.cells()[col];
+    if cell.ch() != PLACEHOLDER {
+        return None;
+    }
+    let (fg, underline) = (cell.fg(), row.underline_color(col));
+    let number = |c: char| DIACRITICS.binary_search(&c).ok().map(|n| n as u32);
+    let mut marks = row.cluster(col).unwrap_or_default().chars().skip(1).map(number);
+    let (r, c, high) = (marks.next().flatten(), marks.next().flatten(), marks.next().flatten());
+    let left = left.filter(|left| (left.fg, left.underline) == (fg, underline));
+    let (row, col, high) = match (r, c, high, left) {
+        (None, _, _, Some(left)) => (left.row, left.col + 1, left.high),
+        (Some(r), None, _, Some(left)) if left.row == r => (r, left.col + 1, left.high),
+        (Some(r), Some(c), None, Some(left)) if left.row == r && left.col + 1 == c => {
+            (r, c, left.high)
+        }
+        (r, c, high, _) => (r.unwrap_or(0), c.unwrap_or(0), high.unwrap_or(0)),
+    };
+    Some(Spot { fg, underline, high, row, col })
+}
+
+/// The bits of an image or placement id a colour holds: a palette index's 8, an RGB colour's 24.
+fn bits(color: Color) -> u32 {
+    match color {
+        Color::Default => 0,
+        Color::Named(index) | Color::Indexed(index) => index.into(),
+        Color::Rgb(r, g, b) => u32::from_be_bytes([0, r, g, b]),
     }
 }
 
