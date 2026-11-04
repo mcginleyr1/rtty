@@ -48,7 +48,7 @@ use window::{
     SplitDown, SplitRight, SwapPane, ToggleZoom,
 };
 
-actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize]);
+actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize]);
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
@@ -228,6 +228,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::ClearScrollback => KeyBinding::new(chord, ClearScrollback, pane),
         Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
         Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
+        Action::FontReset => KeyBinding::new(chord, ResetFontSize, None),
         Action::Quit => KeyBinding::new(chord, Quit, None),
     }
 }
@@ -392,6 +393,9 @@ fn run(options: Options) -> Result<(), String> {
         cx.on_action({
             let shrink = step(-1.);
             move |_: &DecreaseFontSize, cx| shrink(cx)
+        });
+        cx.on_action(move |_: &ResetFontSize, cx| {
+            cx.update_global::<Settings, _>(|settings, _| settings.font_size = px(font_size))
         });
         cx.spawn(async move |cx| {
             let mut requests = requests;
