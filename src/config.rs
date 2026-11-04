@@ -22,6 +22,7 @@ pub struct Config {
     pub ligatures: Option<bool>,
     keys: Option<Keys>,
     pub bell: Option<Bell>,
+    pub option_as_alt: Option<OptionAsAlt>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -170,6 +171,31 @@ pub enum Bell {
     #[default]
     Visual,
     None,
+}
+
+/// Which Option keys are Alt (an ESC prefix, and `alt-` bindings) when they type text; the
+/// others type what macOS gives them (é, €, dead keys) and are Alt only for keys that type none.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OptionAsAlt {
+    #[default]
+    Both,
+    Left,
+    Right,
+    None,
+}
+
+impl OptionAsAlt {
+    /// Whether Option, held on the left side, the right or (as an event that names neither
+    /// says) on no side known, is Alt.
+    pub fn alt(self, left: bool, right: bool) -> bool {
+        match self {
+            OptionAsAlt::Both => true,
+            OptionAsAlt::Left => left || !right,
+            OptionAsAlt::Right => right || !left,
+            OptionAsAlt::None => false,
+        }
+    }
 }
 
 /// The scheme for each window appearance.
@@ -389,5 +415,23 @@ mod tests {
         assert_eq!(bell("bell = 'none'").unwrap(), Some(Bell::None));
         let err = bell("bell = 'audible'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `audible`, expected `visual` or `none`"), "{err}");
+    }
+
+    #[test]
+    fn option_as_alt_names_the_sides_that_are_alt() {
+        let option = |source| toml::from_str::<Config>(source).map(|config| config.option_as_alt);
+        assert_eq!(option("").unwrap().unwrap_or_default(), OptionAsAlt::Both);
+        assert_eq!(option("option_as_alt = 'left'").unwrap(), Some(OptionAsAlt::Left));
+        assert_eq!(option("option_as_alt = 'right'").unwrap(), Some(OptionAsAlt::Right));
+        assert_eq!(option("option_as_alt = 'none'").unwrap(), Some(OptionAsAlt::None));
+        let err = option("option_as_alt = 'meta'").unwrap_err().to_string();
+        assert!(err.contains("expected one of `both`, `left`, `right`, `none`"), "{err}");
+        // Held on (left, right): one side, the other, both, or no side the event names.
+        let sides = [(true, false), (false, true), (true, true), (false, false)];
+        let alt = |option: OptionAsAlt| sides.map(|(left, right)| option.alt(left, right));
+        assert_eq!(alt(OptionAsAlt::Both), [true, true, true, true]);
+        assert_eq!(alt(OptionAsAlt::Left), [true, false, true, true]);
+        assert_eq!(alt(OptionAsAlt::Right), [false, true, true, true]);
+        assert_eq!(alt(OptionAsAlt::None), [false, false, false, false]);
     }
 }

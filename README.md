@@ -100,6 +100,7 @@ scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
 keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
 bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
+option_as_alt = "both"            # the default; "left", "right" or "none": the Option keys that are Alt (Keys)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -310,6 +311,16 @@ Home/End/PgUp/PgDn/Insert/Delete, F1–F12 (xterm encodings, with modifier param
 and Ctrl+`[ \ ] ^ _ @ space`, and Option as Alt: an ESC prefix (so Option+B is word-back in a shell,
 and Option no longer types `∫`). Application cursor mode (DECCKM) switches the arrows to `ESC O`.
 A held key repeats instead of opening macOS's accent picker.
+
+**Option on one side.** `option_as_alt` names the Option keys that are Alt: `"both"` (the
+default), `"left"`, `"right"` or `"none"`. The other Option types what macOS gives it, as in any
+Mac text field: `˙` for Option+H, `€` for Option+Shift+2 on a US layout, and é for Option+E then E
+(a dead key); no `alt-` binding fires for those keys and no ESC goes with them. With a key that
+types nothing (an arrow, Enter, Backspace), or with Ctrl or Cmd held, it stays Alt (`CSI 1 ; 3 D`,
+ESC DEL). Which Option is down comes from the key event's device-dependent modifier flags, which
+the keyboard sets; an event without them is taken as Alt. Such a key goes straight from AppKit to
+the window's text input, the way GPUI hands it composing keys, and never reaches GPUI's bindings
+or rtty's key encoder.
 
 Programs that ask for more get it:
 
@@ -557,6 +568,8 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    rtty.log now records each Cmd chord as AppKit hands it over and as GPUI dispatches it, so the
    next one says which layer takes it.
 2. **A look on screen** at what scripts check only in the dump: IME with a real input method,
-   a file dragged from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
+   a dead key on the Option that is not Alt (é from Option+E, E: the text input inserts the
+   characters a synthesized key event carries, and composes nothing from them), a file dragged
+   from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
    box, block and powerline characters, a selection dragged past a pane, and notifications from
    the `.app`, posted and clicked.

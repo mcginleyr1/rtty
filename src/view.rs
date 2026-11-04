@@ -723,6 +723,9 @@ impl PaneView {
             let phase = if blinked_off(blinking) { "off" } else { "on" };
             let _ = writeln!(out, "cursor blinking for {} ms, {phase}", blinking.as_millis());
         }
+        if let Some(text) = &self.marked_text {
+            let _ = writeln!(out, "composing {text:?}");
+        }
         for (index, row) in term.rows(top, top + u64::from(rows)) {
             let line = scene.line(row, index);
             if line.backgrounds.is_empty() && line.runs.is_empty() && line.drawn.is_empty() {

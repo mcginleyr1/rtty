@@ -24,7 +24,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use std::{iter, mem, slice};
@@ -33,7 +33,8 @@ use block2::RcBlock;
 use gpui::{
     App, Application, BorrowAppContext, FontFallbacks, FontFeatures, KeyBinding, actions, font, px,
 };
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags, NSView};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
@@ -64,6 +65,11 @@ static LOG: OnceLock<PathBuf> = OnceLock::new();
 
 /// The log starts over (keeping the last as `rtty.log.old`) past this size.
 const LOG_LIMIT: u64 = 1 << 20;
+
+/// The device-dependent bits of an NSEvent's modifier flags that say which Option key is down
+/// (IOKit's `NX_DEVICELALTKEYMASK` and `NX_DEVICERALTKEYMASK`).
+pub const LEFT_OPTION: Flags = Flags(0x20);
+pub const RIGHT_OPTION: Flags = Flags(0x40);
 
 /// Appends a line to the log, after the local time and this rtty's pid.
 pub fn note(line: &str) {
@@ -280,6 +286,7 @@ fn run(options: Options) -> Result<(), String> {
     let trace = trace.transpose()?;
     let bindings = config.bindings;
     let bell = config.bell.unwrap_or_default();
+    let option_as_alt = config.option_as_alt.unwrap_or_default();
     let fallback = config.fallback;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
@@ -317,25 +324,50 @@ fn run(options: Options) -> Result<(), String> {
             ));
         })
         .detach();
-        // Cmd chords as AppKit hands them to rtty, before GPUI sees them: one logged here and
-        // not above never reached GPUI's dispatch.
-        let monitor = RcBlock::new(|event: NonNull<NSEvent>| {
+        // Keys as AppKit hands them to rtty, before GPUI sees them. Cmd chords are logged: one
+        // logged here and not above never reached GPUI's dispatch.
+        let monitor = RcBlock::new(move |event: NonNull<NSEvent>| {
             // SAFETY: AppKit calls the monitor with a live event.
             let key = unsafe { event.as_ref() };
             let flags = key.modifierFlags();
+            let chars = key.charactersIgnoringModifiers().map(|chars| chars.to_string());
+            let chars = chars.unwrap_or_default();
             if flags.contains(Flags::Command) {
                 let marks = [(Flags::Control, '⌃'), (Flags::Option, '⌥'), (Flags::Shift, '⇧')];
                 let held: String = marks
                     .into_iter()
                     .filter_map(|(flag, mark)| flags.contains(flag).then_some(mark))
                     .collect();
-                let chars = key.charactersIgnoringModifiers().map(|chars| chars.to_string());
-                let (chars, code) = (chars.unwrap_or_default(), key.keyCode());
+                let code = key.keyCode();
                 note(&format!("AppKit key down {held}⌘{chars:?} (key code {code})"));
+            }
+            // An Option that is not Alt, with a key that types text (no control character, none
+            // of AppKit's function-key characters from U+F700): the window's text input takes
+            // it, as a macOS text view's does (é, €, a dead key's accent), and GPUI never sees
+            // it, so no `alt-` binding and no ESC prefix.
+            let option =
+                flags.contains(Flags::Option) && !flags.intersects(Flags::Command | Flags::Control);
+            let alt = option_as_alt.alt(flags.contains(LEFT_OPTION), flags.contains(RIGHT_OPTION));
+            let text = chars
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_control() && !('\u{f700}'..='\u{f8ff}').contains(&c));
+            if option && !alt && text {
+                let main =
+                    MainThreadMarker::new().expect("AppKit calls monitors on the main thread");
+                let view = key.window(main).and_then(|window| window.firstResponder());
+                let view = view.and_then(|responder| responder.downcast::<NSView>().ok());
+                if view
+                    .and_then(|view| view.inputContext())
+                    .is_some_and(|input| input.handleEvent(key))
+                {
+                    return ptr::null_mut();
+                }
             }
             event.as_ptr()
         });
-        // SAFETY: the monitor returns the event it is given. It stays for rtty's life.
+        // SAFETY: the monitor returns the event it is given, or null for one the text input
+        // took. It stays for rtty's life.
         mem::forget(unsafe {
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &monitor)
         });

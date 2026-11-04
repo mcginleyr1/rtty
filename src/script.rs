@@ -14,7 +14,9 @@
 //! nskey KEYSTROKE...     the same, as AppKit events handed to NSApplication, which go the way a
 //!                        key pressed on the keyboard does (event monitors, key equivalent, text
 //!                        input context, key down); only keys of a US layout's keyboard. `->`
-//!                        gives what the key types, the event's characters: alt-h->˙ is Option+H
+//!                        gives what the key types, the event's characters: alt-h->˙ is Option+H.
+//!                        `left:` or `right:` before an alt- key holds that Option key, in the
+//!                        event's device-dependent flags as the keyboard sets them: right:alt-e
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
 //! drag ROW COL ROW COL [MS]  with the left button, held at the end for MS before the release;
@@ -52,24 +54,51 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::tabbar::Hit;
 use crate::window::TerminalWindow;
+use crate::{LEFT_OPTION, RIGHT_OPTION};
 
 #[derive(Debug)]
 pub enum Step {
     Wait(String),
     Sleep(Duration),
     Keys(Vec<Keystroke>),
-    NsKeys(Vec<Keystroke>),
+    /// Each with the Option key it names, if it names one.
+    NsKeys(Vec<(Keystroke, NSEventModifierFlags)>),
     Type(String),
-    Click { row: u16, col: u16, button: MouseButton, clicks: usize, cmd: bool },
-    Drag { from: (i32, i32), to: (i32, i32), hold: Duration },
-    Move { row: u16, col: u16, cmd: bool },
-    Wheel { row: u16, col: u16, lines: f32 },
-    Drop { row: u16, col: u16, paths: Vec<PathBuf> },
+    Click {
+        row: u16,
+        col: u16,
+        button: MouseButton,
+        clicks: usize,
+        cmd: bool,
+    },
+    Drag {
+        from: (i32, i32),
+        to: (i32, i32),
+        hold: Duration,
+    },
+    Move {
+        row: u16,
+        col: u16,
+        cmd: bool,
+    },
+    Wheel {
+        row: u16,
+        col: u16,
+        lines: f32,
+    },
+    Drop {
+        row: u16,
+        col: u16,
+        paths: Vec<PathBuf>,
+    },
     Focus(bool),
     BarClick(Hit),
     BarHover(Option<Hit>),
     Appearance(WindowAppearance),
-    Resize { rows: u16, cols: u16 },
+    Resize {
+        rows: u16,
+        cols: u16,
+    },
     Dump(PathBuf),
     Quit,
 }
@@ -123,11 +152,26 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             "keys" | "nskey" => {
                 let keystrokes = args
                     .iter()
-                    .map(|key| Keystroke::parse(key).map_err(|_| error("unknown keystroke")))
+                    .map(|key| {
+                        let (side, key) = match key.split_once(':') {
+                            Some(("left", key)) if command == "nskey" => (LEFT_OPTION, key),
+                            Some(("right", key)) if command == "nskey" => (RIGHT_OPTION, key),
+                            _ => (NSEventModifierFlags::empty(), *key),
+                        };
+                        let keystroke =
+                            Keystroke::parse(key).map_err(|_| error("unknown keystroke"));
+                        match keystroke? {
+                            keystroke if side.is_empty() || keystroke.modifiers.alt => {
+                                Ok((keystroke, side))
+                            }
+                            _ => Err(error("an alt- key after left: or right: expected")),
+                        }
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 if command == "keys" {
-                    Step::Keys(keystrokes)
-                } else if keystrokes.iter().all(|keystroke| key_code(&keystroke.key).is_some()) {
+                    Step::Keys(keystrokes.into_iter().map(|(keystroke, _)| keystroke).collect())
+                } else if keystrokes.iter().all(|(keystroke, _)| key_code(&keystroke.key).is_some())
+                {
                     Step::NsKeys(keystrokes)
                 } else {
                     return Err(error("a key a US keyboard has expected"));
@@ -300,9 +344,9 @@ async fn perform(
                 })
                 .map_err(|err| err.to_string())?
                 .ok_or("the window has no AppKit view")?;
-            for keystroke in keystrokes {
+            for (keystroke, side) in keystrokes {
                 // Outside any update, as AppKit calls GPUI.
-                appkit_stroke(view, keystroke)?;
+                appkit_stroke(view, keystroke, *side)?;
                 cx.background_executor().timer(Duration::from_millis(20)).await;
             }
         }
@@ -441,7 +485,12 @@ fn stroke(
 /// A key pressed and released, its events handed to NSApplication as the window server hands it
 /// the keyboard's, so AppKit's own dispatch (event monitors, key equivalents, then the window's
 /// key down) decides where they go. In process: they reach no other app and take no focus.
-fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), String> {
+/// `side` adds the device-dependent flag of the Option key held.
+fn appkit_stroke(
+    view: NonNull<c_void>,
+    keystroke: &Keystroke,
+    side: NSEventModifierFlags,
+) -> Result<(), String> {
     // SAFETY: GPUI's window handle is its live NSView, used on the main thread.
     let view: &NSView = unsafe { view.cast().as_ref() };
     let window = view.window().ok_or("the view is in no window")?;
@@ -453,10 +502,8 @@ fn appkit_stroke(view: NonNull<c_void>, keystroke: &Keystroke) -> Result<(), Str
         (held.alt, NSEventModifierFlags::Option),
         (held.shift, NSEventModifierFlags::Shift),
     ];
-    let flags = flags
-        .into_iter()
-        .filter(|(held, _)| *held)
-        .fold(NSEventModifierFlags::empty(), |flags, (_, flag)| flags | flag);
+    let flags =
+        flags.into_iter().filter(|(held, _)| *held).fold(side, |flags, (_, flag)| flags | flag);
     let plain = match held.shift {
         true => c.to_uppercase().to_string(),
         false => c.to_string(),
@@ -551,10 +598,16 @@ mod tests {
         assert!(parse("drop 2 7 /tmp/a").unwrap_err().contains("paths as JSON strings expected"));
         let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
         assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
+        let sides = parse("nskey left:alt-h right:alt-e e shift-;->:").unwrap();
+        let Step::NsKeys(sides) = &sides[0].1 else { panic!("nskey") };
+        let sides: Vec<_> = sides.iter().map(|(key, side)| (key.key.as_str(), *side)).collect();
+        let none = NSEventModifierFlags::empty();
+        assert_eq!(sides, [("h", LEFT_OPTION), ("e", RIGHT_OPTION), ("e", none), (";", none)]);
+        assert!(parse("nskey right:e").unwrap_err().contains("an alt- key after left: or right:"));
         assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));
         let option = parse("nskey alt-shift-h->Ó").unwrap();
         assert!(matches!(&option[0].1, Step::NsKeys(keys)
-            if keys[0].key == "h" && keys[0].key_char.as_deref() == Some("Ó")));
+            if keys[0].0.key == "h" && keys[0].0.key_char.as_deref() == Some("Ó")));
         assert_eq!([key_code("d"), key_code("t")], [Some((2, 'd')), Some((17, 't'))]);
         assert_eq!([key_code("`"), key_code("enter")], [Some((50, '`')), Some((36, '\r'))]);
         assert_eq!(
