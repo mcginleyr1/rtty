@@ -1,6 +1,7 @@
-//! What the shell's marks (OSC 133) say about a pane's rows: where prompts start and the last
-//! command's output. A prompt that marks itself as well as rtty's integration does marks each
-//! thing twice, one right after the other on one row; such a run counts as its first.
+//! What the shell's marks (OSC 133) say about a pane's rows: where prompts start, the last
+//! command's output and a command's command line. A prompt that marks itself as well as rtty's
+//! integration does marks each thing twice, one right after the other on one row; such a run
+//! counts as its first.
 
 use std::mem;
 
@@ -42,6 +43,14 @@ pub fn last_output(term: &Terminal) -> Option<String> {
     let marks = marks(term);
     let output = marks.windows(2).rfind(|pair| pair[0].kind == MarkKind::OutputStart)?;
     Some(between(term, &output[0], &output[1]))
+}
+
+/// What was typed at the prompt before the output mark `output` (C): from the prompt's end (B).
+pub fn command_line(term: &Terminal, output: &Mark) -> Option<String> {
+    let marks = marks(term);
+    let at = |mark: &&Mark| (mark.row, mark.col) < (output.row, output.col);
+    let typed = marks.iter().rev().find(at).filter(|mark| mark.kind == MarkKind::CommandStart)?;
+    Some(between(term, typed, output).trim().to_owned()).filter(|line| !line.is_empty())
 }
 
 #[cfg(test)]
@@ -112,5 +121,21 @@ mod tests {
         // An empty line runs no command: the last output stays the last.
         let empty = format!("{A}$ {B}ls\r\n{C}a\r\n{}{A}$ {B}\r\n{}{A}$ {B}", end(0), end(0));
         assert_eq!(last_output(&term(10, 20, &empty)).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_commands_line_is_what_was_typed_after_its_prompt() {
+        let text = format!("{A}~ $ {B}make   test\r\n{C}");
+        let term = term(10, 20, &text);
+        let output = *marks(&term).last().unwrap();
+        assert_eq!(command_line(&term, &output).as_deref(), Some("make   test"));
+        // Soft-wrapped onto a second row.
+        let long = format!("{A}$ {B}echo 0123456789abcdefghij\r\n{C}");
+        let term = self::term(10, 12, &long);
+        let output = *marks(&term).last().unwrap();
+        assert_eq!(command_line(&term, &output).as_deref(), Some("echo 0123456789abcdefghij"));
+        let unmarked = format!("{A}$ ls\r\n{C}");
+        let term = self::term(10, 12, &unmarked);
+        assert_eq!(command_line(&term, marks(&term).last().unwrap()), None);
     }
 }

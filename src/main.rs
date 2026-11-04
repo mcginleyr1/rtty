@@ -300,6 +300,7 @@ fn run(options: Options) -> Result<(), String> {
     let confirm_close = config.confirm_close.unwrap_or(true);
     let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
     let fallback = config.fallback;
+    let notify_after = config.notify_after.filter(|&seconds| seconds > 0).map(Duration::from_secs);
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
@@ -472,6 +473,7 @@ fn run(options: Options) -> Result<(), String> {
             undo_timeout,
             prompts: script.is_none(),
             shell_integration,
+            notify_after,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

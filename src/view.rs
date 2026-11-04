@@ -93,6 +93,8 @@ pub struct Settings {
     pub prompts: bool,
     /// Where the shell integration's scripts are, when login shells load it.
     pub shell_integration: Option<PathBuf>,
+    /// A command that ran this long notifies its end out of view; `None` never.
+    pub notify_after: Option<Duration>,
 }
 
 impl Global for Settings {}
@@ -142,6 +144,8 @@ pub struct PaneView {
     followed: Vec<String>,
     /// When the last bell flashed the pane.
     flashed: Option<Instant>,
+    /// The command running since its output's mark (OSC 133;C), and its command line.
+    command: Option<(Instant, Option<String>)>,
     /// A word on what a key did, and when, shown over the pane for `STATUS`.
     status: Option<(&'static str, Instant)>,
     /// What the last command's output key copied, or under `--script` would have.
@@ -325,6 +329,7 @@ impl PaneView {
             link: None,
             followed: Vec::new(),
             flashed: None,
+            command: None,
             status: None,
             copied: None,
             title: Title::default(),
@@ -562,7 +567,33 @@ impl PaneView {
             }
             Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
                 self.claims_keys = false;
+                self.command = None;
                 self.set_progress(None, cx)
+            }
+            Notice::Event(Event::Mark(mark @ Mark { kind: MarkKind::OutputStart, .. })) => {
+                if self.command.is_none() {
+                    let line = prompt::command_line(&self.pane.lock(), &mark);
+                    self.command = Some((Instant::now(), line));
+                }
+            }
+            // A command that ran `notify_after` or longer tells the window, which posts it as a
+            // notification unless the pane has the keyboard in the active window.
+            Notice::Event(Event::Mark(Mark { kind: MarkKind::CommandEnd { exit }, .. })) => {
+                let Some((since, line)) = self.command.take() else { return };
+                let took = since.elapsed();
+                if cx.global::<Settings>().notify_after.is_none_or(|after| took < after) {
+                    return;
+                }
+                // Called by its directory now that the shell is back, not by the command.
+                if self.refresh_title() {
+                    cx.emit(PaneEvent::Title)
+                }
+                let status =
+                    exit.map_or("no exit status".into(), |code| format!("exit status {code}"));
+                let took = took.as_secs_f64();
+                let body = format!("{status} after {took:.0} s, in {}", self.title.text);
+                let title = line.unwrap_or_else(|| "A command ended".into());
+                cx.emit(PaneEvent::Notification { title: Some(title), body: Some(body) })
             }
             Notice::Event(Event::Progress { state, percent }) => {
                 self.set_progress(progress::reported(state, percent), cx)
@@ -786,6 +817,9 @@ impl PaneView {
             marks.map(|mark| format!("{:?} {},{}", mark.kind, mark.row, mark.col)).collect();
         if !marks.is_empty() {
             let _ = writeln!(out, "marks {}", marks.join(", "));
+        }
+        if let Some((since, line)) = &self.command {
+            let _ = writeln!(out, "command {line:?} running {} ms", since.elapsed().as_millis());
         }
         if let Some((text, at)) = self.status {
             let _ = writeln!(out, "status {text:?} {} ms ago", at.elapsed().as_millis());

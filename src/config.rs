@@ -32,6 +32,8 @@ pub struct Config {
     /// `undo-close`; 0 closes at once.
     pub undo_timeout: Option<u64>,
     pub shell_integration: Option<ShellIntegration>,
+    /// Seconds a command must run for its end out of view to be notified; 0 for never.
+    pub notify_after: Option<u64>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -507,11 +509,15 @@ mod tests {
     fn shell_integration_keys_read_as_written() {
         let defaults: Config = toml::from_str("").unwrap();
         assert_eq!(defaults.shell_integration.unwrap_or_default(), ShellIntegration::Auto);
-        let config: Config = toml::from_str("shell_integration = 'none'").unwrap();
+        assert_eq!(defaults.notify_after, None);
+        let source = "shell_integration = 'none'\nnotify_after = 0";
+        let config: Config = toml::from_str(source).unwrap();
         assert_eq!(config.shell_integration, Some(ShellIntegration::None));
+        assert_eq!(config.notify_after, Some(0));
         let err = toml::from_str::<Config>("shell_integration = 'zsh'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `zsh`, expected `auto` or `none`"), "{err}");
-        let dashed = toml::from_str::<Config>("shell-integration = 'none'");
+        assert!(toml::from_str::<Config>("notify_after = -1").is_err());
+        let dashed = toml::from_str::<Config>("notify-after = 5");
         assert!(dashed.is_err(), "written with underscores, as every key is");
     }
 }
