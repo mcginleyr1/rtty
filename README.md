@@ -538,8 +538,9 @@ when the labels appeared, whatever output has moved under them since.
 tmux can, and rtty puts the text on the clipboard. A program's read (`ESC ] 52 ; c ; ?
 BEL`) would hand it whatever was copied last, a password included, so it is answered only as
 `clipboard_read` says: `"ask"` (the default) asks in a sheet on the window, "*program* wants to
-read the clipboard", and answers only on `Allow`; `"allow"` answers at once; `"deny"` never
-answers, as before. The answer is the clipboard's text in base64, for the selection the program
+read the clipboard", and answers only on `Allow`, which takes a click: `Deny` is the default, on
+Return and on Esc, so a key pressed by habit hands nothing over; `"allow"` answers at once;
+`"deny"` never answers, as before. The answer is the clipboard's text in base64, for the selection the program
 named, ended as its query was (BEL or ST).
 
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
@@ -961,7 +962,8 @@ are not yet checked by eye. The global hotkey is registered with macOS in a scri
 `--script`'s `hotkey` step runs what a press runs, which a scripted rtty keeps in its dump
 instead of doing; a real press is not yet checked. A clipboard read is checked with `--script`
 and `--trace`: no answer goes to the pty until `answer ok`, none after `answer cancel`, and with
-`clipboard_read = "allow"` one at once; the sheet is not yet checked by eye.
+`clipboard_read = "allow"` one at once; the sheet and its keys (Return and Esc denying) are not
+yet checked by eye.
 
 ## The GPUI pin
 

@@ -6,13 +6,16 @@
 //! Each pane draws as a cached view, so output in one pane redraws that pane alone.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::ptr::{self, NonNull};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
+use block2::RcBlock;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
@@ -24,8 +27,12 @@ use gpui::{
     WindowHandle, WindowId, WindowOptions, actions, div, point, prelude::*, px, relative, size,
     svg, transparent_black,
 };
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSView, NSWindow};
+use objc2_app_kit::{
+    NSAlert, NSAlertSecondButtonReturn, NSEvent, NSEventMask, NSModalResponse, NSView, NSWindow,
+};
+use objc2_foundation::NSString;
 use portable_pty::CommandBuilder;
 use raw_window_handle::RawWindowHandle;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
@@ -322,6 +329,57 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     view.window()
 }
 
+/// A sheet on `window` asking `question` whose Return and Esc both answer `stop`, so only a
+/// click answers `go`. AppKit gives a button one key: `stop`, added first, has Return, and Esc,
+/// which AppKit gives only a button titled Cancel, is caught while the sheet is up. The button
+/// pressed, 0 for `go`, as `Window::prompt` counts them.
+fn deliberate_sheet(
+    question: &str,
+    detail: &str,
+    [go, stop]: [&str; 2],
+    window: &Window,
+) -> oneshot::Receiver<usize> {
+    const ESCAPE: u16 = 53;
+    let (answered, answer) = oneshot::channel();
+    let Some(parent) = ns_window(window) else { return answer };
+    let main = MainThreadMarker::new().expect("windows are on the main thread");
+    let alert = NSAlert::new(main);
+    alert.setMessageText(&NSString::from_str(question));
+    alert.setInformativeText(&NSString::from_str(detail));
+    let stop = alert.addButtonWithTitle(&NSString::from_str(stop));
+    alert.addButtonWithTitle(&NSString::from_str(go));
+    let sheet = alert.window();
+    let escape = RcBlock::new(move |event: NonNull<NSEvent>| {
+        // SAFETY: AppKit calls the monitor with a live event.
+        let key = unsafe { event.as_ref() };
+        let on_sheet = key.window(main).is_some_and(|window| ptr::eq(&*window, &*sheet));
+        if !on_sheet || key.keyCode() != ESCAPE {
+            return event.as_ptr();
+        }
+        // SAFETY: a click takes no sender.
+        unsafe { stop.performClick(None) };
+        ptr::null_mut()
+    });
+    // SAFETY: the monitor returns the event it is given, or null for an Esc it answered; it goes
+    // with the sheet.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &escape)
+    };
+    let answered = Cell::new(Some(answered));
+    let done = RcBlock::new(move |response: NSModalResponse| {
+        if let Some(monitor) = &monitor {
+            // SAFETY: the monitor this sheet added, removed once.
+            unsafe { NSEvent::removeMonitor(monitor) };
+        }
+        let button = if response == NSAlertSecondButtonReturn { 0 } else { 1 };
+        if let Some(answered) = answered.take() {
+            let _ = answered.send(button);
+        }
+    });
+    alert.beginSheetModalForWindow_completionHandler(&parent, Some(&done));
+    answer
+}
+
 /// Quitting, however asked for (Cmd+Q, the menu's Quit, and through `app::should_terminate` the
 /// dock's Quit and logging out): quits at once while nothing but shells at their prompts runs
 /// in any window, or closing does not ask; else asks, on the window that had the keyboard last
@@ -347,7 +405,7 @@ pub fn quit(cx: &mut App) {
     let key = crate::app::key(cx).filter(|key| windows.contains(key));
     let asked = key.into_iter().chain(windows).find_map(|asker| {
         let answer = asker.update(cx, |this, window, cx| {
-            this.ask(&question, &detail, [button, "Cancel"], window, cx)
+            this.ask(&question, &detail, [button, "Cancel"], false, window, cx)
         });
         Some((asker, answer.ok()?))
     });
@@ -881,7 +939,8 @@ impl TerminalWindow {
                 view.update(cx, |view, _| view.refresh_title());
                 let question = format!("{} wants to read the clipboard", self.title(id, cx));
                 let detail = "Allow sends it the text you copied last.";
-                Some(self.ask(&question, detail, ["Allow", "Deny"], window, cx))
+                // A stray Return must not hand the clipboard over.
+                Some(self.ask(&question, detail, ["Allow", "Deny"], true, window, cx))
             }
         };
         cx.spawn_in(window, async move |_, cx| {
@@ -908,24 +967,34 @@ impl TerminalWindow {
         panes.iter().filter_map(|id| self.views.get(id)?.read(cx).running()).collect()
     }
 
-    /// Asks `question` in a sheet on the window, `go` its default button and `stop` its Esc (or
-    /// under `--script` in the dump, for the script's `answer`): the button pressed, 0 for `go`.
+    /// Asks `question` in a sheet on the window, `go` its default button and `stop` its Esc; or,
+    /// `deliberate`, with Return and Esc both `stop`, so only a click says `go`
+    /// (`deliberate_sheet`).
+    /// Under `--script` the question waits in the dump for the script's `answer`. The button
+    /// pressed, 0 for `go`.
     fn ask(
         &mut self,
         question: &str,
         detail: &str,
         [go, stop]: [&'static str; 2],
+        deliberate: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<usize> {
-        self.attention.push(format!("asked {question:?} {detail:?} [{go}, {stop}]"));
-        if cx.global::<Settings>().launch.prompts {
-            let buttons = [PromptButton::ok(go), PromptButton::cancel(stop)];
-            return window.prompt(PromptLevel::Warning, question, Some(detail), &buttons, cx);
+        let keys = if deliberate { format!(" (Return and Esc: {stop})") } else { String::new() };
+        self.attention.push(format!("asked {question:?} {detail:?} [{go}, {stop}]{keys}"));
+        match (cx.global::<Settings>().launch.prompts, deliberate) {
+            (true, true) => deliberate_sheet(question, detail, [go, stop], window),
+            (true, false) => {
+                let buttons = [PromptButton::ok(go), PromptButton::cancel(stop)];
+                window.prompt(PromptLevel::Warning, question, Some(detail), &buttons, cx)
+            }
+            (false, _) => {
+                let (asked, answer) = oneshot::channel();
+                self.asked = Some(asked);
+                answer
+            }
         }
-        let (asked, answer) = oneshot::channel();
-        self.asked = Some(asked);
-        answer
     }
 
     /// Does `then` at once while nothing but shells runs in what `closing` ends, or closing does
@@ -943,7 +1012,7 @@ impl TerminalWindow {
             return then(self, window, cx);
         };
         crate::note(&format!("{question} asked first: {} running", running.len()));
-        let answer = self.ask(&question, &detail, [button, "Cancel"], window, cx);
+        let answer = self.ask(&question, &detail, [button, "Cancel"], false, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let go = answer.await == Ok(0);
             crate::note(&format!("{question} {}", if go { button } else { "Cancel" }));
