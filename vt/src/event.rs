@@ -26,10 +26,18 @@ pub enum Event {
         percent: Option<u8>,
     },
     /// OSC 52 set, decoded: `selection` is the request's target list (`c`,
-    /// `p`, `s`, `0`–`7`; empty means `s0`). Reads are never answered.
+    /// `p`, `s`, `0`–`7`; empty means `s0`).
     Clipboard {
         selection: String,
         text: String,
+    },
+    /// OSC 52 query (`52;c;?`): the program asks for the clipboard. The
+    /// engine answers nothing itself; a host that lets the program read it
+    /// replies `ESC ] 52 ; selection ; base64 terminator`, with the query's
+    /// own `terminator` (BEL or ST).
+    ClipboardRead {
+        selection: String,
+        terminator: &'static str,
     },
     /// OSC 7: the directory a `file://host/path` URL names, decoded.
     Cwd(String),

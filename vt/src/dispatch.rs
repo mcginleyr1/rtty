@@ -517,7 +517,7 @@ fn window_op(term: &mut Terminal, op: u16) {
     }
 }
 
-fn osc(term: &mut Terminal, params: &[&[u8]], terminator: &str) {
+fn osc(term: &mut Terminal, params: &[&[u8]], terminator: &'static str) {
     let Some((&command, args)) = params.split_first() else {
         return;
     };
@@ -564,7 +564,11 @@ fn osc(term: &mut Terminal, params: &[&[u8]], terminator: &str) {
                 color_request(term, slot, spec, &code.to_string(), terminator);
             }
         }
-        b"52" if args.len() >= 2 && args[1] != b"?" => {
+        b"52" if args.len() >= 2 && args[1] == b"?" => {
+            let selection = String::from_utf8_lossy(args[0]).into_owned();
+            term.push_event(Event::ClipboardRead { selection, terminator });
+        }
+        b"52" if args.len() >= 2 => {
             let text = base64(args[1]).and_then(|bytes| String::from_utf8(bytes).ok());
             if let Some(text) = text {
                 let selection = String::from_utf8_lossy(args[0]).into_owned();

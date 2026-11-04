@@ -216,9 +216,12 @@ fn window_size_reports() {
     assert_eq!(replies(&mut term, "\x1b[14t\x1b[16t"), ["\x1b[4;480;800t", "\x1b[6;20;10t"]);
 }
 
+/// The engine never answers a clipboard read itself: the host decides
+/// (`Event::ClipboardRead`).
 #[test]
-fn clipboard_reads_are_never_answered() {
+fn clipboard_reads_are_left_to_the_host() {
     let mut term = Terminal::new(24, 80, 0);
     term.advance(b"\x1b]52;c;?\x07");
-    assert!(term.take_events().is_empty());
+    let read = Event::ClipboardRead { selection: "c".into(), terminator: "\x07" };
+    assert_eq!(term.take_events(), [read]);
 }

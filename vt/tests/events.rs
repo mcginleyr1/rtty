@@ -113,12 +113,20 @@ fn notifications_and_progress() {
 }
 
 #[test]
-fn clipboard_sets_decode_and_reads_go_unanswered() {
+fn clipboard_sets_decode_and_reads_ask_the_host() {
     assert_eq!(
         events("\x1b]52;c;aGVsbG8=\x07"),
         [Event::Clipboard { selection: "c".into(), text: "hello".into() }]
     );
-    assert!(events("\x1b]52;c;?\x07\x1b]52;c;!!\x07").is_empty());
+    assert!(events("\x1b]52;c;!!\x07").is_empty());
+    // A read keeps its terminator, for the host's answer.
+    assert_eq!(
+        events("\x1b]52;c;?\x07\x1b]52;;?\x1b\\"),
+        [
+            Event::ClipboardRead { selection: "c".into(), terminator: "\x07" },
+            Event::ClipboardRead { selection: "".into(), terminator: "\x1b\\" },
+        ]
+    );
 }
 
 #[test]

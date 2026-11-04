@@ -24,6 +24,9 @@ let fresh = term.snapshot();             // escape bytes for a fresh terminal
   (OSC 133;D, the first of a run), the reports and key encodings a killed
   program left on go off, there in the stream (mouse, 1004, 2031,
   modifyOtherKeys, kitty's flags; bracketed paste, DECCKM and DECKPAM stay).
+- OSC 52: a set is `Event::Clipboard`, a query (`52;c;?`) is
+  `Event::ClipboardRead`, which the engine never answers itself; a host that
+  ignores the event leaves the query unanswered, as before.
 - `clear()`: the host's own clear (rtty's Cmd+K) drops the primary screen's
   scrollback whichever screen is up, and blanks the primary screen without
   ED 2's push into the scrollback; the alternate screen stays.
