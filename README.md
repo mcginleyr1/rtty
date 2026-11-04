@@ -100,7 +100,26 @@ scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
 keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
 bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
+
+[bind]                            # chords and their actions, over the defaults (Keys)
+"alt-\\" = "split-right"
+"cmd-shift-d" = "none"            # unbinds a default
 ```
+
+**Key bindings.** `[bind]` maps chords to the actions named in [Keys](#keys). A chord there is
+added, or rebound if it has a default, and `"none"` unbinds a default (`keys = "tutti"`'s
+included). A chord is written in GPUI's keystroke syntax: modifiers (`ctrl`, `alt` for Option,
+`shift`, `cmd`, `fn`), then one key, joined by `-`: `"ctrl-h"`, `"alt-shift-h"`, `"cmd-d"`,
+`"alt--"`. The key is a character, or `space`, `tab`, `enter`, `backspace`, `escape`, `up`,
+`down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`, `insert`, `delete` or `f1`–`f35`.
+
+- An Option chord is `alt-` and the key, never the character Option types: `alt-h`, not `˙`.
+- A capital letter is Shift and the letter (`"alt-H"` is `"alt-shift-h"`), and a shifted symbol
+  is the symbol itself: Option+Shift+\ is `"alt-|"`, never `"alt-shift-\\"`.
+- In a double-quoted TOML key a backslash is doubled: `"ctrl-\\"` is Ctrl+\.
+
+An unknown action, a chord that is not one, two spellings of one chord, or `none` on a chord with
+nothing bound stops rtty with an error naming the chord and its line.
 
 **Fonts.** A character `font` lacks comes from the `fallback` families, in order, then from
 macOS's own fallback (emoji, CJK). macOS's knows no font with Nerd Font icons, so with no
@@ -169,33 +188,34 @@ and on every flip.
 
 ## Keys
 
-Ctrl keys belong to the terminal; Cmd chords belong to the app.
+Ctrl keys belong to the terminal; Cmd chords belong to the app. These are the defaults; the
+action names are `[bind]`'s ([Configuration](#configuration)).
 
-| Key | Action |
-| --- | --- |
-| `Cmd+Q` | quit |
-| `Cmd+N` | new window |
-| `Cmd+T` | new tab, after the current one |
-| `Cmd+1`–`9` | show that tab |
-| `Cmd+Shift+[` / `Cmd+Shift+]` | previous / next tab, round the ends |
-| `Cmd+D` / `Cmd+Shift+D` | split the pane right / down |
-| `Cmd+W` | close the pane; the last pane closes its tab, the last tab its window, the last window quits |
-| `Cmd+Opt+arrows` | focus the nearest pane that way |
-| `Cmd+Ctrl+arrows` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
-| `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | with `keys = "tutti"` only: focus and resize, as in tutti |
-| `Cmd+Shift+Enter` | zoom the pane to fill its tab, or back |
-| `Cmd+C` | copy the selection |
-| `Cmd+V` | paste (bracketed when the program asked for it) |
-| `Cmd+F` | search the pane's scrollback and screen (below) |
-| `Cmd+Up` / `Cmd+Down` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
-| `Cmd` over a link, `Cmd+click` | underline the link under the pointer; open it (below) |
-| `Cmd+=` / `Cmd+-` | font size up / down, in every pane of every window |
-| mouse drag | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
-| mouse buttons | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
-| divider drag | resize the panes on either side |
-| tab click | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
-| double click on the bar | zoom the window, as on any titlebar (System Settings decides what a double click does) |
-| wheel | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
+| Key | Action | Does |
+| --- | --- | --- |
+| `Cmd+Q` | `quit` | quit |
+| `Cmd+N` | `new-window` | new window |
+| `Cmd+T` | `new-tab` | new tab, after the current one |
+| `Cmd+1`–`9` | `tab-1`–`tab-9` | show that tab |
+| `Cmd+Shift+[` / `Cmd+Shift+]` | `prev-tab` / `next-tab` | previous / next tab, round the ends |
+| `Cmd+D` / `Cmd+Shift+D` | `split-right` / `split-down` | split the pane right / down |
+| `Cmd+W` | `close-pane` | close the pane; the last pane closes its tab, the last tab its window, the last window quits |
+| `Cmd+Opt+arrows` | `focus-left`, `-right`, `-up`, `-down` | focus the nearest pane that way |
+| `Cmd+Ctrl+arrows` | `resize-left`, `-right`, `-up`, `-down` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
+| `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | `focus-…`, `resize-…` | with `keys = "tutti"` only: focus and resize, as in tutti |
+| `Cmd+Shift+Enter` | `zoom` | zoom the pane to fill its tab, or back |
+| `Cmd+C` | `copy` | copy the selection |
+| `Cmd+V` | `paste` | paste (bracketed when the program asked for it) |
+| `Cmd+F` | `find` | search the pane's scrollback and screen (below) |
+| `Cmd+Up` / `Cmd+Down` | `prompt-prev` / `prompt-next` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
+| `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
+| `Cmd` over a link, `Cmd+click` | | underline the link under the pointer; open it (below) |
+| mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
+| mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
+| divider drag | | resize the panes on either side |
+| tab click | | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
+| double click on the bar | | zoom the window, as on any titlebar (System Settings decides what a double click does) |
+| wheel | | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
 New panes, tabs and windows run the login shell in the focused pane's working directory: as its
 shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else the directory of the
@@ -370,7 +390,7 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
   for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
 - `window.rs` — `TerminalWindow`: one window's tabs, the bar (drawn where `tabbar` puts it, in a
-  transparent titlebar, the traffic lights moved to its middle) and the dividers, and the Cmd
+  transparent titlebar, the traffic lights moved to its middle) and the dividers, and the bound
   chords as GPUI actions. It shares the window's cells out with `layout`, and every pane's grid
   and pty, shown or not, follow its cells on every resize. Each pane draws as a cached GPUI view,
   so output in one pane redraws that pane alone. `focus_toward` is the one call for moving focus
@@ -378,7 +398,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   `rtty cli`'s requests on the main thread.
 - `control.rs` and `cli.rs` — the socket (one JSON line each way, served on a thread of its own
   and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
-- `scheme.rs` and `config.rs` — color schemes and the config file.
+- `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to
+  one action per chord (the defaults, `keys`, then `[bind]`) that `main.rs` binds in GPUI.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super) and paste wrapping, unit tested.
 - `script.rs` — `--script`, which drives the real window the way a person would and dumps what it
@@ -455,9 +476,9 @@ resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, wind
 from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
 focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
-jumps, links, the bell, notifications (from an app bundle), a config file, WezTerm-format color
-schemes that follow the macOS appearance live in every pane (with DEC mode 2031 reports),
-`rtty cli` and the editor plugins, and the log. Checked with `--script` against Neovim in two
+jumps, links, the bell, notifications (from an app bundle), a config file with key bindings,
+WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
+2031 reports), `rtty cli` and the editor plugins, and the log. Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key

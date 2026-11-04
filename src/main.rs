@@ -37,10 +37,9 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
-use config::{Config, Keys};
+use config::{Action, Config};
 use control::Response;
 use futures::StreamExt;
-use layout::Direction;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
@@ -191,6 +190,39 @@ fn nerd_font(installed: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// The GPUI binding of `chord` to `action`: the pane's own actions in its key context, the rest
+/// anywhere. Focus and resize carry their chord, which a pane that claims the keys gets instead
+/// (`PaneView::claimed_chord`).
+fn key_binding(chord: &str, action: Action) -> KeyBinding {
+    let keystroke = chord.to_owned();
+    let pane = Some("Terminal");
+    match action {
+        Action::Focus(direction) => {
+            KeyBinding::new(chord, MoveFocus { direction, keystroke }, None)
+        }
+        Action::Resize(direction) => {
+            KeyBinding::new(chord, ResizePane { direction, keystroke }, None)
+        }
+        Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
+        Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
+        Action::ClosePane => KeyBinding::new(chord, ClosePane, None),
+        Action::Zoom => KeyBinding::new(chord, ToggleZoom, None),
+        Action::NewTab => KeyBinding::new(chord, NewTab, None),
+        Action::NextTab => KeyBinding::new(chord, NextTab, None),
+        Action::PrevTab => KeyBinding::new(chord, PreviousTab, None),
+        Action::Tab(index) => KeyBinding::new(chord, SelectTab(index), None),
+        Action::NewWindow => KeyBinding::new(chord, NewWindow, None),
+        Action::Find => KeyBinding::new(chord, Find, pane),
+        Action::Copy => KeyBinding::new(chord, Copy, pane),
+        Action::Paste => KeyBinding::new(chord, Paste, pane),
+        Action::PromptPrev => KeyBinding::new(chord, PreviousPrompt, pane),
+        Action::PromptNext => KeyBinding::new(chord, NextPrompt, pane),
+        Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
+        Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
+        Action::Quit => KeyBinding::new(chord, Quit, None),
+    }
+}
+
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("rtty: {message}\n{USAGE}");
     ExitCode::from(2)
@@ -215,7 +247,7 @@ fn run(options: Options) -> Result<(), String> {
         }
         (Some(path), _) => Config::load(path)?,
         (None, Some(home)) => Config::load(&home.join("rtty/config.toml"))?,
-        (None, None) => Config::default(),
+        (None, None) => Config::parse("")?,
     };
     let scheme_dirs: Vec<PathBuf> = config_home
         .iter()
@@ -244,7 +276,7 @@ fn run(options: Options) -> Result<(), String> {
         .as_ref()
         .map(|path| Trace::create(path).map_err(|err| format!("{}: {err}", path.display())));
     let trace = trace.transpose()?;
-    let keys = config.keys.unwrap_or_default();
+    let bindings = config.bindings;
     let bell = config.bell.unwrap_or_default();
     let fallback = config.fallback;
     let socket = control::socket_path()?;
@@ -262,51 +294,7 @@ fn run(options: Options) -> Result<(), String> {
             eprintln!("rtty: no font family named {missing:?}");
             std::process::exit(2);
         }
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-c", Copy, Some("Terminal")),
-            KeyBinding::new("cmd-v", Paste, Some("Terminal")),
-            KeyBinding::new("cmd-f", Find, Some("Terminal")),
-            KeyBinding::new("cmd-up", PreviousPrompt, Some("Terminal")),
-            KeyBinding::new("cmd-down", NextPrompt, Some("Terminal")),
-            KeyBinding::new("cmd-=", IncreaseFontSize, None),
-            KeyBinding::new("cmd--", DecreaseFontSize, None),
-            KeyBinding::new("cmd-n", NewWindow, None),
-            KeyBinding::new("cmd-t", NewTab, None),
-            KeyBinding::new("cmd-w", ClosePane, None),
-            KeyBinding::new("cmd-d", SplitRight, None),
-            KeyBinding::new("cmd-shift-d", SplitDown, None),
-            KeyBinding::new("cmd-shift-enter", ToggleZoom, None),
-            // Cmd+Shift+[ and ], as macOS reports them.
-            KeyBinding::new("cmd-{", PreviousTab, None),
-            KeyBinding::new("cmd-}", NextTab, None),
-        ]);
-        // Focus and resize chords: a pane that claims them gets them instead (see
-        // `PaneView::claimed_chord`), so each action carries its keystroke.
-        let focus = |keystroke: String, direction| {
-            KeyBinding::new(&keystroke.clone(), MoveFocus { direction, keystroke }, None)
-        };
-        let resize = |keystroke: String, direction| {
-            KeyBinding::new(&keystroke.clone(), ResizePane { direction, keystroke }, None)
-        };
-        let arrows = Direction::ALL.map(|direction| (direction.name(), direction));
-        cx.bind_keys(arrows.into_iter().flat_map(|(key, direction)| {
-            [
-                focus(format!("cmd-alt-{key}"), direction),
-                resize(format!("cmd-ctrl-{key}"), direction),
-            ]
-        }));
-        if keys == Keys::Tutti {
-            let vim = [("h", Direction::Left), ("j", Direction::Down), ("k", Direction::Up)];
-            let vim = vim.into_iter().chain([("l", Direction::Right)]);
-            cx.bind_keys(vim.flat_map(|(key, direction)| {
-                [focus(format!("ctrl-{key}"), direction), resize(format!("alt-{key}"), direction)]
-            }));
-        }
-        cx.bind_keys(
-            (1..=9)
-                .map(|digit| KeyBinding::new(&format!("cmd-{digit}"), SelectTab(digit - 1), None)),
-        );
+        cx.bind_keys(bindings.iter().map(|(chord, action)| key_binding(chord, *action)));
         // A Cmd chord GPUI dispatched: the contexts it met, the actions bound to it there, and the
         // one that ran. Only Cmd chords, which are rtty's: never what goes to a pane.
         cx.observe_keystrokes(|event, window, cx| {
