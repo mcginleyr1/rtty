@@ -33,20 +33,7 @@ use crate::scheme::Scheme;
 use crate::tabbar::{self, Bar, Hit};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
-actions!(
-    rtty,
-    [
-        NewWindow,
-        NewTab,
-        ClosePane,
-        LastPane,
-        SplitRight,
-        SplitDown,
-        ToggleZoom,
-        PreviousTab,
-        NextTab
-    ]
-);
+actions!(rtty, [NewWindow, NewTab, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab]);
 
 /// Moves the keyboard to the nearest pane that way. `keystroke` is the chord bound to it, which
 /// goes to the pane instead when the pane claimed the keys (`PaneView::claimed_chord`).
@@ -62,6 +49,20 @@ pub struct MoveFocus {
 #[action(namespace = rtty, no_json)]
 pub struct ResizePane {
     pub direction: Direction,
+    pub keystroke: String,
+}
+
+/// Closes the focused pane; claimable as `MoveFocus` is.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = rtty, no_json)]
+pub struct ClosePane {
+    pub keystroke: String,
+}
+
+/// Moves the keyboard back to the pane the focus came from; claimable as `MoveFocus` is.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = rtty, no_json)]
+pub struct LastPane {
     pub keystroke: String,
 }
 
@@ -1021,8 +1022,8 @@ impl Render for TerminalWindow {
             .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
                 this.split_focused(Direction::Down, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &ClosePane, window, cx| {
-                crate::note(&format!("pane {}: Cmd+W", this.tabs.active().focus()));
+            .on_action(cx.listener(|this, action: &ClosePane, window, cx| {
+                crate::note(&format!("pane {}: {}", this.tabs.active().focus(), action.keystroke));
                 this.close(this.tabs.active().focus(), window, cx)
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {

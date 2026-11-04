@@ -191,8 +191,8 @@ fn nerd_font(installed: &[String]) -> Option<String> {
 }
 
 /// The GPUI binding of `chord` to `action`: the pane's own actions in its key context, the rest
-/// anywhere. Focus and resize carry their chord, which a pane that claims the keys gets instead
-/// (`PaneView::claimed_chord`).
+/// anywhere. Focus, resize, close and last pane carry their chord, which a pane that claims the
+/// keys gets instead (`PaneView::claimed_chord`).
 fn key_binding(chord: &str, action: Action) -> KeyBinding {
     let keystroke = chord.to_owned();
     let pane = Some("Terminal");
@@ -206,8 +206,8 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::Swap(direction) => KeyBinding::new(chord, SwapPane(direction), None),
         Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
         Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
-        Action::ClosePane => KeyBinding::new(chord, ClosePane, None),
-        Action::LastPane => KeyBinding::new(chord, LastPane, None),
+        Action::ClosePane => KeyBinding::new(chord, ClosePane { keystroke }, None),
+        Action::LastPane => KeyBinding::new(chord, LastPane { keystroke }, None),
         Action::Zoom => KeyBinding::new(chord, ToggleZoom, None),
         Action::NewTab => KeyBinding::new(chord, NewTab, None),
         Action::NextTab => KeyBinding::new(chord, NextTab, None),

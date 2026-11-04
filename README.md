@@ -52,10 +52,10 @@ is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 
 **The log.** rtty appends to `$TMPDIR/rtty-<uid>/rtty.log`, next to its socket (`echo
 $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
-why, each pane's start, split, `Cmd+W` and its program's exit status, a tab's close button, each
-Cmd chord as AppKit hands it to rtty and as GPUI dispatched it (the window's activation, the key
-contexts it met, the actions bound to it there and the one that ran), and every panic, on any
-thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
+why, each pane's start, split, close (with the chord that closed it) and its program's exit
+status, a tab's close button, each Cmd chord as AppKit hands it to rtty and as GPUI dispatched it
+(the window's activation, the key contexts it met, the actions bound to it there and the one that
+ran), and every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
 keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
 why) or panicked (and where).
 
@@ -226,8 +226,8 @@ it runs), else your home directory. macOS's zsh and bash send OSC 7 only from
 `/etc/zshrc_$TERM_PROGRAM`, which exists for Terminal.app alone, so the foreground process is what
 usually answers. A pane closes when its program exits, with the same cascade as `Cmd+W`.
 
-The focus and resize keys are rtty's unless the pane's program claims them (below, and
-[Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
+The focus, resize, close and last-pane keys are rtty's unless the pane's program claims them
+([Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
 too, as tutti's direct keys are, at the cost of those keys in programs that do not claim them; by
 default every Ctrl key stays with the programs.
 Focus by direction picks, among the panes beyond the focused one's edge that overlap it across,
@@ -335,15 +335,23 @@ way:
 `error: …` and exits 1; a malformed command prints the usage and exits 2.
 
 **Keys a pane can claim.** A program that sets the OSC 1337 user var `RTTY_KEYS` to `pane`
-(`ESC ] 1337 ; SetUserVar=RTTY_KEYS=cGFuZQ== BEL`, the value base64) gets rtty's focus and resize
-chords instead of rtty acting on them: `Cmd+Opt+arrows`, `Cmd+Ctrl+arrows`, and with
-`keys = "tutti"`, `Ctrl+h/j/k/l` and `Alt+h/j/k/l`. The claim ends when the var is set empty, when
-a shell in the pane draws its next prompt (OSC 133;A), and with the program. The chords are encoded
-as the program asked for keys, Cmd as the kitty protocol's super modifier: Neovim (kitty flags 3)
-reads `Cmd+Opt+Left` as `<D-M-Left>` and `Cmd+Ctrl+Left` as `<D-C-Left>`. No xterm encoding says
-Cmd in a way Emacs decodes (it reads `CSI 1 ; 11 D` as an undefined `M-[ 1 ; 1`), so a Cmd chord
-reaches only a program speaking the kitty protocol; for any other program rtty keeps acting on it,
-claim or not, and Emacs moves with the tutti-style keys instead.
+(`ESC ] 1337 ; SetUserVar=RTTY_KEYS=cGFuZQ== BEL`, the value base64) gets every chord bound to
+`focus-…`, `resize-…`, `close-pane` or `last-pane` instead of rtty acting on it: the things an
+editor does with its own windows. By default those are `Cmd+Opt+arrows`, `Cmd+Ctrl+arrows` and
+`Cmd+W`, and with `keys = "tutti"`, `Ctrl+h/j/k/l` and `Alt+h/j/k/l`; `[bind]` adds its own, so
+with `"alt-x" = "close-pane"` and `"ctrl-\\" = "last-pane"` Neovim's `Alt+x` closes a Neovim
+window and its `Ctrl+\` goes to Neovim's previous one. Every other chord stays rtty's in a claiming
+pane: splits, zoom, swaps, tabs and the rest. The claim ends when the var is set empty, when a
+shell in the pane draws its next prompt (OSC 133;A), and with the program.
+
+A claimed chord is encoded as the program asked for keys, Cmd as the kitty protocol's super
+modifier: Neovim (kitty flags 3) reads `Cmd+Opt+Left` as `<D-M-Left>` and `Cmd+Ctrl+Left` as
+`<D-C-Left>`. No xterm encoding says Cmd in a way Emacs decodes (it reads `CSI 1 ; 11 D` as an
+undefined `M-[ 1 ; 1`), and the kitty protocol, short of every key as an escape code (flag 8, which
+Neovim does not ask for), has no form for Cmd with a key that types text. So a Cmd chord reaches
+only a program speaking the kitty protocol, and `Cmd+W` reaches none: rtty keeps acting on such a
+chord, claim or not, so `Cmd+W` closes the pane even with Neovim in it, and Emacs moves with the
+tutti-style keys instead.
 
 **Editors.** [`editors/`](editors/README.md) has a Neovim plugin (with a smart-splits.nvim backend)
 and an Emacs package. Each claims the keys while the editor runs, moves between the editor's own

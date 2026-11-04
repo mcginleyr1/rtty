@@ -42,11 +42,12 @@ pub fn encode(keystroke: &Keystroke, modes: Modes, event: Event) -> Option<Vec<u
     (event != Event::Release).then(|| legacy(keystroke, modes)).flatten()
 }
 
-/// A chord rtty acts on (Cmd+Opt+arrows, or tutti's Ctrl+h and Alt+h), for a program that
-/// claimed them: as `encode` sends the key, Cmd as the kitty protocol's super modifier. `None`
-/// when the program's encoding cannot say it: Cmd has no xterm form that Emacs or others decode
-/// (Emacs reads `CSI 1 ; 11 D` as an undefined `M-[ 1 ; 1`), so outside the kitty protocol a Cmd
-/// chord stays rtty's.
+/// A chord bound to focus, resize, close or last pane (Cmd+Opt+arrows, tutti's Ctrl+h and
+/// Alt+h, whatever `[bind]` adds), for a program that claimed them: as `encode` sends the key,
+/// Cmd as the kitty protocol's super modifier. `None` when the program's encoding cannot say it:
+/// Cmd has no xterm form that Emacs or others decode (Emacs reads `CSI 1 ; 11 D` as an undefined
+/// `M-[ 1 ; 1`), so outside the kitty protocol a Cmd chord stays rtty's; and so does Cmd with a
+/// key that types text (Cmd+W), unless the program asked for every key as an escape code.
 pub fn encode_chord(keystroke: &Keystroke, modes: Modes) -> Option<Vec<u8>> {
     if !keystroke.modifiers.platform {
         return encode(keystroke, modes, Event::Press);
@@ -463,6 +464,12 @@ mod tests {
         assert_eq!(chord("alt-l", emacs).unwrap(), "\x1bl");
         assert_eq!(chord("ctrl-h", kitty).unwrap(), "\x1b[104;5u");
         assert_eq!(chord("alt-k", kitty).unwrap(), "\x1b[107;3u");
+        // Close and last pane: Neovim's `<M-x>` and `<C-\>`. Disambiguating, the kitty protocol
+        // encodes a text key only with Ctrl or Alt, so Cmd+W stays rtty's.
+        assert_eq!(chord("alt-x", kitty).unwrap(), "\x1b[120;3u");
+        assert_eq!(chord("ctrl-\\", emacs).unwrap(), "\x1c");
+        assert_eq!(chord("cmd-w", kitty), None);
+        assert_eq!(chord("cmd-w", emacs), None);
         // Unclaimed, Cmd stays the app's whatever the mode.
         assert_eq!(press("cmd-alt-left", kitty), None);
     }

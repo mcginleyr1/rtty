@@ -1,9 +1,9 @@
 # Editor plugins
 
-An editor running in an rtty pane can claim rtty's focus and resize keys. rtty then hands them to
-the editor instead of acting on them. The editor moves between its own windows and, past its last
-one, on to rtty's panes, so one set of keys moves through both. They mirror tutti's plugins (the
-same shapes, the same CLI), so one muscle memory works at every layer.
+An editor running in an rtty pane can claim rtty's focus, resize, close and last-pane keys. rtty
+then hands them to the editor instead of acting on them. The editor moves between its own windows
+and, past its last one, on to rtty's panes, so one set of keys moves through both. They mirror
+tutti's plugins (the same shapes, the same CLI), so one muscle memory works at every layer.
 
 Both plugins do nothing outside an rtty pane (no `$RTTY_PANE`), and nothing inside tutti running in
 rtty (`$TUTTI_PANE` set), where tutti's own plugins own navigation.
@@ -21,16 +21,22 @@ back. Anything can speak it, a shell included:
 printf '\033]1337;SetUserVar=RTTY_KEYS=%s\007' "$(printf pane | base64)"
 ```
 
-While a pane claims them, rtty passes these keys to it:
+While a pane claims them, rtty passes it every chord bound to `focus-…`, `resize-…`,
+`close-pane` or `last-pane`, the things an editor does with its own windows:
 
 | Keys | When | As the program asked for keys |
 | --- | --- | --- |
 | `Cmd+Opt+arrows`, `Cmd+Ctrl+arrows` | always | in the kitty protocol only, Cmd as super: Neovim reads `<D-M-Left>`, `<D-C-Left>` |
 | `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | with rtty's `keys = "tutti"` | as any key: `C-h`, `M-l` and so on |
+| any chord rtty's `[bind]` gives those actions | with that binding | as any key: `"alt-x" = "close-pane"` reaches Neovim as `<M-x>`, `"ctrl-\\" = "last-pane"` as `<C-\>` |
+
+Every other chord stays rtty's in a claiming pane: splits, zoom, swaps, tabs and the rest.
 
 A Cmd chord has no xterm encoding Emacs (or other programs outside the kitty protocol) decodes:
-`CSI 1 ; 11 D` reads as an undefined `M-[ 1 ; 1`. So rtty keeps acting on Cmd chords for such a
-program, claim or not, and Emacs navigates with the tutti-style keys.
+`CSI 1 ; 11 D` reads as an undefined `M-[ 1 ; 1`. And short of every key as an escape code (kitty
+flag 8, which Neovim does not ask for), the kitty protocol has no form for Cmd with a key that
+types text. So rtty keeps acting on such chords, claim or not: `Cmd+W` (`close-pane` by default)
+closes the rtty pane even with Neovim in it, and Emacs navigates with the tutti-style keys.
 
 Both plugins claim the keys when the editor starts or resumes and give them back when it suspends
 (`Ctrl-Z`) or exits, so the shell underneath gets rtty's keys back. An editor that crashes cannot;
@@ -75,7 +81,9 @@ Any plugin manager works. Put `editors/nvim` on the runtimepath and call
 
 and claims them. `navigate` moves to the Neovim window that way, and from the last window on to the
 rtty pane beyond. `resize` moves rtty's split border. With rtty's default keys, `Ctrl+h` reaches
-Neovim anyway; the claim is what brings it `Cmd+Opt+arrows`. To map the keys yourself, set
+Neovim anyway; the claim is what brings it `Cmd+Opt+arrows`. It also brings Neovim every chord
+rtty's `[bind]` gives focus, resize, close or last pane, mapped there or not, so map those in
+Neovim too: `Alt+x` to `:close` and `Ctrl+\` to `wincmd p`, say. To map the keys yourself, set
 `require('rtty').keys = true` before `VimEnter`, call `require('rtty').activate()`, and call
 `navigate`/`resize` from your mappings.
 

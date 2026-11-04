@@ -37,7 +37,7 @@ use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
 use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::title::{self, Title};
-use crate::window::{MoveFocus, ResizePane};
+use crate::window::{ClosePane, LastPane, MoveFocus, ResizePane};
 
 actions!(rtty, [Copy, Paste, Find, PreviousPrompt, NextPrompt]);
 
@@ -97,8 +97,8 @@ pub struct PaneView {
     selecting: Option<Point<Pixels>>,
     /// While that pointer is past the pane's top or bottom: the steps scrolling the view to it.
     autoscroll: Option<Task<()>>,
-    /// The program claimed rtty's navigation and resize chords (user var `RTTY_KEYS=pane`),
-    /// until it clears the var or a shell draws its next prompt (OSC 133;A).
+    /// The program claimed the chords bound to focus, resize, close and last pane (user var
+    /// `RTTY_KEYS=pane`), until it clears the var or a shell draws its next prompt (OSC 133;A).
     claims_keys: bool,
     /// Keys whose press went to the program and whose release has not.
     keys_down: Vec<String>,
@@ -469,8 +469,8 @@ impl PaneView {
         reported.or_else(|| self.pane.foreground()?.cwd)
     }
 
-    /// A navigation or resize chord: the program's when it claimed them and its encoding can say
-    /// the chord (`keys::encode_chord`), else the window's to act on.
+    /// A chord bound to focus, resize, close or last pane: the program's when it claimed them and
+    /// its encoding can say the chord (`keys::encode_chord`), else the window's to act on.
     fn claimed_chord(&mut self, keystroke: &str, cx: &mut Context<Self>) {
         let keystroke = Keystroke::parse(keystroke).expect("bound chords parse");
         let modes = self.key_modes();
@@ -1652,6 +1652,12 @@ impl Render for PaneView {
                 view.claimed_chord(&action.keystroke, cx)
             }))
             .on_action(cx.listener(|view, action: &ResizePane, _, cx| {
+                view.claimed_chord(&action.keystroke, cx)
+            }))
+            .on_action(cx.listener(|view, action: &ClosePane, _, cx| {
+                view.claimed_chord(&action.keystroke, cx)
+            }))
+            .on_action(cx.listener(|view, action: &LastPane, _, cx| {
                 view.claimed_chord(&action.keystroke, cx)
             }))
             .on_key_down(cx.listener(Self::key_down))
