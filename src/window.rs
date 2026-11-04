@@ -323,8 +323,9 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
 }
 
 /// Quitting, however asked for (Cmd+Q, the menu's Quit, and through `app::should_terminate` the
-/// dock's Quit and logging out): quits once what runs in any window is confirmed, asked on the
-/// active window (else the first). A window a close hid is closed already.
+/// dock's Quit and logging out): quits at once while nothing but shells at their prompts runs
+/// in any window, or closing does not ask; else asks, on the window that had the keyboard last
+/// (else another), and `app::asking` takes the answer. A window a close hid is closed already.
 pub fn quit(cx: &mut App) {
     let hidden = hidden_window(cx);
     let windows: Vec<WindowHandle<TerminalWindow>> = cx
@@ -338,16 +339,24 @@ pub fn quit(cx: &mut App) {
         .filter_map(|handle| handle.read(cx).ok())
         .flat_map(|this| this.running(&this.panes(), cx))
         .collect();
-    let active = cx.active_window().and_then(|window| window.downcast::<TerminalWindow>());
-    let quit = |_: &mut TerminalWindow, _: &mut Window, cx: &mut Context<TerminalWindow>| {
-        crate::app::quit("as asked", cx)
+    let asks = cx.global::<Settings>().confirm_close;
+    let Some((question, detail, button)) = question(Closing::Quit, &running).filter(|_| asks)
+    else {
+        return crate::app::quit("nothing runs that quitting ends, or it asks nothing", cx);
     };
-    let asked = active.or(windows.first().copied()).map(|asker| {
-        asker.update(cx, |this, window, cx| this.confirm(Closing::Quit, running, window, cx, quit))
+    let key = crate::app::key(cx).filter(|key| windows.contains(key));
+    let asked = key.into_iter().chain(windows).find_map(|asker| {
+        let answer = asker.update(cx, |this, window, cx| {
+            this.ask(&question, &detail, [button, "Cancel"], window, cx)
+        });
+        Some((asker, answer.ok()?))
     });
-    if !matches!(asked, Some(Ok(()))) {
-        crate::app::quit("as asked, with no window to ask on", cx)
-    }
+    let Some((asker, answer)) = asked else {
+        return crate::note(&format!("{question} could not be asked: no window took it"));
+    };
+    let on = crate::app::number(asker, cx);
+    crate::note(&format!("{question} asked first, on window {on}: {} running", running.len()));
+    crate::app::asking(asker.window_id(), answer, cx)
 }
 
 /// Opens a window with `command` running in its one pane: the first window centered, later ones
@@ -940,8 +949,6 @@ impl TerminalWindow {
             crate::note(&format!("{question} {}", if go { button } else { "Cancel" }));
             if go {
                 this.update_in(cx, |this, window, cx| then(this, window, cx)).ok();
-            } else if closing == Closing::Quit {
-                crate::app::stay();
             }
         })
         .detach();

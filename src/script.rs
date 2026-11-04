@@ -41,8 +41,9 @@
 //! menu MENU ITEM         the menu bar's item (`menu Shell Split Right`): the action it carries,
 //!                        dispatched to the window as a click on it dispatches it to the key
 //!                        window, which a scripted window never is
-//! app active|inactive    what rtty does when macOS makes it the active app, the window the key
-//!                        one, and when rtty stops being it; the window takes no keyboard
+//! app active [N]|inactive  what rtty does when macOS makes it the active app, with window N
+//!                        (from 1; else the script's own) the key one, and when rtty stops being
+//!                        it; no window takes the keyboard
 //! hotkey                 what the global hotkey does when pressed, which a scripted rtty keeps
 //!                        in its dump instead of doing
 //! appearance dark|light  what the window does when macOS flips
@@ -113,8 +114,9 @@ pub enum Step {
     WindowClose(usize),
     /// The menu's title, the item's.
     Menu(String, String),
-    /// Whether rtty is the active app.
-    App(bool),
+    /// rtty became the active app, window N (from 0) the key one, else the script's own.
+    Active(Option<usize>),
+    Inactive,
     Hotkey,
     Appearance(WindowAppearance),
     Resize {
@@ -277,10 +279,14 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 Some((menu, item)) => Step::Menu(menu.into(), item.trim().into()),
                 None => return Err(error("menu MENU ITEM expected")),
             },
-            "app" => match rest.trim() {
-                "active" => Step::App(true),
-                "inactive" => Step::App(false),
-                _ => return Err(error("active or inactive expected")),
+            "app" => match args.as_slice() {
+                ["active"] => Step::Active(None),
+                ["active", n] => match n.parse::<usize>() {
+                    Ok(n) if n > 0 => Step::Active(Some(n - 1)),
+                    _ => return Err(error("a window number from 1 expected")),
+                },
+                ["inactive"] => Step::Inactive,
+                _ => return Err(error("active [N] or inactive expected")),
             },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
@@ -509,16 +515,22 @@ async fn perform(
                 Ok::<_, String>(())
             })
             .map_err(|err| err.to_string())??,
-        Step::App(active) => cx
+        Step::Active(index) => cx
             .update(|window, cx| {
-                if *active {
-                    let handle = Window::window_handle(window).downcast();
-                    let handle = handle.expect("a terminal window");
-                    crate::app::key_window(handle, cx);
-                }
-                crate::app::set_active(*active, cx)
+                let key = match index {
+                    None => Window::window_handle(window).downcast(),
+                    Some(index) => {
+                        cx.windows().into_iter().filter_map(|window| window.downcast()).nth(*index)
+                    }
+                };
+                crate::app::key_window(key.ok_or("no such window")?, cx);
+                crate::app::set_active(true, cx);
+                Ok::<_, String>(())
             })
-            .map_err(|err| err.to_string())?,
+            .map_err(|err| err.to_string())??,
+        Step::Inactive => {
+            cx.update(|_, cx| crate::app::set_active(false, cx)).map_err(|err| err.to_string())?
+        }
         Step::Hotkey => {
             cx.update(|_, cx| crate::app::hotkey_pressed(cx)).map_err(|err| err.to_string())?
         }
@@ -673,9 +685,11 @@ mod tests {
         assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
         assert!(matches!(parse("terminate").unwrap()[0].1, Step::Terminate));
         assert!(matches!(parse("hotkey").unwrap()[0].1, Step::Hotkey));
-        let app = parse("app active\napp inactive").unwrap();
-        assert!(matches!((&app[0].1, &app[1].1), (Step::App(true), Step::App(false))));
-        assert!(parse("app front").unwrap_err().contains("active or inactive expected"));
+        let app = parse("app active\napp active 2\napp inactive").unwrap();
+        let app: Vec<&Step> = app.iter().map(|(_, step)| step).collect();
+        assert!(matches!(app[..], [Step::Active(None), Step::Active(Some(1)), Step::Inactive]));
+        assert!(parse("app front").unwrap_err().contains("active [N] or inactive expected"));
+        assert!(parse("app active 0").unwrap_err().contains("a window number from 1"));
         assert!(matches!(parse("window close 2").unwrap()[0].1, Step::WindowClose(1)));
         for wrong in ["window close 0", "window close", "window open 2"] {
             assert!(parse(wrong).unwrap_err().contains("window close N, from 1"), "{wrong}");

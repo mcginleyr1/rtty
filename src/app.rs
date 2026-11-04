@@ -9,9 +9,10 @@ use std::mem;
 use std::ptr::{self, NonNull};
 
 use block2::RcBlock;
+use futures::channel::oneshot;
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use gpui::{App, AsyncApp, Global, Menu, MenuItem, WindowHandle, actions};
+use gpui::{App, AsyncApp, Global, Menu, MenuItem, WindowHandle, WindowId, actions};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{MainThreadMarker, sel};
@@ -69,6 +70,10 @@ thread_local! {
     static QUITTING: Cell<bool> = const { Cell::new(false) };
     /// AppKit asked whether rtty may quit, and waits for the answer.
     static WAITING: Cell<bool> = const { Cell::new(false) };
+    /// The window the quit question is up on, and the question's number, which tells its answer
+    /// from one to a question asked since (`asking`).
+    static ASKING: Cell<Option<(WindowId, u64)>> = const { Cell::new(None) };
+    static QUESTIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// A menu item's title and the `[bind]` action it runs; none for a line between items.
@@ -240,6 +245,11 @@ pub fn key_window(window: WindowHandle<TerminalWindow>, cx: &mut App) {
     cx.defer(refresh_secure_input);
 }
 
+/// The window that had the keyboard last.
+pub fn key(cx: &App) -> Option<WindowHandle<TerminalWindow>> {
+    cx.global::<AppState>().key
+}
+
 /// The global hotkey: hides rtty while it is the active app; else brings it forward at the
 /// window that had the keyboard last, else the first, else a new one.
 pub fn hotkey_pressed(cx: &mut App) {
@@ -275,7 +285,7 @@ pub fn hotkey_pressed(cx: &mut App) {
 }
 
 /// `window`'s number, from 1, in the order rtty's windows opened.
-fn number(window: WindowHandle<TerminalWindow>, cx: &App) -> usize {
+pub fn number(window: WindowHandle<TerminalWindow>, cx: &App) -> usize {
     let windows =
         cx.windows().into_iter().position(|other| other.window_id() == window.window_id());
     windows.map_or(0, |index| index + 1)
@@ -331,16 +341,16 @@ fn check_secure_input(on: bool) {
 /// runs, so AppKit sees it on its delegate from the start.
 pub fn ask_before_terminating() {
     let delegate = AnyClass::get(c"GPUIApplicationDelegate").expect("GPUI's application delegate");
-    let method: extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> Reply = should_terminate;
+    let method: extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Reply = should_terminate;
     // SAFETY: `method` takes and returns what `applicationShouldTerminate:` does (`Q@:@`), and
-    // the class is GPUI's live delegate class, which adding a method to leaves as it was.
+    // the class is GPUI's live delegate class, which adding a method to leaves as it was. Plain
+    // `extern "C"`, a panic in it aborts (after rtty's hook logs it) instead of unwinding
+    // through AppKit.
     let added = unsafe {
         objc2::ffi::class_addMethod(
             ptr::from_ref(delegate).cast_mut(),
             sel!(applicationShouldTerminate:),
-            mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> Reply, Imp>(
-                method,
-            ),
+            mem::transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Reply, Imp>(method),
             c"Q@:@".as_ptr(),
         )
     };
@@ -348,17 +358,74 @@ pub fn ask_before_terminating() {
 }
 
 /// `applicationShouldTerminate:`. A quit rtty decided on goes on; any other asks first, as
-/// `Cmd+Q` does (`window::quit`), and AppKit waits for the answer (`quit`, `stay`).
-extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) -> Reply {
+/// `Cmd+Q` does (`window::quit`), and AppKit waits for the answer (`asking`), which every way
+/// the question can end gives it (`quit`, `stay`). Cancelled when the question was due and no
+/// window could take it; with GPUI gone, nothing is left to ask about.
+extern "C" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) -> Reply {
     if !QUITTING.get() {
         crate::note("macOS asked rtty to quit: the dock's Quit, logging out, or a quit event");
-        APP.with(|app| app.get().map(|app| app.update(crate::window::quit)));
+        let asked = APP.with(|app| app.get()?.update(crate::window::quit).ok());
+        if asked.is_none() {
+            return Reply::TerminateNow;
+        }
     }
     if QUITTING.get() {
         return Reply::TerminateNow;
     }
+    if ASKING.get().is_none() {
+        return Reply::TerminateCancel;
+    }
     WAITING.set(true);
     Reply::TerminateLater
+}
+
+/// The quit question is up on `window`. Its answer quits or stays. A question that goes
+/// unanswered, closed with its window (`window_closed`) or torn down, is asked again
+/// (`window::quit`), on another window, about what still runs; an answer to a question asked
+/// again since counts for nothing.
+pub fn asking(window: WindowId, answer: oneshot::Receiver<usize>, cx: &mut App) {
+    let question = QUESTIONS.get() + 1;
+    QUESTIONS.set(question);
+    ASKING.set(Some((window, question)));
+    cx.spawn(async move |cx| {
+        let answer = answer.await;
+        if ASKING.get().is_none_or(|(_, asked)| asked != question) {
+            return;
+        }
+        ASKING.set(None);
+        let answered = cx.update(|cx| match answer {
+            Ok(0) => quit("as asked", cx),
+            Ok(_) => {
+                crate::note("quitting cancelled");
+                stay()
+            }
+            Err(_) => ask_again("the question went unanswered", cx),
+        });
+        // GPUI gone: nothing is left to ask about.
+        if answered.is_err() && WAITING.take() {
+            reply(true)
+        }
+    })
+    .detach();
+}
+
+/// A window closed. When the quit question was up on it, quitting asks again.
+pub fn window_closed(cx: &mut App) {
+    let Some((window, _)) = ASKING.get() else { return };
+    if cx.windows().iter().all(|other| other.window_id() != window) {
+        ASKING.set(None);
+        ask_again("the window asking closed", cx);
+    }
+}
+
+/// Asks the quit question again, about what runs now: quits when nothing does, and when no
+/// window can take the question, AppKit, waiting, hears No.
+fn ask_again(why: &str, cx: &mut App) {
+    crate::note(&format!("asking whether to quit again: {why}"));
+    crate::window::quit(cx);
+    if ASKING.get().is_none() && !QUITTING.get() {
+        stay()
+    }
 }
 
 /// Quits: tells AppKit to go on when it waits on the question (`should_terminate`), else asks
@@ -366,6 +433,7 @@ extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) 
 pub fn quit(why: &str, cx: &mut App) {
     crate::note(&format!("quitting: {why}"));
     QUITTING.set(true);
+    ASKING.set(None);
     if WAITING.take() { reply(true) } else { cx.quit() }
 }
 
@@ -510,11 +578,12 @@ mod tests {
         ask_before_terminating();
         let delegate = AnyClass::get(c"GPUIApplicationDelegate").unwrap();
         assert!(delegate.instance_method(sel!(applicationShouldTerminate:)).is_some());
-        // With no app to ask on, AppKit waits; a quit rtty decided on goes on at once.
+        // With no app (GPUI gone), nothing is left to ask about, and AppKit waits on nothing; a
+        // quit rtty decided on goes on at once too.
         let object = objc2_foundation::NSObject::new();
         let ask = || should_terminate(&object, sel!(applicationShouldTerminate:), ptr::null_mut());
-        assert_eq!(ask(), Reply::TerminateLater);
-        assert!(WAITING.take());
+        assert_eq!(ask(), Reply::TerminateNow);
+        assert!(!WAITING.get());
         QUITTING.set(true);
         assert_eq!(ask(), Reply::TerminateNow);
     }

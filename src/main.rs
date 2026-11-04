@@ -672,6 +672,9 @@ fn run(options: Options) -> Result<(), String> {
             window::refresh_badge(cx);
             if cx.windows().is_empty() {
                 app::quit("the last window closed", cx)
+            } else {
+                // Once no window is in an update, so every one can be asked and read.
+                cx.defer(app::window_closed)
             }
         })
         .detach();
