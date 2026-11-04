@@ -59,6 +59,7 @@ pub struct Config {
     pub secure_input: Option<bool>,
     /// Secure Keyboard Entry while the pane with the keyboard reads a password.
     pub auto_secure_input: Option<bool>,
+    pub clipboard_read: Option<ClipboardRead>,
     /// A chord, in `[bind]`'s syntax, that shows and hides rtty from any app (`hotkey`).
     global_hotkey: Option<Spanned<String>>,
     /// `global_hotkey` as macOS registers it.
@@ -318,6 +319,19 @@ impl OptionAsAlt {
             OptionAsAlt::None => false,
         }
     }
+}
+
+/// What a program's OSC 52 read of the clipboard gets.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipboardRead {
+    /// The clipboard, once a question on its window is answered Allow.
+    #[default]
+    Ask,
+    /// The clipboard.
+    Allow,
+    /// No answer, as a terminal that cannot read the clipboard gives.
+    Deny,
 }
 
 /// Whether rtty's login shells load its shell integration (`shell.rs`).
@@ -780,6 +794,16 @@ mod tests {
             assert!(err(alone).ends_with("a function key"), "{alone}");
         }
         assert!(err("ctrl-a b").ends_with("not a chord: modifiers and one key, joined by -"));
+    }
+
+    #[test]
+    fn a_clipboard_read_asks_unless_told_otherwise() {
+        let read = |source| toml::from_str::<Config>(source).map(|config| config.clipboard_read);
+        assert_eq!(read("").unwrap().unwrap_or_default(), ClipboardRead::Ask);
+        assert_eq!(read("clipboard_read = 'allow'").unwrap(), Some(ClipboardRead::Allow));
+        assert_eq!(read("clipboard_read = 'deny'").unwrap(), Some(ClipboardRead::Deny));
+        let err = read("clipboard_read = 'yes'").unwrap_err().to_string();
+        assert!(err.contains("expected one of `ask`, `allow`, `deny`"), "{err}");
     }
 
     #[test]

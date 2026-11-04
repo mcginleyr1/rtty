@@ -31,9 +31,9 @@
 //! bar click close N      ... on tab N's close button
 //! bar click new          ... on the +
 //! bar hover tab N|new|none   the pointer onto tab N's pill or the +, or off the bar
-//! answer ok|cancel       press a button on the question closing asked first (Cmd+W, a tab's
-//!                        close button, the window's, quitting), which a scripted window keeps in
-//!                        its dump instead of showing a sheet
+//! answer ok|cancel       press a button on the question waiting (closing with Cmd+W, a tab's
+//!                        close button or the window's, quitting, a program's clipboard read),
+//!                        which a scripted window keeps in its dump instead of showing a sheet
 //! terminate              AppKit's `terminate:`, in process, as the dock's Quit and logging out
 //!                        start it: it asks first, and AppKit waits for the answer
 //! window close N         the close button of window N (from 1, in the order they opened), as a

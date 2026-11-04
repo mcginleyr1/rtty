@@ -31,7 +31,7 @@ use raw_window_handle::RawWindowHandle;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
 
 use crate::cli::RESIZE_STEP;
-use crate::config;
+use crate::config::{self, ClipboardRead};
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
 use crate::editor;
 use crate::layout::{Amount, Closed, Direction, Layout, Orientation, PaneId, Place, Rect, Tabs};
@@ -785,6 +785,9 @@ impl TerminalWindow {
                 self.close(id, false, window, cx)
             }
             PaneEvent::Edit(at) => self.edit(id, at, window, cx),
+            PaneEvent::ClipboardRead { selection, terminator } => {
+                self.clipboard_read(id, selection.clone(), terminator, window, cx)
+            }
         }
     }
 
@@ -848,6 +851,44 @@ impl TerminalWindow {
         }
     }
 
+    /// Pane `id`'s program asks for the clipboard (OSC 52), and gets it as `clipboard_read` says:
+    /// for "ask", once a question on the window is answered Allow.
+    fn clipboard_read(
+        &mut self,
+        id: PaneId,
+        selection: String,
+        terminator: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.views.get(&id).cloned() else { return };
+        let asked = match cx.global::<Settings>().clipboard_read {
+            ClipboardRead::Deny => {
+                return crate::note(&format!("pane {id}: clipboard read denied"));
+            }
+            ClipboardRead::Allow => None,
+            ClipboardRead::Ask => {
+                // Called by what reads, not by what ran a moment ago.
+                view.update(cx, |view, _| view.refresh_title());
+                let question = format!("{} wants to read the clipboard", self.title(id, cx));
+                let detail = "Allow sends it the text you copied last.";
+                Some(self.ask(&question, detail, ["Allow", "Deny"], window, cx))
+            }
+        };
+        cx.spawn_in(window, async move |_, cx| {
+            let allowed = match asked {
+                Some(answer) => answer.await == Ok(0),
+                None => true,
+            };
+            let fate = if allowed { "allowed" } else { "denied" };
+            crate::note(&format!("pane {id}: clipboard read {fate}"));
+            if allowed {
+                view.update(cx, |view, cx| view.answer_clipboard(&selection, terminator, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     /// Every pane in the window's tabs.
     fn panes(&self) -> Vec<PaneId> {
         self.tabs.all().iter().flat_map(|tab| tab.panes()).collect()
@@ -858,9 +899,28 @@ impl TerminalWindow {
         panes.iter().filter_map(|id| self.views.get(id)?.read(cx).running()).collect()
     }
 
+    /// Asks `question` in a sheet on the window, `go` its default button and `stop` its Esc (or
+    /// under `--script` in the dump, for the script's `answer`): the button pressed, 0 for `go`.
+    fn ask(
+        &mut self,
+        question: &str,
+        detail: &str,
+        [go, stop]: [&'static str; 2],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<usize> {
+        self.attention.push(format!("asked {question:?} {detail:?} [{go}, {stop}]"));
+        if cx.global::<Settings>().launch.prompts {
+            let buttons = [PromptButton::ok(go), PromptButton::cancel(stop)];
+            return window.prompt(PromptLevel::Warning, question, Some(detail), &buttons, cx);
+        }
+        let (asked, answer) = oneshot::channel();
+        self.asked = Some(asked);
+        answer
+    }
+
     /// Does `then` at once while nothing but shells runs in what `closing` ends, or closing does
-    /// not ask (`confirm_close = false`); else asks first, with a sheet on the window (or under
-    /// `--script` in the dump, for the script's `answer`), and does it on the go-ahead.
+    /// not ask (`confirm_close = false`); else asks first (`ask`), and does it on the go-ahead.
     fn confirm(
         &mut self,
         closing: Closing,
@@ -869,21 +929,12 @@ impl TerminalWindow {
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
-        let settings = cx.global::<Settings>();
-        let (asks, native) = (settings.confirm_close, settings.launch.prompts);
+        let asks = cx.global::<Settings>().confirm_close;
         let Some((question, detail, button)) = question(closing, &running).filter(|_| asks) else {
             return then(self, window, cx);
         };
         crate::note(&format!("{question} asked first: {} running", running.len()));
-        self.attention.push(format!("asked {question:?} {detail:?} [{button}, Cancel]"));
-        let answer = if native {
-            let buttons = [PromptButton::ok(button), PromptButton::cancel("Cancel")];
-            window.prompt(PromptLevel::Warning, &question, Some(&detail), &buttons, cx)
-        } else {
-            let (asked, answer) = oneshot::channel();
-            self.asked = Some(asked);
-            answer
-        };
+        let answer = self.ask(&question, &detail, [button, "Cancel"], window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let go = answer.await == Ok(0);
             crate::note(&format!("{question} {}", if go { button } else { "Cancel" }));

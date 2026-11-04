@@ -29,7 +29,7 @@ use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
 
-use crate::config::{Action as Bound, Bell, OptionAsAlt, Overrides, Theme};
+use crate::config::{Action as Bound, Bell, ClipboardRead, OptionAsAlt, Overrides, Theme};
 use crate::editor;
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
@@ -72,6 +72,9 @@ const FLASH: Duration = Duration::from_millis(150);
 
 /// How long a word on what a key did (copied the last output) stays over the pane.
 const STATUS: Duration = Duration::from_millis(1500);
+
+/// What a program reading the clipboard gets under `--script`, in place of the clipboard.
+pub const STAND_IN: &str = "rtty --script's clipboard";
 
 /// A blinking cursor is on for this long, then off for as long; it holds still once the
 /// keyboard has been idle for `BLINK_FOR`, so an idle window draws nothing.
@@ -121,6 +124,8 @@ pub struct Settings {
     pub auto_secure_input: bool,
     /// `global_hotkey`, as macOS registers it (`app::hotkey_pressed`).
     pub hotkey: Option<HotKey>,
+    /// What a program's OSC 52 read of the clipboard gets (`clipboard_read`).
+    pub clipboard_read: ClipboardRead,
     pub launch: Launch,
     /// `graphics`: programs show images with kitty's graphics protocol.
     pub graphics: bool,
@@ -146,8 +151,9 @@ pub struct Launch {
     /// Cmd+click opens links with the system's handler; under `--script` it records them in the
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,
-    /// The last command's output goes to the clipboard; under `--script` to the pane's dump
-    /// only, so a scripted run leaves the clipboard alone.
+    /// The last command's output goes to the clipboard, and a program's OSC 52 read gets it;
+    /// under `--script` the output goes to the pane's dump only and a read gets `STAND_IN`, so a
+    /// scripted run leaves the clipboard alone and never shows it.
     pub clipboard: bool,
     /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
     /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
@@ -265,6 +271,8 @@ pub enum PaneEvent {
     Notification { title: Option<String>, body: Option<String> },
     /// The program's progress changed (`PaneView::progress`).
     Progress,
+    /// OSC 52: the program asks for the clipboard (`PaneView::answer_clipboard`).
+    ClipboardRead { selection: String, terminator: &'static str },
     /// The program exited, as its status says.
     Exited(String),
     /// A Cmd+click on a text file: the window has it edited (`TerminalWindow::edit`).
@@ -755,6 +763,9 @@ impl PaneView {
             Notice::Event(Event::Clipboard { text, .. }) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
+            Notice::Event(Event::ClipboardRead { selection, terminator }) => {
+                cx.emit(PaneEvent::ClipboardRead { selection, terminator })
+            }
             Notice::Event(Event::Bell) => {
                 if cx.global::<Settings>().bell == Bell::Visual {
                     self.flashed = Some(Instant::now());
@@ -940,6 +951,15 @@ impl PaneView {
                 self.say(if shifted { "copied and pasted" } else { "copied" }, cx);
             }
         }
+    }
+
+    /// Answers the program's OSC 52 read with the clipboard's text (`Launch::clipboard`).
+    pub fn answer_clipboard(&self, selection: &str, terminator: &str, cx: &App) {
+        let text = match cx.global::<Settings>().launch.clipboard {
+            true => cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default(),
+            false => STAND_IN.into(),
+        };
+        self.pane.write(keys::clipboard(selection, &text, terminator));
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {

@@ -370,6 +370,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         secure_input: config.secure_input.unwrap_or(false),
         auto_secure_input: config.auto_secure_input.unwrap_or(true),
         hotkey: config.hotkey,
+        clipboard_read: config.clipboard_read.unwrap_or_default(),
         launch,
     })
 }

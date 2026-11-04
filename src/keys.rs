@@ -262,6 +262,23 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// The answer to a program's OSC 52 clipboard read: `text` in padded base64, for `selection`, as
+/// the query asked and ended (`terminator`).
+pub fn clipboard(selection: &str, text: &str, terminator: &str) -> Vec<u8> {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let base64: String = text
+        .as_bytes()
+        .chunks(3)
+        .flat_map(|chunk| {
+            let bits =
+                chunk.iter().zip([16, 8, 0]).fold(0, |bits, (&b, at)| bits | u32::from(b) << at);
+            let digit = move |i: usize| char::from(DIGITS[(bits >> (18 - 6 * i) & 63) as usize]);
+            (0..4).map(move |i| if i <= chunk.len() { digit(i) } else { '=' })
+        })
+        .collect();
+    format!("\x1b]52;{selection};{base64}{terminator}").into_bytes()
+}
+
 /// What sh, bash, zsh or fish read as something other than itself somewhere in a word.
 const SHELL_SPECIAL: &str = " !\"#$&'()*;<>?[\\]^`{|}~";
 
@@ -495,6 +512,17 @@ mod tests {
         assert_eq!(chord("cmd-w", emacs), None);
         // Unclaimed, Cmd stays the app's whatever the mode.
         assert_eq!(press("cmd-alt-left", kitty), None);
+    }
+
+    #[test]
+    fn a_clipboard_read_is_answered_in_padded_base64_as_it_asked() {
+        let answer = |text| String::from_utf8(clipboard("c", text, "\x07")).unwrap();
+        let rfc4648 =
+            [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg==")];
+        for (text, base64) in rfc4648.into_iter().chain([("foobar", "Zm9vYmFy"), ("é?", "w6k/")]) {
+            assert_eq!(answer(text), format!("\x1b]52;c;{base64}\x07"), "{text:?}");
+        }
+        assert_eq!(clipboard("", "hello", "\x1b\\"), b"\x1b]52;;aGVsbG8=\x1b\\");
     }
 
     #[test]

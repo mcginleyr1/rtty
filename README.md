@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, rtty becoming the active app and not, a press of the global hotkey, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing, quitting or a clipboard read asked (which a scripted window keeps in its dump instead of showing a sheet; a scripted read is answered with a stand-in, never the clipboard), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, rtty becoming the active app and not, a press of the global hotkey, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--restore` | with `--script`: restore the saved layout and save it, as a normal launch does ([Restoring windows](#configuration)); the script drives the first window |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
@@ -127,6 +127,7 @@ graphics = true                   # the default: programs show images (Images); 
 secure_input = false              # the default: Secure Keyboard Entry starts off (Keys)
 auto_secure_input = true          # the default: Secure Keyboard Entry at a password prompt (Keys)
 global_hotkey = "ctrl-`"          # a chord that shows and hides rtty from any app; unset by default (Keys)
+clipboard_read = "ask"            # the default: a program's OSC 52 read asks first; or "allow", "deny" (Keys)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -532,6 +533,14 @@ no program. `Cmd+Shift+O` (`quick-open`) labels only what a `Cmd+click` would fo
 paths to files that exist (not OSC 8 links); typing a label follows it as the click would have
 when the labels appeared, whatever output has moved under them since.
 
+**The clipboard.** A program copies with OSC 52 (`ESC ] 52 ; c ; base64 BEL`), as Neovim and
+tmux can, and rtty puts the text on the clipboard. A program's read (`ESC ] 52 ; c ; ?
+BEL`) would hand it whatever was copied last, a password included, so it is answered only as
+`clipboard_read` says: `"ask"` (the default) asks in a sheet on the window, "*program* wants to
+read the clipboard", and answers only on `Allow`; `"allow"` answers at once; `"deny"` never
+answers, as before. The answer is the clipboard's text in base64, for the selection the program
+named, ended as its query was (BEL or ST).
+
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
 window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC
 99 notifications become macOS notifications, except from the pane that has the keyboard in the key
@@ -886,7 +895,8 @@ attributes, wide chars, ligatures, every underline style (single, double, curly,
 SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline,
 selection (scrolling the scrollback when dragged past the pane) and copy/paste, scrollback,
 resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, window and tab titles
-from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
+from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy and, with permission,
+read, synchronized updates,
 focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
 jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouring Neovim), quick
@@ -949,7 +959,9 @@ disable calls rtty made, one each way, macOS's own word (`IsSecureEventInputEnab
 password prompt holding it, and none held after quitting; the lock and the menu's check mark
 are not yet checked by eye. The global hotkey is registered with macOS in a scripted run too, and
 `--script`'s `hotkey` step runs what a press runs, which a scripted rtty keeps in its dump
-instead of doing; a real press is not yet checked.
+instead of doing; a real press is not yet checked. A clipboard read is checked with `--script`
+and `--trace`: no answer goes to the pty until `answer ok`, none after `answer cancel`, and with
+`clipboard_read = "allow"` one at once; the sheet is not yet checked by eye.
 
 ## The GPUI pin
 
