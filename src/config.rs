@@ -571,6 +571,9 @@ mod tests {
         assert_eq!((config.confirm_close, config.click_to_move), (Some(true), Some(true)));
         assert!(config.editor.is_some() && config.quick_select.is_empty());
         assert_eq!((config.restore_layout, config.graphics), (Some(true), Some(true)));
+        assert_eq!((config.secure_input, config.auto_secure_input), (Some(false), Some(true)));
+        assert!(config.hotkey.is_some() && defaults.hotkey.is_none());
+        assert_eq!(config.clipboard_read, Some(ClipboardRead::Ask));
         assert_eq!(config.bindings["alt-\\"], Action::SplitRight);
         assert!(!config.bindings.contains_key("cmd-shift-d"));
     }

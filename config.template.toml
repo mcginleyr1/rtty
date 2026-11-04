@@ -24,6 +24,10 @@
 # quick_select_patterns = []             # regexes quick select labels too
 # restore_layout = true                  # windows, tabs, splits and directories come back
 # graphics = true                        # programs show images (kitty's graphics protocol)
+# secure_input = false                   # Secure Keyboard Entry from the start (the App menu's)
+# auto_secure_input = true               # Secure Keyboard Entry while a password is typed
+# global_hotkey = "ctrl-`"               # shows and hides rtty from any app; unset: none
+# clipboard_read = "ask"                 # a program's OSC 52 read; or "allow", "deny"
 
 # [bind]                                 # chords and the actions they run, over the defaults
 # "alt-\\" = "split-right"

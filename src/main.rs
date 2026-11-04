@@ -378,12 +378,16 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
 /// Puts `settings` into effect: the keymap, and every window and pane, which read them as they
 /// draw and act. A size picked with Cmd+= and Cmd+- stays unless the configured one changed.
 fn configure(mut settings: Settings, cx: &mut App) {
-    if let Some(old) = cx.try_global::<Settings>().filter(|old| old.size == settings.size) {
+    let old = cx.try_global::<Settings>();
+    if let Some(old) = old.filter(|old| old.size == settings.size) {
         settings.font_size = old.font_size;
     }
+    let toggled = old.is_none_or(|old| old.secure_input != settings.secure_input);
     cx.clear_key_bindings();
     cx.bind_keys(settings.bindings.iter().map(|(chord, action)| key_binding(chord, *action)));
     cx.set_global(settings);
+    // The menu bar's chords from the keymap just bound.
+    app::configure(toggled, cx);
 }
 
 /// The files the config came from, and when each was last modified.
@@ -519,8 +523,8 @@ fn run(options: Options) -> Result<(), String> {
         });
         // What the key monitor below reads, which cannot reach the settings.
         let option_as_alt = Rc::new(Cell::new(settings.option_as_alt));
+        app::init(!settings.launch.prompts, cx);
         configure(settings, cx);
-        app::init(cx);
         cx.observe_global::<Settings>({
             let option_as_alt = option_as_alt.clone();
             move |cx| option_as_alt.set(cx.global::<Settings>().option_as_alt)

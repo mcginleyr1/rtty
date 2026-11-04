@@ -53,8 +53,10 @@ struct AppState {
     held: bool,
     /// The enable and disable calls made: as many of each, or one more enable while held.
     calls: (u32, u32),
-    /// `global_hotkey`, registered with macOS for as long as the manager lives.
-    hotkey: Option<(HotKey, GlobalHotKeyManager)>,
+    /// What registers global hotkeys with macOS, for rtty's life; none when it could not start.
+    hotkeys: Option<GlobalHotKeyManager>,
+    /// The `global_hotkey` registered now.
+    hotkey: Option<HotKey>,
     /// Under `--script`, what the hotkey would have done.
     toggled: Vec<String>,
 }
@@ -88,6 +90,9 @@ const MENUS: &[(&str, &[Item])] = &[
         &[
             ("About rtty", Some(Action::About)),
             LINE,
+            ("Settings…", Some(Action::OpenConfig)),
+            ("Reload Configuration", Some(Action::ReloadConfig)),
+            LINE,
             (SECURE_INPUT, Some(Action::SecureInput)),
             LINE,
             ("Hide rtty", Some(Action::Hide)),
@@ -118,6 +123,8 @@ const MENUS: &[(&str, &[Item])] = &[
             ("Paste", Some(Action::Paste)),
             LINE,
             ("Find", Some(Action::Find)),
+            ("Quick Select", Some(Action::QuickSelect)),
+            ("Quick Open", Some(Action::QuickOpen)),
             LINE,
             ("Copy Last Output", Some(Action::CopyLastOutput)),
             ("Clear Scrollback", Some(Action::ClearScrollback)),
@@ -145,41 +152,29 @@ const MENUS: &[(&str, &[Item])] = &[
     ),
 ];
 
-/// The menu bar and what its app-wide items do; Secure Keyboard Entry, whose toggle
-/// `secure_input` turns on from the start; and the global hotkey, which under `--script` only
-/// says what it would do.
-pub fn init(cx: &mut App) {
+/// What the menu bar's app-wide items do, Secure Keyboard Entry's toggle and the global hotkey,
+/// which under `--script` (`scripted`) only says what it would do; `configure` puts the config's
+/// part of them into effect.
+pub fn init(scripted: bool, cx: &mut App) {
     APP.with(|app| app.set(cx.to_async()).ok().expect("rtty starts once"));
-    let settings = cx.global::<Settings>();
-    let (bindings, secure_input) = (settings.bindings.clone(), settings.secure_input);
-    let (hotkey, scripted) = (settings.hotkey, !settings.launch.prompts);
-    let hotkey = hotkey.and_then(|hotkey| {
-        let manager = GlobalHotKeyManager::new();
-        match manager.and_then(|manager| manager.register(hotkey).map(|()| manager)) {
-            Ok(manager) => Some((hotkey, manager)),
-            Err(err) => {
-                eprintln!("rtty: global hotkey {hotkey}: {err}");
-                crate::note(&format!("global hotkey {hotkey}: {err}"));
-                None
-            }
+    let hotkeys = GlobalHotKeyManager::new()
+        .map_err(|err| crate::note(&format!("no global hotkey can be registered: {err}")))
+        .ok();
+    GlobalHotKeyEvent::set_event_handler(Some(|event: GlobalHotKeyEvent| {
+        if event.state == HotKeyState::Pressed {
+            later(hotkey_pressed)
         }
-    });
-    if hotkey.is_some() {
-        GlobalHotKeyEvent::set_event_handler(Some(|event: GlobalHotKeyEvent| {
-            if event.state == HotKeyState::Pressed {
-                later(hotkey_pressed)
-            }
-        }));
-    }
+    }));
     cx.set_global(AppState {
         scripted,
         active: false,
         key: None,
-        secure_input,
+        secure_input: false,
         password: false,
         held: false,
         calls: (0, 0),
-        hotkey,
+        hotkeys,
+        hotkey: None,
         toggled: Vec::new(),
     });
     cx.on_action(|_: &About, _| {
@@ -220,7 +215,38 @@ pub fn init(cx: &mut App) {
         async {}
     })
     .detach();
+}
+
+/// Puts the config's part in effect, at launch and at every reload (`Settings`): the menu bar,
+/// whose chords follow `[bind]`; Secure Keyboard Entry's toggle, set to `secure_input` when that
+/// changed (`toggled`), so a reload of another key keeps the menu's choice, and held or let go
+/// to match, one disable for each enable as ever; `auto_secure_input`, read where it is used; and
+/// the global hotkey, the old chord unregistered and the new one registered when they differ.
+pub fn configure(toggled: bool, cx: &mut App) {
+    let settings = cx.global::<Settings>();
+    let (bindings, secure_input, wanted) =
+        (settings.bindings.clone(), settings.secure_input, settings.hotkey);
+    let state = cx.global_mut::<AppState>();
+    if toggled {
+        state.secure_input = secure_input;
+    }
+    if state.hotkey != wanted {
+        if let (Some(hotkeys), Some(old)) = (&state.hotkeys, state.hotkey.take()) {
+            let unregistered = hotkeys.unregister(old).map_err(|err| format!(": {err}"));
+            let fate = unregistered.err().unwrap_or_default();
+            crate::note(&format!("global hotkey {old} unregistered{fate}"));
+        }
+        if let (Some(hotkeys), Some(new)) = (&state.hotkeys, wanted) {
+            match hotkeys.register(new) {
+                Ok(()) => state.hotkey = Some(new),
+                Err(err) => eprintln!("rtty: global hotkey {new}: {err}"),
+            }
+            let fate = if state.hotkey.is_some() { "registered" } else { "not registered" };
+            crate::note(&format!("global hotkey {new} {fate}"));
+        }
+    }
     menus(&bindings, cx);
+    cx.defer(refresh_secure_input);
 }
 
 /// Runs `f` with the app on a later turn of the run loop, out of whatever AppKit, and GPUI
@@ -455,8 +481,8 @@ fn reply(go: bool) {
     })
 }
 
-/// Sets the menu bar (`bar`).
-pub fn menus(bindings: &BTreeMap<String, Action>, cx: &App) {
+/// Sets the menu bar (`bar`), its Secure Keyboard Entry checked while the toggle is on.
+fn menus(bindings: &BTreeMap<String, Action>, cx: &App) {
     cx.set_menus(bar(bindings));
     // GPUI 0.2.2 hands AppKit Enter and Tab by name, which AppKit shows as a word and never
     // matches.
@@ -503,7 +529,7 @@ pub fn dump(cx: &App) -> String {
     let state = cx.global::<AppState>();
     let key = state.key.map(|key| number(key, cx));
     let _ = writeln!(out, "app active {} key window {key:?}", state.active);
-    let hotkey = state.hotkey.as_ref().map(|(hotkey, _)| hotkey.to_string());
+    let hotkey = state.hotkey.map(|hotkey| hotkey.to_string());
     let _ = writeln!(out, "global hotkey {hotkey:?} registered, would have {:?}", state.toggled);
     // SAFETY: a Carbon call taking nothing.
     let system = unsafe { IsSecureEventInputEnabled() } != 0;
@@ -537,6 +563,7 @@ pub fn dump(cx: &App) -> String {
                 let chord = match key.as_str() {
                     "" => String::new(),
                     "\r" => format!(" {held}↩"),
+                    " " => format!(" {held}Space"),
                     key => format!(" {held}{}", key.to_uppercase()),
                 };
                 let check = if item.state() == NSControlStateValueOn { "✓ " } else { "" };

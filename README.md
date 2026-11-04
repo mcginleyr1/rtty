@@ -163,7 +163,7 @@ file's keys. What changes, and when:
 | --- | --- |
 | `font`, `fallback`, `size`, `ligatures`, `font_features`, `line_height` | at once in every pane of every window, which reshapes its text and refits its cells; a size set with `Cmd+=`/`Cmd+-` stays unless `size` itself changed, and `Cmd+0` goes back to the new `size` |
 | `scheme`, `scheme_dark`, `scheme_light`, and an edit to a scheme file they name | at once: every pane, the tab bar and the dividers repaint, and a program that asked for DEC mode 2031 hears of a flip between dark and light |
-| `keys`, `[bind]` | at once, for the next chord |
+| `keys`, `[bind]` | at once, for the next chord, and the menu bar shows the new chords |
 | `option_as_alt`, `minimum_contrast` | at once |
 | `bell`, `confirm_close`, `click_to_move` | from the next bell, close or click |
 | `editor` | for the next file a `Cmd+click` or quick open edits; an editor already open keeps going |
@@ -173,6 +173,10 @@ file's keys. What changes, and when:
 | `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
 | `restore_layout` | saving the layout stops or starts at once; restoring it is at launch |
 | `graphics` | new panes only: a pane's engine takes graphics commands, or not, from its first byte |
+| `secure_input` | when it changed: Secure Keyboard Entry's toggle (the App menu's) is set to it at once, and secure input is held or let go to match; a reload that leaves it as it was keeps the menu's choice |
+| `auto_secure_input` | at once: secure input is held or let go for the pane with the keyboard as it is now |
+| `global_hotkey` | at once: the old chord is given back to the other apps and the new one taken |
+| `clipboard_read` | from the next read a program asks for |
 
 **Restoring windows.** With `restore_layout = true`, the default (Terminal.app and iTerm2 restore
 their windows by default too), rtty keeps each window's layout for the next launch: its frame and
@@ -361,12 +365,13 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | double click on the bar | | zoom the window, as on any titlebar (System Settings decides what a double click does) |
 | wheel | | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
-**The menu bar.** rtty's menus hold the actions above: About, Secure Keyboard Entry, Hide, Hide
-Others, Show All and Quit; in Shell, New Window, New Tab, the splits, Close Pane, Close Window
-and Undo Close; in Edit, Copy, Paste, Find, Copy Last Output and Clear Scrollback; in View,
-Bigger, Smaller, Actual Size and Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab.
-An item runs its action as the action's chord does, and shows the chord `[bind]` gives that
-action: a rebound action shows its new chord, an unbound one none. In a pane that claims the keys
+**The menu bar.** rtty's menus hold the actions above: About, Settings… (`open-config`), Reload
+Configuration, Secure Keyboard Entry, Hide, Hide Others, Show All and Quit; in Shell, New Window,
+New Tab, the splits, Close Pane, Close Window and Undo Close; in Edit, Copy, Paste, Find, Quick
+Select, Quick Open, Copy Last Output and Clear Scrollback; in View, Bigger, Smaller, Actual Size
+and Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab. An item runs its action as
+the action's chord does, and shows the chord `[bind]` gives that action, as of the last reload: a
+rebound action shows its new chord, an unbound one none. In a pane that claims the keys
 ([Editors](#rtty-cli-and-editors)), Close Pane therefore goes to the program, as its chord would,
 when that chord is one the program's encoding can say (never the default `Cmd+W`).
 
@@ -820,6 +825,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   `window::quit`'s question and answers AppKit later (`NSTerminateLater`); and Secure Keyboard
   Entry, held from one place (`refresh_secure_input`) as rtty's activation, the toggle and the
   focused pane's password prompt (`Pane::reads_password`) change; and the global hotkey.
+  `app::configure`, which `main.rs`'s `configure` runs at launch and at every reload once the
+  keymap is bound, puts their config in effect: the menu bar again, the toggle, the hotkey.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
   escaped for a shell, unit tested (the escaping against sh and zsh themselves).
