@@ -54,7 +54,8 @@ is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
 why, each pane's start, split, close (with the chord that closed it) and its program's exit
 status, a tab's close button, the question a close asked and its answer (never what runs), a
-close undone or made for good, the dock's progress badge as it changes, each Cmd chord as AppKit
+close undone or made for good, the dock's progress badge as it changes, what came of each config
+reload, each Cmd chord as AppKit
 hands it to rtty and as GPUI dispatched it
 (the window's activation, the key contexts it met, the actions bound to it there and the one that
 ran), and every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
@@ -90,7 +91,7 @@ reads small.
 
 `~/.config/rtty/config.toml` (`$XDG_CONFIG_HOME/rtty/config.toml` when that is set). Every key is
 optional; an unknown key, an unknown scheme name or a malformed file is an error that names it,
-and rtty does not start.
+and rtty does not start. Once rtty runs, a saved change takes effect by itself (below).
 
 ```toml
 font = "FiraCode Nerd Font"
@@ -131,6 +132,29 @@ included). A chord is written in GPUI's keystroke syntax: modifiers (`ctrl`, `al
 
 An unknown action, a chord that is not one, two spellings of one chord, or `none` on a chord with
 nothing bound stops rtty with an error naming the chord and its line.
+
+**Reloading.** rtty looks at the config file, and at the scheme files it names (not the built-in
+ones), once a second, and reads the config again when one has changed since it was last read;
+`Cmd+Shift+,` (`reload-config`, Ghostty's chord) reads it at once. A file that is gone is the
+defaults, as at launch, unless `--config` named it: that is a mistake at a reload as at launch.
+Every window says what came of it along its bottom for a few seconds, and
+the log says it too. A mistake, which at launch would stop rtty, keeps the config in effect and
+says what and where it is (`config not reloaded, the last one stays: …config.toml: line 6:
+"cmd-d": unknown action "split-sideways"`). `--font`, `--size` and `--ligatures` stay over the
+file's keys. What changes, and when:
+
+| Keys | Take effect |
+| --- | --- |
+| `font`, `fallback`, `size`, `ligatures` | at once in every pane of every window, which reshapes its text and refits its cells; a size set with `Cmd+=`/`Cmd+-` stays unless `size` itself changed, and `Cmd+0` goes back to the new `size` |
+| `scheme`, `scheme_dark`, `scheme_light`, and an edit to a scheme file they name | at once: every pane, the tab bar and the dividers repaint, and a program that asked for DEC mode 2031 hears of a flip between dark and light |
+| `keys`, `[bind]` | at once, for the next chord |
+| `option_as_alt`, `minimum_contrast` | at once |
+| `bell`, `confirm_close`, `click_to_move` | from the next bell, close or click |
+| `editor` | for the next file a `Cmd+click` or quick open edits; an editor already open keeps going |
+| `quick_select_patterns` | from the next quick select |
+| `undo_timeout` | from the next close; one already waiting keeps its time |
+| `notify_after` | for every command that ends from then on, running ones included |
+| `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
 
 A Neovim-like layout: the window keys smart-splits.nvim suggests, with LazyVim's split and zoom
 keys (`<leader>|`, `<leader>-`, `<leader>wm`) moved onto Option, since a terminal has no leader.
@@ -198,8 +222,9 @@ rtty looks for a scheme name in this order, first match wins:
 3. WezTerm's `~/.config/wezterm/colors/*.toml`, so an existing WezTerm setup needs no copying.
 
 A scheme is found by its `metadata.name`, else by its file stem (`onedarkpro` finds
-`onedarkpro.toml` whatever it calls itself). Every file in those directories is read at startup,
-so a malformed one stops rtty with its path and the offending key.
+`onedarkpro.toml` whatever it calls itself). Every file in those directories is read at startup
+and at each reload, so a malformed one stops rtty with its path and the offending key (and keeps
+the config in effect at a reload).
 
 **Following the OS.** rtty uses `scheme_dark` while the window's appearance is dark and
 `scheme_light` while it is light, and switches the moment macOS flips, with no restart. Cells keep
@@ -223,8 +248,8 @@ notifications. `CSI ? 996 n` asks for the scheme and gets `CSI ? 997 ; 1 n` (dar
 time the scheme changes, so Neovim and friends can switch `background` live. `CSI ? 2031 l` or RIS
 turns it off, and DECRQM (`CSI ? 2031 $ p`) reports the mode's state. Dark or light is the
 scheme's background, not the OS setting, so a pinned light scheme answers light on a dark Mac.
-rtty-vt answers all of these itself: rtty hands it the scheme's palette and leaning at startup
-and on every flip.
+rtty-vt answers all of these itself: rtty hands it the scheme's palette and leaning at startup,
+on every flip and at a reload that changes the scheme.
 
 ## Keys
 
@@ -257,6 +282,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+K` | `clear-scrollback` | clear the pane's scrollback and screen, then send the program Ctrl+L so a shell draws its prompt again at the top, as Terminal.app does; under a full-screen program (the alternate screen: Neovim, less) only the scrollback goes, and the program is sent nothing |
 | `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
 | `Cmd+0` | `font-reset` | font size back to the configured one (`size`, or `--size`) |
+| `Cmd+Shift+,` | `reload-config` | read the config file again now ([Configuration](#configuration)); rtty also does when it changes |
 | `Cmd` over a link, `Cmd+click` | | underline the link (a URL, or a path such as `src/main.rs:12:5`) under the pointer; open it (below) |
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |
@@ -647,6 +673,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
 - `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to
   one action per chord (the defaults, `keys`, then `[bind]`) that `main.rs` binds in GPUI.
+  `main.rs` turns them into the `Settings` global every window and pane reads as it draws and
+  acts, and at a reload replaces it and the keymap whole.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
   escaped for a shell, unit tested (the escaping against sh and zsh themselves).

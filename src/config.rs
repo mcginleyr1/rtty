@@ -87,6 +87,7 @@ pub enum Action {
     ClearScrollback,
     QuickSelect,
     QuickOpen,
+    ReloadConfig,
     Quit,
 }
 
@@ -122,6 +123,7 @@ impl Action {
             "clear-scrollback" => ClearScrollback,
             "quick-select" => QuickSelect,
             "quick-open" => QuickOpen,
+            "reload-config" => ReloadConfig,
             "quit" => Quit,
             _ => {
                 return toward("focus")
@@ -176,6 +178,8 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
         // Cmd+Shift+[ and ], as macOS reports them.
         ("cmd-{", PrevTab),
         ("cmd-}", NextTab),
+        // Cmd+Shift+, as macOS reports it: Ghostty's chord.
+        ("cmd-<", ReloadConfig),
     ];
     let fixed = fixed.into_iter().map(|(chord, action)| (chord.to_owned(), action));
     let arrows = Direction::ALL.into_iter().flat_map(|direction| {
@@ -258,6 +262,16 @@ pub enum Theme {
     Fixed(Arc<Scheme>),
 }
 
+/// What the command line says over the config, at launch and at every reload: the file itself
+/// (`--config`, which must be there), and `--font`, `--size` and `--ligatures` over its keys.
+#[derive(Clone, Debug, Default)]
+pub struct Overrides {
+    pub config: Option<PathBuf>,
+    pub font: Option<String>,
+    pub size: Option<f32>,
+    pub ligatures: Option<bool>,
+}
+
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
 pub fn home() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -337,6 +351,15 @@ impl Config {
 }
 
 impl Theme {
+    /// The files its schemes were read from; none for the built-ins.
+    pub fn files(&self) -> Vec<&Path> {
+        let schemes = match self {
+            Theme::Follow { dark, light } => vec![dark, light],
+            Theme::Fixed(scheme) => vec![scheme],
+        };
+        schemes.into_iter().filter_map(|scheme| scheme.path.as_deref()).collect()
+    }
+
     pub fn for_appearance(&self, appearance: WindowAppearance) -> &Arc<Scheme> {
         match (self, appearance) {
             (Theme::Fixed(scheme), _) => scheme,
@@ -378,6 +401,21 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_is_watched_through_its_schemes_files() {
+        let source = "[colors]\nforeground = '#ffffff'\nbackground = '#000000'\n\
+                      ansi = ['#000000', '#000000', '#000000', '#000000', '#000000', '#000000', \
+                      '#000000', '#000000']\nbrights = ['#000000', '#000000', '#000000', \
+                      '#000000', '#000000', '#000000', '#000000', '#000000']";
+        let mine = Scheme::parse(source, Some("/colors/mine.toml".into())).unwrap();
+        let schemes = [scheme::load(&[]).unwrap(), vec![mine]].concat();
+        let theme = |source| toml::from_str::<Config>(source).unwrap().theme(&schemes).unwrap();
+        assert!(theme("").files().is_empty(), "the built-ins are in no file");
+        assert_eq!(theme("scheme = 'mine'").files(), [Path::new("/colors/mine.toml")]);
+        let pair = theme("scheme_light = 'mine'");
+        assert_eq!(pair.files(), [Path::new("/colors/mine.toml")]);
+    }
+
+    #[test]
     fn mistakes_are_errors_that_name_them() {
         assert!(theme("colour = 'red'").unwrap_err().contains("unknown field `colour`"));
         assert!(theme("scheme_dark = 'Nope'").unwrap_err().contains("\"Nope\""));
@@ -416,8 +454,9 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 39);
+        assert_eq!(defaults.len(), 40);
         assert_eq!(defaults["cmd-d"], SplitRight);
+        assert_eq!(defaults["cmd-<"], ReloadConfig);
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
         assert_eq!(defaults["cmd-z"], UndoClose);
         assert_eq!(defaults["cmd-shift-a"], CopyLastOutput);
@@ -432,7 +471,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 47);
+        assert_eq!(tutti.len(), 48);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -442,7 +481,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 47 + 3 - 2);
+        assert_eq!(mine.len(), 48 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -454,7 +493,8 @@ mod tests {
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
                      split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
-                     prompt-prev prompt-next clear-scrollback quick-select quick-open quit";
+                     prompt-prev prompt-next clear-scrollback quick-select quick-open reload-config \
+                     quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }

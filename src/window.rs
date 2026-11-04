@@ -91,6 +91,9 @@ pub struct SelectTab(pub usize);
 /// How often panes look at their foreground process and directory for their titles.
 const TITLE_REFRESH: Duration = Duration::from_secs(1);
 
+/// How long what came of a config reload shows.
+const SAID: Duration = Duration::from_secs(6);
+
 /// The bar's text is the system's, as a titlebar's is.
 const UI_FONT: &str = ".SystemUIFont";
 
@@ -140,6 +143,9 @@ pub struct TerminalWindow {
     attention: Vec<String>,
     /// Under `--script`, the question asked before closing, waiting for the script's `answer`.
     asked: Option<oneshot::Sender<usize>>,
+    /// What came of the last config reload, and when, shown along the window's bottom for
+    /// `SAID`.
+    said: Option<(String, Instant)>,
 }
 
 /// What closing ends: a pane, a tab, a window, or every window.
@@ -377,8 +383,8 @@ fn spawn(
 ) -> Result<(Pane, UnboundedReceiver<Notice>), String> {
     let settings = cx.global::<Settings>();
     command.env("RTTY_PANE", id.to_string());
-    command.env("RTTY_SOCKET", &settings.socket);
-    let trace = settings.trace.as_ref().map(|trace| trace.for_pane(id));
+    command.env("RTTY_SOCKET", &settings.launch.socket);
+    let trace = settings.launch.trace.as_ref().map(|trace| trace.for_pane(id));
     let integration = settings.shell_integration.as_deref();
     let spawned = Pane::spawn(command, rows, cols, Some(scheme), trace, integration)
         .map_err(|err| format!("cannot start the shell: {err}"));
@@ -413,6 +419,23 @@ pub fn refresh_badge(cx: &mut App) {
         crate::note(&format!("dock badge {label:?}"));
         notify::badge(label.as_deref());
         *shown = label;
+    }
+}
+
+/// The config was read again: every window and pane takes up its schemes (the same ones after a
+/// mistake), and each window says what came of it along its bottom for a moment.
+pub fn reloaded(said: &str, cx: &mut App) {
+    let windows = cx.windows().into_iter().filter_map(|window| window.downcast::<TerminalWindow>());
+    for handle in windows {
+        let _ = handle.update(cx, |this, window, cx| {
+            this.follow_appearance(window.appearance(), cx);
+            this.said = Some((said.to_owned(), Instant::now()));
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SAID).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
+        });
     }
 }
 
@@ -489,6 +512,7 @@ impl TerminalWindow {
             bar_press: None,
             attention: Vec::new(),
             asked: None,
+            said: None,
         };
         this.add(id, pane, notices, window, cx);
         this
@@ -747,7 +771,7 @@ impl TerminalWindow {
         then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
         let settings = cx.global::<Settings>();
-        let (asks, native) = (settings.confirm_close, settings.prompts);
+        let (asks, native) = (settings.confirm_close, settings.launch.prompts);
         let Some((question, detail, button)) = question(closing, &running).filter(|_| asks) else {
             return then(self, window, cx);
         };
@@ -907,6 +931,8 @@ impl TerminalWindow {
             window.activate_window();
         }
         self.views.extend(views);
+        // The schemes may have flipped or been reloaded while they were hidden.
+        self.follow_appearance(window.appearance(), cx);
         self.focus_shown(window, cx);
     }
 
@@ -1269,6 +1295,9 @@ impl TerminalWindow {
         for asked in &self.attention {
             let _ = writeln!(out, "attention: {asked}");
         }
+        if let Some((said, at)) = &self.said {
+            let _ = writeln!(out, "said {said:?} {} ms ago", at.elapsed().as_millis());
+        }
         let rects = layout.rects(area);
         for (id, rect) in &rects {
             let _ =
@@ -1504,6 +1533,20 @@ impl Render for TerminalWindow {
                     }
                 }))
         });
+        let said = self.said.as_ref().filter(|(_, at)| at.elapsed() < SAID).map(|(said, _)| {
+            div()
+                .absolute()
+                .left_0()
+                .bottom_0()
+                .max_w_full()
+                .px(px(8.))
+                .py(px(2.))
+                .font_family(UI_FONT)
+                .text_size(px(12.))
+                .bg(hsla(self.scheme.color(FOREGROUND)))
+                .text_color(hsla(self.scheme.color(BACKGROUND)))
+                .child(said.clone())
+        });
         div()
             .relative()
             .size_full()
@@ -1561,6 +1604,7 @@ impl Render for TerminalWindow {
             .children(titlebar)
             .children(panes)
             .children(dividers)
+            .children(said)
     }
 }
 

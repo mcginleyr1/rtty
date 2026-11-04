@@ -24,39 +24,51 @@ mod view;
 mod window;
 
 use std::backtrace::Backtrace;
+use std::cell::Cell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::ptr::{self, NonNull};
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::{iter, mem, slice};
 
 use block2::RcBlock;
 use gpui::{
-    App, Application, BorrowAppContext, FontFallbacks, FontFeatures, KeyBinding, actions, font, px,
+    App, Application, BorrowAppContext, FontFallbacks, FontFeatures, Global, KeyBinding, actions,
+    font, px,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags, NSView};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
-use config::{Action, Config, ShellIntegration};
+use config::{Action, Config, Overrides, ShellIntegration, Theme};
 use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{
-    ClearScrollback, Copy, CopyLastOutput, Find, NextPrompt, Paste, PreviousPrompt, QuickOpen,
-    QuickSelect, Settings,
+    ClearScrollback, Copy, CopyLastOutput, Find, Launch, NextPrompt, Paste, PreviousPrompt,
+    QuickOpen, QuickSelect, Settings,
 };
 use window::{
     ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
 };
 
-actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize]);
+actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize, ReloadConfig]);
+
+/// How often the files the config came from are looked at for a change.
+const WATCH: Duration = Duration::from_secs(1);
+
+/// The files the config came from (the config file and the scheme files it names) and when each
+/// was last modified (`None` while it is missing), as of the last time the config was read.
+struct Seen(Vec<(PathBuf, Option<SystemTime>)>);
+
+impl Global for Seen {}
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [--trace FILE] [--script FILE [--activate]] [-e PROGRAM [ARGS...]]
@@ -121,13 +133,10 @@ fn start_log(dir: &std::path::Path) {
     note(&format!("rtty {} started", env!("CARGO_PKG_VERSION")));
 }
 
-/// The command line; `font`, `size` and `ligatures` override the config file's.
+/// The command line.
 #[derive(Default)]
 struct Options {
-    config: Option<PathBuf>,
-    font: Option<String>,
-    size: Option<f32>,
-    ligatures: Option<bool>,
+    overrides: Overrides,
     stats: bool,
     trace: Option<PathBuf>,
     script: Option<PathBuf>,
@@ -159,20 +168,20 @@ fn main() -> ExitCode {
             },
             "--activate" => options.activate = true,
             "--config" => match args.next() {
-                Some(path) => options.config = Some(path.into()),
+                Some(path) => options.overrides.config = Some(path.into()),
                 None => return usage_error("--config needs a file"),
             },
             "--font" => match args.next() {
-                Some(name) => options.font = Some(name),
+                Some(name) => options.overrides.font = Some(name),
                 None => return usage_error("--font needs a font family name"),
             },
             "--size" => match args.next().and_then(|points| points.parse().ok()) {
-                Some(points) => options.size = Some(points),
+                Some(points) => options.overrides.size = Some(points),
                 None => return usage_error("--size needs a number of points"),
             },
             "--ligatures" => match args.next().as_deref() {
-                Some("on") => options.ligatures = Some(true),
-                Some("off") => options.ligatures = Some(false),
+                Some("on") => options.overrides.ligatures = Some(true),
+                Some("off") => options.overrides.ligatures = Some(false),
                 _ => return usage_error("--ligatures needs on or off"),
             },
             "-e" => match args.next() {
@@ -241,6 +250,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
         Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
         Action::FontReset => KeyBinding::new(chord, ResetFontSize, None),
+        Action::ReloadConfig => KeyBinding::new(chord, ReloadConfig, None),
         Action::Quit => KeyBinding::new(chord, Quit, None),
     }
 }
@@ -260,29 +270,133 @@ fn command(argv: Option<Vec<String>>) -> CommandBuilder {
     command
 }
 
-/// Reads `config.toml` (or `--config`), loads the color schemes, and runs the window.
-fn run(options: Options) -> Result<(), String> {
-    let config_home = config::home();
-    let config = match (&options.config, &config_home) {
-        (Some(path), _) if !path.exists() => {
+/// The config file (`None`: the defaults) and the color schemes, read and checked, with the
+/// command line's overrides.
+struct Loaded {
+    config: Config,
+    theme: Theme,
+    family: String,
+    size: f32,
+    ligatures: bool,
+}
+
+fn load(path: Option<&Path>, overrides: &Overrides) -> Result<Loaded, String> {
+    let config = match path {
+        // At a reload too: a file named on the command line and gone is no default config.
+        Some(path) if overrides.config.is_some() && !path.exists() => {
             return Err(format!("{}: no such file", path.display()));
         }
-        (Some(path), _) => Config::load(path)?,
-        (None, Some(home)) => Config::load(&home.join("rtty/config.toml"))?,
-        (None, None) => Config::parse("")?,
+        Some(path) => Config::load(path)?,
+        None => Config::parse("")?,
     };
-    let scheme_dirs: Vec<PathBuf> = config_home
+    let scheme_dirs: Vec<PathBuf> = config::home()
         .iter()
         .flat_map(|home| [home.join("rtty/colors"), home.join("wezterm/colors")])
         .collect();
     let theme = config.theme(&scheme::load(&scheme_dirs)?)?;
-    let notify_after = config.notify_after();
-    let family = options.font.or(config.font).unwrap_or_else(|| "Menlo".into());
-    let font_size = options.size.or(config.size).unwrap_or(14.);
-    let ligatures = options.ligatures.or(config.ligatures).unwrap_or(true);
-    if font_size <= 0. || !font_size.is_finite() {
-        return Err(format!("font size {font_size} is not a positive number of points"));
+    let family = overrides.font.clone().or(config.font.clone()).unwrap_or_else(|| "Menlo".into());
+    let size = overrides.size.or(config.size).unwrap_or(14.);
+    let ligatures = overrides.ligatures.or(config.ligatures).unwrap_or(true);
+    if size <= 0. || !size.is_finite() {
+        return Err(format!("font size {size} is not a positive number of points"));
     }
+    Ok(Loaded { config, theme, family, size, ligatures })
+}
+
+/// `Settings` as `loaded` says, for `launch`: the font once its families are known to be
+/// installed (with no `fallback`, an installed Nerd Font, `nerd_font`), and the shell
+/// integration's scripts written beside the socket.
+fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String> {
+    let Loaded { config, theme, family, size, ligatures } = loaded;
+    let notify_after = config.notify_after();
+    let installed = cx.text_system().all_font_names();
+    let fallbacks = config.fallback.unwrap_or_else(|| nerd_font(&installed).into_iter().collect());
+    if let Some(missing) =
+        iter::once(&family).chain(&fallbacks).find(|name| !installed.contains(name))
+    {
+        return Err(format!("no font family named {missing:?}"));
+    }
+    let mut font = font(family);
+    font.features = FontFeatures(Arc::new(if ligatures {
+        vec![("calt".into(), 1), ("liga".into(), 1)]
+    } else {
+        vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
+    }));
+    // Ahead of macOS's own cascade, which knows no font with Nerd Font icons.
+    font.fallbacks = (!fallbacks.is_empty()).then(|| FontFallbacks::from_fonts(fallbacks));
+    let dir = launch.socket.parent().expect("the socket is in its directory");
+    let shell_integration = match config.shell_integration.unwrap_or_default() {
+        ShellIntegration::Auto => {
+            Some(shell::install(dir).map_err(|err| format!("{}: {err}", dir.display()))?)
+        }
+        ShellIntegration::None => None,
+    };
+    Ok(Settings {
+        font,
+        font_size: px(size),
+        size: px(size),
+        theme,
+        notify_after,
+        bindings: config.bindings,
+        option_as_alt: config.option_as_alt.unwrap_or_default(),
+        bell: config.bell.unwrap_or_default(),
+        minimum_contrast: config.minimum_contrast.unwrap_or(1.),
+        confirm_close: config.confirm_close.unwrap_or(true),
+        undo_timeout: Duration::from_secs(config.undo_timeout.unwrap_or(5)),
+        shell_integration,
+        click_to_move: config.click_to_move.unwrap_or(true),
+        editor: config.editor,
+        quick_select: config.quick_select,
+        launch,
+    })
+}
+
+/// Puts `settings` into effect: the keymap, and every window and pane, which read them as they
+/// draw and act. A size picked with Cmd+= and Cmd+- stays unless the configured one changed.
+fn configure(mut settings: Settings, cx: &mut App) {
+    if let Some(old) = cx.try_global::<Settings>().filter(|old| old.size == settings.size) {
+        settings.font_size = old.font_size;
+    }
+    cx.clear_key_bindings();
+    cx.bind_keys(settings.bindings.iter().map(|(chord, action)| key_binding(chord, *action)));
+    cx.set_global(settings);
+}
+
+/// The files the config came from, and when each was last modified.
+fn watched(cx: &App) -> Vec<(PathBuf, Option<SystemTime>)> {
+    let settings = cx.global::<Settings>();
+    let files = settings.launch.config.as_deref().into_iter().chain(settings.theme.files());
+    let modified = |path: &Path| fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    files.map(|path| (path.to_owned(), modified(path))).collect()
+}
+
+/// Reads the config again and puts it into effect in every window and pane. A mistake keeps the
+/// config in effect; either way every window says what came of it, and so does the log.
+fn reload(cx: &mut App) {
+    let launch = cx.global::<Settings>().launch.clone();
+    let loaded = load(launch.config.as_deref(), &launch.overrides);
+    let said = match loaded.and_then(|loaded| settings(loaded, launch, cx)) {
+        Ok(settings) => {
+            configure(settings, cx);
+            "config reloaded".to_owned()
+        }
+        Err(err) => format!("config not reloaded, the last one stays: {err}"),
+    };
+    note(&said);
+    window::reloaded(&said, cx);
+    cx.set_global(Seen(watched(cx)));
+}
+
+/// Reads `config.toml` (or `--config`), loads the color schemes, and runs the window.
+fn run(options: Options) -> Result<(), String> {
+    // Absolute, so that it names the same file from an editor's directory (`open-config`).
+    let config = match (&options.overrides.config, config::home()) {
+        (Some(path), _) => {
+            Some(std::path::absolute(path).map_err(|err| format!("{}: {err}", path.display()))?)
+        }
+        (None, home) => home.map(|home| home.join("rtty/config.toml")),
+    };
+    let loaded = load(config.as_deref(), &options.overrides)?;
     let read = |path: &PathBuf| {
         std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))
     };
@@ -299,37 +413,51 @@ fn run(options: Options) -> Result<(), String> {
         .as_ref()
         .map(|path| Trace::create(path).map_err(|err| format!("{}: {err}", path.display())));
     let trace = trace.transpose()?;
-    let bindings = config.bindings;
-    let bell = config.bell.unwrap_or_default();
-    let option_as_alt = config.option_as_alt.unwrap_or_default();
-    let minimum_contrast = config.minimum_contrast.unwrap_or(1.);
-    let confirm_close = config.confirm_close.unwrap_or(true);
-    let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
-    let fallback = config.fallback;
-    let click_to_move = config.click_to_move.unwrap_or(true);
-    let (editor, quick_select) = (config.editor, config.quick_select);
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
     control::sweep(dir);
-    let shell_integration = match config.shell_integration.unwrap_or_default() {
-        ShellIntegration::Auto => {
-            Some(shell::install(dir).map_err(|err| format!("{}: {err}", dir.display()))?)
-        }
-        ShellIntegration::None => None,
-    };
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
+    let launch = Launch {
+        stats: options.stats,
+        trace,
+        socket: socket.clone(),
+        config,
+        overrides: options.overrides,
+        open_links,
+        clipboard,
+        prompts: script.is_none(),
+    };
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
-        let installed = cx.text_system().all_font_names();
-        let fallbacks = fallback.unwrap_or_else(|| nerd_font(&installed).into_iter().collect());
-        if let Some(missing) =
-            iter::once(&family).chain(&fallbacks).find(|name| !installed.contains(name))
-        {
-            eprintln!("rtty: no font family named {missing:?}");
+        let settings = settings(loaded, launch, cx).unwrap_or_else(|err| {
+            eprintln!("rtty: {err}");
             std::process::exit(2);
-        }
-        cx.bind_keys(bindings.iter().map(|(chord, action)| key_binding(chord, *action)));
+        });
+        // What the key monitor below reads, which cannot reach the settings.
+        let option_as_alt = Rc::new(Cell::new(settings.option_as_alt));
+        configure(settings, cx);
+        cx.observe_global::<Settings>({
+            let option_as_alt = option_as_alt.clone();
+            move |cx| option_as_alt.set(cx.global::<Settings>().option_as_alt)
+        })
+        .detach();
+        cx.set_global(Seen(watched(cx)));
+        // Once the window that took the chord is done with it, so that it says what came of it.
+        cx.on_action(|_: &ReloadConfig, cx| cx.defer(reload));
+        // Edits to the config take effect once saved, with no reload by hand.
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor().timer(WATCH).await;
+                let changed = cx.update(|cx| cx.global::<Seen>().0 != watched(cx));
+                match changed {
+                    Ok(true) => cx.update(reload).ok(),
+                    Ok(false) => None,
+                    Err(_) => break,
+                };
+            }
+        })
+        .detach();
         // A Cmd chord GPUI dispatched: the contexts it met, the actions bound to it there, and the
         // one that ran. Only Cmd chords, which are rtty's: never what goes to a pane.
         cx.observe_keystrokes(|event, window, cx| {
@@ -373,7 +501,8 @@ fn run(options: Options) -> Result<(), String> {
             // it, so no `alt-` binding and no ESC prefix.
             let option =
                 flags.contains(Flags::Option) && !flags.intersects(Flags::Command | Flags::Control);
-            let alt = option_as_alt.alt(flags.contains(LEFT_OPTION), flags.contains(RIGHT_OPTION));
+            let (left, right) = (flags.contains(LEFT_OPTION), flags.contains(RIGHT_OPTION));
+            let alt = option_as_alt.get().alt(left, right);
             let text = chars
                 .chars()
                 .next()
@@ -415,8 +544,8 @@ fn run(options: Options) -> Result<(), String> {
             let shrink = step(-1.);
             move |_: &DecreaseFontSize, cx| shrink(cx)
         });
-        cx.on_action(move |_: &ResetFontSize, cx| {
-            cx.update_global::<Settings, _>(|settings, _| settings.font_size = px(font_size))
+        cx.on_action(|_: &ResetFontSize, cx| {
+            cx.update_global::<Settings, _>(|settings, _| settings.font_size = settings.size)
         });
         cx.spawn(async move |cx| {
             let mut requests = requests;
@@ -456,35 +585,6 @@ fn run(options: Options) -> Result<(), String> {
             }
         })
         .detach();
-        let mut font = font(family);
-        font.features = FontFeatures(Arc::new(if ligatures {
-            vec![("calt".into(), 1), ("liga".into(), 1)]
-        } else {
-            vec![("calt".into(), 0), ("liga".into(), 0), ("dlig".into(), 0)]
-        }));
-        // Ahead of macOS's own cascade, which knows no font with Nerd Font icons.
-        font.fallbacks = (!fallbacks.is_empty()).then(|| FontFallbacks::from_fonts(fallbacks));
-        let stats = options.stats;
-        cx.set_global(Settings {
-            font,
-            font_size: px(font_size),
-            theme,
-            stats,
-            trace,
-            socket,
-            open_links,
-            clipboard,
-            bell,
-            minimum_contrast,
-            confirm_close,
-            undo_timeout,
-            prompts: script.is_none(),
-            shell_integration,
-            notify_after,
-            click_to_move,
-            editor,
-            quick_select,
-        });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
             std::process::exit(1);

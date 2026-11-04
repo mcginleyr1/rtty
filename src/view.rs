@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::iter;
 use std::mem;
@@ -27,7 +27,7 @@ use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
 
-use crate::config::{Bell, Theme};
+use crate::config::{Action as Bound, Bell, OptionAsAlt, Overrides, Theme};
 use crate::editor;
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
@@ -82,21 +82,17 @@ const AUTOSCROLL_SPEED: f32 = 10.;
 const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
 
 /// What every window and pane shares: the font and its size (Cmd+= and Cmd+- change it for all of
-/// them), the color theme, and the diagnostics asked for.
+/// them), the color theme and the rest of the config, which a reload replaces, and what this
+/// launch was told.
 pub struct Settings {
     pub font: Font,
     pub font_size: Pixels,
+    /// The configured size (`size`, or `--size`), which Cmd+0 goes back to.
+    pub size: Pixels,
     pub theme: Theme,
-    pub stats: bool,
-    pub trace: Option<Trace>,
-    /// Where `rtty cli` reaches this rtty; each pane's `RTTY_SOCKET`.
-    pub socket: PathBuf,
-    /// Cmd+click opens links with the system's handler; under `--script` it records them in the
-    /// pane's dump instead, so a scripted run never opens anything.
-    pub open_links: bool,
-    /// The last command's output goes to the clipboard; under `--script` to the pane's dump
-    /// only, so a scripted run leaves the clipboard alone.
-    pub clipboard: bool,
+    /// Every chord rtty acts on and its action (`Config::bindings`).
+    pub bindings: BTreeMap<String, Bound>,
+    pub option_as_alt: OptionAsAlt,
     pub bell: Bell,
     /// `minimum_contrast`: the WCAG contrast ratio text keeps with its background.
     pub minimum_contrast: f32,
@@ -104,9 +100,6 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How long a close waits for `undo-close`; zero closes at once (`undo_timeout`).
     pub undo_timeout: Duration,
-    /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
-    /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
-    pub prompts: bool,
     /// Where the shell integration's scripts are, when login shells load it.
     pub shell_integration: Option<PathBuf>,
     /// A command that ran this long notifies its end out of view; `None` never.
@@ -116,9 +109,32 @@ pub struct Settings {
     pub editor: Option<Vec<String>>,
     /// `quick_select_patterns`: what quick select labels besides what it knows.
     pub quick_select: Vec<Regex>,
+    pub launch: Launch,
 }
 
 impl Global for Settings {}
+
+/// What this launch was told, which a reload keeps: the diagnostics asked for, where the config
+/// is, and how a scripted run differs.
+#[derive(Clone)]
+pub struct Launch {
+    pub stats: bool,
+    pub trace: Option<Trace>,
+    /// Where `rtty cli` reaches this rtty; each pane's `RTTY_SOCKET`.
+    pub socket: PathBuf,
+    /// The config file, `None` when there is no home to find it in.
+    pub config: Option<PathBuf>,
+    pub overrides: Overrides,
+    /// Cmd+click opens links with the system's handler; under `--script` it records them in the
+    /// pane's dump instead, so a scripted run never opens anything.
+    pub open_links: bool,
+    /// The last command's output goes to the clipboard; under `--script` to the pane's dump
+    /// only, so a scripted run leaves the clipboard alone.
+    pub clipboard: bool,
+    /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
+    /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
+    pub prompts: bool,
+}
 
 /// A pane as the window shows it: the pane itself, its keyboard focus, and what its last frame
 /// put where.
@@ -289,6 +305,7 @@ struct CacheKey {
     link: Option<(GridPoint, GridPoint)>,
     focused: bool,
     size: (u16, u16),
+    font: Font,
     font_size: Pixels,
 }
 
@@ -334,7 +351,7 @@ impl PaneView {
         cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
         let settings = cx.global::<Settings>();
         let scheme = settings.theme.for_appearance(window.appearance()).clone();
-        let stats = settings.stats.then(FrameStats::default);
+        let stats = settings.launch.stats.then(FrameStats::default);
         pane.set_scheme(&scheme);
         cx.spawn_in(window, async move |this, cx| {
             while let Some(notice) = notices.next().await {
@@ -607,13 +624,14 @@ impl PaneView {
         }
     }
 
-    /// The OS switched between light and dark: repaint with the other scheme (cells keep color
-    /// indices, so what is on screen recolors) and tell the terminal, which answers color queries
-    /// with it and tells programs that asked (mode 2031). Colors a program set itself with
-    /// OSC 4/10/11/12 are the program's, not the scheme's, and stay.
+    /// The OS switched between light and dark, or a reload changed the schemes: repaint with the
+    /// other scheme (cells keep color indices, so what is on screen recolors) and tell the
+    /// terminal, which answers color queries with it and tells programs that asked (mode 2031).
+    /// Colors a program set itself with OSC 4/10/11/12 are the program's, not the scheme's, and
+    /// stay.
     pub fn follow_appearance(&mut self, appearance: WindowAppearance, cx: &mut Context<Self>) {
         let scheme = cx.global::<Settings>().theme.for_appearance(appearance);
-        if Arc::ptr_eq(scheme, &self.scheme) {
+        if **scheme == *self.scheme {
             return;
         }
         self.scheme = scheme.clone();
@@ -791,7 +809,7 @@ impl PaneView {
 
     /// Copies `text` (under `--script`, only into the dump).
     fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
-        if cx.global::<Settings>().clipboard {
+        if cx.global::<Settings>().launch.clipboard {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
         }
         self.copied = Some(text);
@@ -942,7 +960,13 @@ impl PaneView {
             })
             .collect();
         let primary = text_system.resolve_font(&font);
-        let _ = writeln!(out, "font {:?} {primary:?} fallbacks {fallbacks:?}", font.family);
+        let _ = writeln!(
+            out,
+            "font {:?} {primary:?} size {} {:?} fallbacks {fallbacks:?}",
+            font.family,
+            f32::from(settings.font_size),
+            font.features
+        );
         let term = self.pane.lock();
         let palette = Palette::new(&term, &self.scheme, minimum_contrast);
         let (rows, cols) = term.size();
@@ -1252,7 +1276,7 @@ impl PaneView {
     /// finding the editor (`PaneEvent::Edit`). Under `--script` only the edit goes ahead; the
     /// rest is recorded.
     fn follow(&mut self, target: Target, cx: &mut Context<Self>) {
-        let act = cx.global::<Settings>().open_links;
+        let act = cx.global::<Settings>().launch.open_links;
         let followed = match target {
             Target::Uri(uri) => {
                 let follow = links::follow(
@@ -1445,6 +1469,7 @@ impl PaneView {
             link: scene.link,
             focused,
             size: (rows, cols),
+            font: font.clone(),
             font_size,
         };
         if cache.key.as_ref() != Some(&key) {
