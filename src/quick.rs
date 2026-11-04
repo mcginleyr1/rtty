@@ -30,18 +30,19 @@ static KNOWN: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .into()
 });
 
-/// A match on the screen, the label that picks it, and its text.
+/// A match on the screen, the label that picks it, and what picking it does: its text to copy,
+/// or the link it was when labeled.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Item {
+pub struct Item<T> {
     pub label: String,
     pub cells: Match,
-    pub text: String,
+    pub picks: T,
 }
 
-/// What quick select finds on the rows `top..top + rows`, top to bottom: what `patterns` match
-/// (a pattern's first group, when it has one), URLs, paths and what it knows (`KNOWN`); for quick
-/// open, URLs and paths alone. Of two that overlap, the one starting first stays, the longer of
-/// two starting together.
+/// What quick select finds on the rows `top..top + rows`, top to bottom, and its text: what
+/// `patterns` match (a pattern's first group, when it has one), URLs, paths and what it knows
+/// (`KNOWN`); for quick open, URLs and paths alone. Of two that overlap, the one starting first
+/// stays, the longer of two starting together.
 pub fn found(
     term: &Terminal,
     top: u64,
@@ -49,6 +50,9 @@ pub fn found(
     patterns: &[Regex],
     open: bool,
 ) -> Vec<(Match, String)> {
+    if rows == 0 {
+        return Vec::new();
+    }
     let bottom = top + u64::from(rows);
     let (from, _) = search::line_rows(term, top);
     let (_, to) = search::line_rows(term, bottom - 1);
@@ -78,10 +82,10 @@ pub fn found(
 }
 
 /// `found` labeled, nearest `cursor` first: by rows away, then by columns.
-pub fn labeled(mut found: Vec<(Match, String)>, (row, col): Point) -> Vec<Item> {
+pub fn labeled<T>(mut found: Vec<(Match, T)>, (row, col): Point) -> Vec<Item<T>> {
     found.sort_by_key(|&((start, _), _)| (start.0.abs_diff(row), start.1.abs_diff(col)));
     let labels = labels(found.len()).into_iter().zip(found);
-    labels.map(|(label, (cells, text))| Item { label, cells, text }).collect()
+    labels.map(|(label, (cells, picks))| Item { label, cells, picks }).collect()
 }
 
 /// `count` labels of `LETTERS`, shortest first, none a prefix of another: a letter each while
@@ -173,7 +177,7 @@ mod tests {
         assert_eq!(found[1], (((1, 5), (1, 8)), "2222".to_string()));
         let items = labeled(found, (2, 0));
         let labeled: Vec<(&str, &str)> =
-            items.iter().map(|item| (item.label.as_str(), item.text.as_str())).collect();
+            items.iter().map(|item| (item.label.as_str(), item.picks.as_str())).collect();
         assert_eq!(labeled, [("a", "3333"), ("s", "2222"), ("d", "1111")]);
     }
 
@@ -182,8 +186,9 @@ mod tests {
         let term = term(3, 20, b"1111\r\n2222\r\n3333\r\n4444\r\n5555");
         // The screen holds 3333, 4444 and 5555; the view is scrolled up a row.
         let top = term.screen_top() - 1;
-        let found = found(&term, top, 3, &[], false);
-        let texts: Vec<&str> = found.iter().map(|(_, text)| text.as_str()).collect();
+        let shown = found(&term, top, 3, &[], false);
+        let texts: Vec<&str> = shown.iter().map(|(_, text)| text.as_str()).collect();
         assert_eq!(texts, ["2222", "3333", "4444"]);
+        assert!(found(&term, top, 0, &[], false).is_empty(), "a pane of no rows");
     }
 }

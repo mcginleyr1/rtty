@@ -402,7 +402,8 @@ for two-letter labels. Typing a label copies its match and says so, as `copy-las
 typing it with Shift (`A`, or `aS`) pastes it into the pane too, bracketed when the program asked
 for that. Esc puts the labels away, as does any other key, which goes nowhere else: no binding,
 no program. `Cmd+Shift+O` (`quick-open`) labels only what a `Cmd+click` would follow: URLs and
-paths to files that exist (not OSC 8 links); typing a label follows it as the click would.
+paths to files that exist (not OSC 8 links); typing a label follows it as the click would have
+when the labels appeared, whatever output has moved under them since.
 
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
 window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC

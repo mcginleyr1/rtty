@@ -204,10 +204,17 @@ struct Search {
 /// Quick select or quick open, labels on screen: what each picks, the letters typed so far, and
 /// whether one of them was typed with Shift.
 struct Quick {
-    open: bool,
-    items: Vec<quick::Item>,
+    items: Vec<quick::Item<Pick>>,
     typed: String,
     shifted: bool,
+}
+
+/// What a label picks: text to copy, or the link a Cmd+click on it would have followed when the
+/// labels were made, whatever the screen shows there since.
+#[derive(Clone, Debug)]
+enum Pick {
+    Copy(String),
+    Open(Target),
 }
 
 /// What a pane tells the window that holds it.
@@ -802,21 +809,24 @@ impl PaneView {
     }
 
     /// Quick select, or quick open: labels what is worth copying on screen (`quick::found`), or
-    /// the links there that a Cmd+click would follow, until a label or any other key is typed
-    /// (`quick_key`).
+    /// the links there that a Cmd+click would follow, resolved now, until a label or any other
+    /// key is typed (`quick_key`).
     fn quick(&mut self, open: bool, cx: &mut Context<Self>) {
         let term = self.pane.lock();
         let (top, (row, col)) = (self.pane.top(&term), term.cursor_position());
         let patterns = &cx.global::<Settings>().quick_select;
         let found = quick::found(&term, top, self.grid.0, patterns, open).into_iter();
-        let opens = |cells: &Match| links::link_at(&term, cells.0, || self.pane.foreground()?.cwd);
-        let found = found.filter(|(cells, _)| !open || opens(cells).is_some()).collect();
-        let items = quick::labeled(found, (term.screen_top() + u64::from(row), col));
+        let link = |cells: Match| links::link_at(&term, cells.0, || self.pane.foreground()?.cwd);
+        let picks = found.filter_map(|(cells, text)| match open {
+            true => Some((cells, Pick::Open(link(cells)?.target))),
+            false => Some((cells, Pick::Copy(text))),
+        });
+        let items = quick::labeled(picks.collect(), (term.screen_top() + u64::from(row), col));
         drop(term);
         if items.is_empty() {
             return self.say(if open { "nothing to open" } else { "nothing to select" }, cx);
         }
-        self.quick = Some(Quick { open, items, typed: String::new(), shifted: false });
+        self.quick = Some(Quick { items, typed: String::new(), shifted: false });
         cx.notify();
     }
 
@@ -838,7 +848,7 @@ impl PaneView {
         quick.typed.push_str(&keystroke.key);
         quick.shifted |= mods.shift;
         if let Some(item) = quick.items.iter().find(|item| item.label == quick.typed) {
-            return self.pick(item.clone(), quick.open, quick.shifted, cx);
+            return self.pick(item.picks.clone(), quick.shifted, cx);
         }
         if quick.items.iter().any(|item| item.label.starts_with(&quick.typed)) {
             self.quick = Some(quick);
@@ -847,18 +857,17 @@ impl PaneView {
 
     /// A label typed: quick open follows its link as a Cmd+click would; quick select copies its
     /// text, and with Shift pastes it too (bracketed when the program asked for that).
-    fn pick(&mut self, item: quick::Item, open: bool, shifted: bool, cx: &mut Context<Self>) {
-        if open {
-            if let Some(link) = self.link_at(item.cells.0) {
-                self.follow(link.target, cx);
+    fn pick(&mut self, picks: Pick, shifted: bool, cx: &mut Context<Self>) {
+        match picks {
+            Pick::Open(target) => self.follow(target, cx),
+            Pick::Copy(text) => {
+                if shifted {
+                    self.paste_text(&text, cx);
+                }
+                self.copy_text(text, cx);
+                self.say(if shifted { "copied and pasted" } else { "copied" }, cx);
             }
-            return;
         }
-        if shifted {
-            self.paste_text(&item.text, cx);
-        }
-        self.copy_text(item.text, cx);
-        self.say(if shifted { "copied and pasted" } else { "copied" }, cx);
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
@@ -971,13 +980,12 @@ impl PaneView {
             let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);
         }
         if let Some(quick) = &self.quick {
-            let what = if quick.open { "open" } else { "select" };
             let items = quick.items.iter().map(|item| {
                 let ((row, col), _) = item.cells;
-                format!("{} at {},{col} {:?}", item.label, row as i64 - top as i64, item.text)
+                format!("{} at {},{col} {:?}", item.label, row as i64 - top as i64, item.picks)
             });
             let items: Vec<String> = items.collect();
-            let _ = writeln!(out, "quick {what} typed {:?}: {}", quick.typed, items.join(", "));
+            let _ = writeln!(out, "quick typed {:?}: {}", quick.typed, items.join(", "));
         }
         if let Some(search) = &self.search {
             let current = search.current.and_then(|index| search.matches.get(index));
@@ -2093,7 +2101,7 @@ impl PaneView {
         let (Some(quick), Some(grid)) = (&self.quick, self.geometry) else { return Vec::new() };
         let settings = cx.global::<Settings>();
         let top = self.pane.top(&self.pane.lock());
-        let label = |item: &quick::Item| {
+        let label = |item: &quick::Item<Pick>| {
             let rest = item.label.strip_prefix(&quick.typed)?;
             let ((row, col), _) = item.cells;
             let row = row.checked_sub(top).filter(|&row| row < u64::from(grid.rows))?;
