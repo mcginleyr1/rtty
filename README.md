@@ -110,6 +110,7 @@ shell_integration = "auto"        # the default: zsh, bash and fish load rtty's 
 notify_after = 10                 # the default: notify a command of 10 s or more that ends out of view; 0: never
 click_to_move = true              # the default: a click on the command line moves the shell's cursor there
 editor = ["nvim", "+{line}", "{path}"]  # edits the files Cmd+click opens (Links); unset: $EDITOR
+quick_select_patterns = ['[A-Z]+-\d+']  # regexes quick select labels too (Quick select)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -250,6 +251,8 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+Shift+A` | `copy-last-output` | copy the last command's output, scrollback included ([Shell integration](#shell-integration)), as iTerm2's chord does |
 | `Cmd+V` | `paste` | paste (bracketed when the program asked for it) |
 | `Cmd+F` | `find` | search the pane's scrollback and screen (below) |
+| `Cmd+Shift+Space` | `quick-select` | label what is worth copying on the pane's screen; typing a label copies it, in uppercase pastes it too (below) |
+| `Cmd+Shift+O` | `quick-open` | label the links on the pane's screen; typing a label opens it as `Cmd+click` would (below) |
 | `Cmd+Up` / `Cmd+Down` | `prompt-prev` / `prompt-next` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
 | `Cmd+K` | `clear-scrollback` | clear the pane's scrollback and screen, then send the program Ctrl+L so a shell draws its prompt again at the top, as Terminal.app does; under a full-screen program (the alternate screen: Neovim, less) only the scrollback goes, and the program is sent nothing |
 | `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
@@ -378,6 +381,20 @@ only while `Cmd` is held over it and at the click, never per frame. A click on
   would run: a directory with an extension (an app, a bundle), an executable, and a `.command`,
   `.tool`, `.terminal`, `.jar`, `.fileloc`, `.inetloc` or `.webloc` that is not text are shown in
   Finder instead.
+
+**Quick select.** `Cmd+Shift+Space` (`quick-select`; WezTerm's QuickSelect is the idea, on
+Ctrl+Shift+Space there, a Ctrl key and so a program's here) labels everything worth copying on the
+focused pane's screen: URLs, paths, git hashes (7 to 40 hex digits), IPv4 and IPv6 addresses,
+UUIDs, numbers of four digits or more, and what the regexes in `quick_select_patterns` match (a
+pattern's first group, when it has one). Of two that overlap, the one starting first is labeled.
+Each match shows on the search's yellow under a bold label in the scheme's colors inverted, which
+reads in a light scheme and a dark one alike. Labels are home-row letters (`asdfghjkl`), the
+shortest nearest the cursor, and none is the start of another: past nine matches, letters stand
+for two-letter labels. Typing a label copies its match and says so, as `copy-last-output` does;
+typing it with Shift (`A`, or `aS`) pastes it into the pane too, bracketed when the program asked
+for that. Esc puts the labels away, as does any other key, which goes nowhere else: no binding,
+no program. `Cmd+Shift+O` (`quick-open`) labels only what a `Cmd+click` would follow: URLs and
+paths to files that exist (not OSC 8 links); typing a label follows it as the click would.
 
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
 window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC
@@ -579,6 +596,9 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `editor.rs` — editing a file at a line: the msgpack-rpc call that has a Neovim running rtty's
   plugin open it, and what a new pane runs otherwise (`editor`, else `$EDITOR`, through the login
   shell); unit tested, against sh and a stand-in Neovim socket.
+- `quick.rs` — what quick select finds on screen, as cells, and its labels, nearest the cursor
+  first and none a prefix of another; unit tested. The view takes every key while they show
+  (a keystroke interceptor, ahead of the bindings).
 - `shell.rs` and `shell/` — the shell integration scripts, written into rtty's directory at
   startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
   real zsh and bash through a pty.
@@ -694,8 +714,9 @@ resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, wind
 from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
 focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
-jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouring Neovim), the
-bell, notifications (from an app bundle), a program's progress on its tab's pill
+jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouring Neovim), quick
+select and quick open, the bell, notifications (from an app bundle), a program's progress on its
+tab's pill
 and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
@@ -713,7 +734,13 @@ each with a scratch home and no integration of its own, and against zsh with a p
 itself too: the marks arrive, prompt jumps go from prompt to prompt, `Cmd+Shift+A` copies the
 last output out of the scrollback, a long command ending in a pane without the keyboard is
 notified, and a click moves the cursor across wide characters and a soft wrap. fish is not
-installed here, so its script is unchecked.
+installed here, so its script is unchecked. Paths and quick select are checked with `--script` in
+a scratch home: a printed `src/main.rs:3:5` is underlined under `Cmd` and a click runs the `editor`
+template with its line and column, or with no template the `$EDITOR` a `.zshrc` exports; a relative
+path is found from a hand-printed OSC 7 while the shell sits elsewhere; a Neovim with the plugin in
+the pane beside opens the file at its line and column and takes the keyboard; quick select labels,
+copies, pastes with Shift (through AppKit's key path too) and cancels on Esc or any other key, and
+quick open follows a URL and a path.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
@@ -761,5 +788,5 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    characters a synthesized key event carries, and composes nothing from them), a file dragged
    from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
    box, block and powerline characters, a selection dragged past a pane, notifications from
-   the `.app`, posted and clicked, closing's sheet and the window's close button, and the
-   progress line and the dock's badge.
+   the `.app`, posted and clicked, closing's sheet and the window's close button, the
+   progress line and the dock's badge, and quick select's labels over their matches.

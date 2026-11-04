@@ -11,6 +11,7 @@ mod notify;
 mod pane;
 mod progress;
 mod prompt;
+mod quick;
 mod render;
 mod scheme;
 mod script;
@@ -47,7 +48,8 @@ use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{
-    ClearScrollback, Copy, CopyLastOutput, Find, NextPrompt, Paste, PreviousPrompt, Settings,
+    ClearScrollback, Copy, CopyLastOutput, Find, NextPrompt, Paste, PreviousPrompt, QuickOpen,
+    QuickSelect, Settings,
 };
 use window::{
     ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
@@ -234,6 +236,8 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::PromptPrev => KeyBinding::new(chord, PreviousPrompt, pane),
         Action::PromptNext => KeyBinding::new(chord, NextPrompt, pane),
         Action::ClearScrollback => KeyBinding::new(chord, ClearScrollback, pane),
+        Action::QuickSelect => KeyBinding::new(chord, QuickSelect, pane),
+        Action::QuickOpen => KeyBinding::new(chord, QuickOpen, pane),
         Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
         Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
         Action::FontReset => KeyBinding::new(chord, ResetFontSize, None),
@@ -303,7 +307,7 @@ fn run(options: Options) -> Result<(), String> {
     let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
     let fallback = config.fallback;
     let click_to_move = config.click_to_move.unwrap_or(true);
-    let editor = config.editor;
+    let (editor, quick_select) = (config.editor, config.quick_select);
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
@@ -479,6 +483,7 @@ fn run(options: Options) -> Result<(), String> {
             notify_after,
             click_to_move,
             editor,
+            quick_select,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

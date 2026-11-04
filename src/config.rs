@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{Keystroke, WindowAppearance};
+use regex::Regex;
 use serde::Deserialize;
 use toml::Spanned;
 
@@ -40,6 +41,11 @@ pub struct Config {
     /// What edits a text file a Cmd+click opens, in a new pane: a program and its arguments,
     /// `{path}`, `{line}` and `{col}` filled in; unset, the shell's `$EDITOR` (`editor::command`).
     pub editor: Option<Vec<String>>,
+    /// Regexes quick select labels the matches of too (`quick_select`).
+    quick_select_patterns: Option<Vec<String>>,
+    /// `quick_select_patterns`, compiled.
+    #[serde(skip)]
+    pub quick_select: Vec<Regex>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -79,6 +85,8 @@ pub enum Action {
     PromptPrev,
     PromptNext,
     ClearScrollback,
+    QuickSelect,
+    QuickOpen,
     Quit,
 }
 
@@ -112,6 +120,8 @@ impl Action {
             "prompt-prev" => PromptPrev,
             "prompt-next" => PromptNext,
             "clear-scrollback" => ClearScrollback,
+            "quick-select" => QuickSelect,
+            "quick-open" => QuickOpen,
             "quit" => Quit,
             _ => {
                 return toward("focus")
@@ -150,6 +160,9 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
         ("cmd-up", PromptPrev),
         ("cmd-down", PromptNext),
         ("cmd-k", ClearScrollback),
+        // WezTerm's quick select is Ctrl+Shift+Space; Ctrl keys are the programs' here.
+        ("cmd-shift-space", QuickSelect),
+        ("cmd-shift-o", QuickOpen),
         ("cmd-=", FontBigger),
         ("cmd--", FontSmaller),
         ("cmd-0", FontReset),
@@ -273,6 +286,11 @@ impl Config {
         if config.editor.as_ref().is_some_and(Vec::is_empty) {
             return Err("editor = []: a program, then its arguments".into());
         }
+        let patterns = config.quick_select_patterns.iter().flatten();
+        let compiled = patterns.map(|pattern| {
+            Regex::new(pattern).map_err(|err| format!("quick_select_patterns: {pattern:?}: {err}"))
+        });
+        config.quick_select = compiled.collect::<Result<_, _>>()?;
         config.bindings = defaults(config.keys.unwrap_or_default());
         let mut lines = HashMap::new();
         for (text, name) in config.bind.iter().flatten() {
@@ -398,11 +416,15 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 37);
+        assert_eq!(defaults.len(), 39);
         assert_eq!(defaults["cmd-d"], SplitRight);
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
         assert_eq!(defaults["cmd-z"], UndoClose);
         assert_eq!(defaults["cmd-shift-a"], CopyLastOutput);
+        assert_eq!(
+            (defaults["cmd-shift-space"], defaults["cmd-shift-o"]),
+            (QuickSelect, QuickOpen)
+        );
         assert_eq!(defaults["cmd-{"], PrevTab);
         assert_eq!(defaults["cmd-9"], Tab(8));
         // As GPUI writes chords: ctrl, alt, cmd, shift.
@@ -410,7 +432,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 45);
+        assert_eq!(tutti.len(), 47);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -420,7 +442,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 45 + 3 - 2);
+        assert_eq!(mine.len(), 47 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -432,7 +454,7 @@ mod tests {
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
                      split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
-                     prompt-prev prompt-next clear-scrollback quit";
+                     prompt-prev prompt-next clear-scrollback quick-select quick-open quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
@@ -516,6 +538,21 @@ mod tests {
         assert!(
             editor("editor = 'nvim +{line} {path}'").unwrap_err().contains("expected a sequence")
         );
+    }
+
+    #[test]
+    fn quick_select_patterns_are_regexes_and_a_bad_one_is_named() {
+        let patterns = |source: &str| Config::parse(source).map(|config| config.quick_select);
+        assert!(patterns("").unwrap().is_empty());
+        let mine = patterns(r#"quick_select_patterns = ['[A-Z]+-\d+', 'sha256:(\w+)']"#).unwrap();
+        let sources: Vec<&str> = mine.iter().map(Regex::as_str).collect();
+        assert_eq!(sources, [r"[A-Z]+-\d+", r"sha256:(\w+)"]);
+        let err = patterns("quick_select_patterns = ['ok', '(unclosed']").unwrap_err();
+        assert!(
+            err.starts_with("quick_select_patterns: \"(unclosed\": regex parse error"),
+            "{err}"
+        );
+        assert!(patterns("quick_select_patterns = 'x'").is_err(), "a list, not a pattern");
     }
 
     #[test]

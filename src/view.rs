@@ -13,15 +13,16 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, DispatchPhase, Div, ElementInputHandler,
-    EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font, FontId, Global, Hsla,
-    KeyDownEvent, KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton,
+    EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font, FontId, FontWeight, Global,
+    Hsla, KeyDownEvent, KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels, Point, Render,
-    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun,
+    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Subscription, Task, TextRun,
     UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
     div, fill, outline, point, prelude::*, px, size,
 };
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
+use regex::Regex;
 use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
@@ -34,6 +35,7 @@ use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::progress::{self, Progress};
 use crate::prompt;
+use crate::quick;
 use crate::render::{self, CursorShape, Drawn, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
@@ -41,7 +43,20 @@ use crate::selection::{Kind, Point as GridPoint, Selection, Side};
 use crate::title::{self, Title};
 use crate::window::{ClosePane, LastPane, MoveFocus, ResizePane};
 
-actions!(rtty, [Copy, CopyLastOutput, Paste, Find, PreviousPrompt, NextPrompt, ClearScrollback]);
+actions!(
+    rtty,
+    [
+        Copy,
+        CopyLastOutput,
+        Paste,
+        Find,
+        PreviousPrompt,
+        NextPrompt,
+        ClearScrollback,
+        QuickSelect,
+        QuickOpen
+    ]
+);
 
 /// How long a synchronized update (DEC mode 2026) may hold the last frame on screen.
 const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
@@ -98,6 +113,8 @@ pub struct Settings {
     pub click_to_move: bool,
     /// `editor`: what edits a file in a new pane, else the shell's `$EDITOR`.
     pub editor: Option<Vec<String>>,
+    /// `quick_select_patterns`: what quick select labels besides what it knows.
+    pub quick_select: Vec<Regex>,
 }
 
 impl Global for Settings {}
@@ -141,6 +158,10 @@ pub struct PaneView {
     blink_wake: Option<Task<()>>,
     /// Cmd+F's search, while its bar is open.
     search: Option<Search>,
+    /// Quick select's labels, while they show.
+    quick: Option<Quick>,
+    /// Every key goes to `quick_key` first, ahead of the bindings and the program.
+    _keys: Subscription,
     /// Where the pointer last was over the pane.
     pointer: Option<Point<Pixels>>,
     /// The link under the pointer while Cmd is held, and its target when its text is not that
@@ -177,6 +198,15 @@ struct Search {
     error: Option<String>,
     /// The look again that output asked for, a moment after it.
     refresh: Option<Task<()>>,
+}
+
+/// Quick select or quick open, labels on screen: what each picks, the letters typed so far, and
+/// whether one of them was typed with Shift.
+struct Quick {
+    open: bool,
+    items: Vec<quick::Item>,
+    typed: String,
+    shifted: bool,
 }
 
 /// What a pane tells the window that holds it.
@@ -314,6 +344,10 @@ impl PaneView {
             }
         })
         .detach();
+        let this = cx.weak_entity();
+        let keys = cx.intercept_keystrokes(move |event, window, cx| {
+            this.update(cx, |view, cx| view.quick_key(&event.keystroke, window, cx)).ok();
+        });
         let (rows, cols) = pane.lock().size();
         let mut view = Self {
             pane,
@@ -336,6 +370,8 @@ impl PaneView {
             blink_since: None,
             blink_wake: None,
             search: None,
+            quick: None,
+            _keys: keys,
             pointer: None,
             link: None,
             followed: Vec::new(),
@@ -354,7 +390,11 @@ impl PaneView {
 
     /// The keyboard came to or left this pane, or the window was activated or deactivated: draw
     /// the cursor accordingly and tell a program that asked (mode 1004) with `CSI I` / `CSI O`.
+    /// Quick select's labels go with the keyboard.
     fn focus_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            self.quick = None;
+        }
         let focused = self.focus.is_focused(window) && window.is_window_active();
         if mem::replace(&mut self.focused, focused) != focused
             && self.pane.lock().modes().focus_reports
@@ -472,14 +512,17 @@ impl PaneView {
         }));
     }
 
-    /// Puts the link under the pointer, and the search's matches in view and the current one,
-    /// into `scene`.
+    /// Puts the link under the pointer, quick select's matches, and the search's matches in view
+    /// and the current one, into `scene`.
     fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
         scene.link = self.link.as_ref().map(|(link, _)| (link.start, link.end));
+        if let Some(quick) = &self.quick {
+            scene.matches.extend(quick.items.iter().map(|item| item.cells));
+        }
         let Some(search) = &self.search else { return };
         let bottom = top + u64::from(rows);
         let in_view = |found: &&Match| found.1.0 >= top && found.0.0 < bottom;
-        scene.matches = search.matches.iter().filter(in_view).copied().collect();
+        scene.matches.extend(search.matches.iter().filter(in_view));
         scene.current_match = search.current.and_then(|index| search.matches.get(index).copied());
     }
 
@@ -723,17 +766,27 @@ impl PaneView {
     /// moment.
     fn copy_last_output(&mut self, _: &CopyLastOutput, _: &mut Window, cx: &mut Context<Self>) {
         let output = prompt::last_output(&self.pane.lock());
-        let status = match output.as_deref() {
+        let status = match output {
             None => "no command output to copy",
-            Some("") => "the last command printed nothing",
+            Some(text) if text.is_empty() => "the last command printed nothing",
             Some(text) => {
-                if cx.global::<Settings>().clipboard {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-                }
-                self.copied = Some(text.to_owned());
+                self.copy_text(text, cx);
                 "copied the last command's output"
             }
         };
+        self.say(status, cx);
+    }
+
+    /// Copies `text` (under `--script`, only into the dump).
+    fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
+        if cx.global::<Settings>().clipboard {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        }
+        self.copied = Some(text);
+    }
+
+    /// Says `status` at the pane's bottom right for a moment.
+    fn say(&mut self, status: &'static str, cx: &mut Context<Self>) {
         self.status = Some((status, Instant::now()));
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -741,6 +794,66 @@ impl PaneView {
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
+    }
+
+    /// Quick select, or quick open: labels what is worth copying on screen (`quick::found`), or
+    /// the links there that a Cmd+click would follow, until a label or any other key is typed
+    /// (`quick_key`).
+    fn quick(&mut self, open: bool, cx: &mut Context<Self>) {
+        let term = self.pane.lock();
+        let (top, (row, col)) = (self.pane.top(&term), term.cursor_position());
+        let patterns = &cx.global::<Settings>().quick_select;
+        let found = quick::found(&term, top, self.grid.0, patterns, open).into_iter();
+        let opens = |cells: &Match| links::link_at(&term, cells.0, || self.pane.foreground()?.cwd);
+        let found = found.filter(|(cells, _)| !open || opens(cells).is_some()).collect();
+        let items = quick::labeled(found, (term.screen_top() + u64::from(row), col));
+        drop(term);
+        if items.is_empty() {
+            return self.say(if open { "nothing to open" } else { "nothing to select" }, cx);
+        }
+        self.quick = Some(Quick { open, items, typed: String::new(), shifted: false });
+        cx.notify();
+    }
+
+    /// Every key while quick select's labels show in this pane is theirs, never a binding's or
+    /// the program's: the letters of a label pick it (`pick`), and Esc or any other key puts the
+    /// labels away.
+    fn quick_key(&mut self, keystroke: &Keystroke, window: &Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let Some(mut quick) = self.quick.take() else { return };
+        cx.stop_propagation();
+        cx.notify();
+        let mods = keystroke.modifiers;
+        let letter = keystroke.key.chars().count() == 1;
+        if !letter || mods.control || mods.alt || mods.platform || mods.function {
+            return;
+        }
+        quick.typed.push_str(&keystroke.key);
+        quick.shifted |= mods.shift;
+        if let Some(item) = quick.items.iter().find(|item| item.label == quick.typed) {
+            return self.pick(item.clone(), quick.open, quick.shifted, cx);
+        }
+        if quick.items.iter().any(|item| item.label.starts_with(&quick.typed)) {
+            self.quick = Some(quick);
+        }
+    }
+
+    /// A label typed: quick open follows its link as a Cmd+click would; quick select copies its
+    /// text, and with Shift pastes it too (bracketed when the program asked for that).
+    fn pick(&mut self, item: quick::Item, open: bool, shifted: bool, cx: &mut Context<Self>) {
+        if open {
+            if let Some(link) = self.link_at(item.cells.0) {
+                self.follow(link.target, cx);
+            }
+            return;
+        }
+        if shifted {
+            self.paste_text(&item.text, cx);
+        }
+        self.copy_text(item.text, cx);
+        self.say(if shifted { "copied and pasted" } else { "copied" }, cx);
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
@@ -851,6 +964,15 @@ impl PaneView {
         }
         if self.link.is_some() || !self.followed.is_empty() {
             let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);
+        }
+        if let Some(quick) = &self.quick {
+            let what = if quick.open { "open" } else { "select" };
+            let items = quick.items.iter().map(|item| {
+                let ((row, col), _) = item.cells;
+                format!("{} at {},{col} {:?}", item.label, row as i64 - top as i64, item.text)
+            });
+            let items: Vec<String> = items.collect();
+            let _ = writeln!(out, "quick {what} typed {:?}: {}", quick.typed, items.join(", "));
         }
         if let Some(search) = &self.search {
             let current = search.current.and_then(|index| search.matches.get(index));
@@ -1878,6 +2000,8 @@ impl Render for PaneView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::find))
             .on_action(cx.listener(Self::clear_scrollback))
+            .on_action(cx.listener(|view, _: &QuickSelect, _, cx| view.quick(false, cx)))
+            .on_action(cx.listener(|view, _: &QuickOpen, _, cx| view.quick(true, cx)))
             .on_action(cx.listener(|view, _: &PreviousPrompt, _, cx| {
                 view.pane.jump_to_prompt(true);
                 cx.notify();
@@ -1931,6 +2055,7 @@ impl Render for PaneView {
             .children(self.search_bar(cx))
             .children(self.link_target(cx))
             .children(self.status_label(cx))
+            .children(self.quick_labels(cx))
     }
 }
 
@@ -1955,6 +2080,33 @@ impl PaneView {
     fn link_target(&self, cx: &App) -> Option<Div> {
         let (_, target) = self.link.as_ref()?;
         Some(self.label(target.clone()?, cx).bottom(px(0.)).left(px(0.)))
+    }
+
+    /// Quick select's labels over the first cells of their matches, bold, in the scheme's colors
+    /// inverted: what is left to type of each label the letters typed so far begin.
+    fn quick_labels(&self, cx: &App) -> Vec<Div> {
+        let (Some(quick), Some(grid)) = (&self.quick, self.geometry) else { return Vec::new() };
+        let settings = cx.global::<Settings>();
+        let top = self.pane.top(&self.pane.lock());
+        let label = |item: &quick::Item| {
+            let rest = item.label.strip_prefix(&quick.typed)?;
+            let ((row, col), _) = item.cells;
+            let row = row.checked_sub(top).filter(|&row| row < u64::from(grid.rows))?;
+            let label = div()
+                .absolute()
+                .left(grid.cell.width * f32::from(col))
+                .top(grid.cell.height * row as f32)
+                .h(grid.cell.height)
+                .line_height(grid.cell.height)
+                .font(settings.font.clone())
+                .text_size(settings.font_size)
+                .font_weight(FontWeight::BOLD)
+                .bg(hsla(self.scheme.color(FOREGROUND)))
+                .text_color(hsla(self.scheme.color(BACKGROUND)))
+                .child(rest.to_owned());
+            Some(label)
+        };
+        quick.items.iter().filter_map(label).collect()
     }
 
     /// What a key just did, bottom right, for a moment.
