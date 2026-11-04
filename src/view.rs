@@ -13,12 +13,12 @@ use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
     App, BorderStyle, Bounds, ClipboardItem, Context, DispatchPhase, Div, ElementInputHandler,
-    EntityInputHandler, EventEmitter, FocusHandle, Font, FontId, Global, Hsla, KeyDownEvent,
-    KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels, Point, Render, Rgba,
-    ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
-    outline, point, prelude::*, px, size,
+    EntityInputHandler, EventEmitter, ExternalPaths, FocusHandle, Font, FontId, Global, Hsla,
+    KeyDownEvent, KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels, Point, Render,
+    Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas,
+    div, fill, outline, point, prelude::*, px, size,
 };
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
@@ -600,16 +600,32 @@ impl PaneView {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.paste_text(&text, cx);
+        }
+    }
+
+    /// Text pasted or dropped: its first line into the query while the search bar is open, else
+    /// to the program, bracketed when it asked for bracketed paste.
+    fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if let Some(search) = self.search.as_mut() {
             search.query.text.push_str(text.lines().next().unwrap_or_default());
             self.research(true);
             return cx.notify();
         }
         let bracketed = self.pane.lock().modes().bracketed_paste;
-        self.input(keys::paste(&text, bracketed), cx);
+        self.input(keys::paste(text, bracketed), cx);
+    }
+
+    /// Files dropped on the pane, from Finder or `--script`'s `drop`: the pane takes the keyboard
+    /// and their paths are pasted, escaped for a shell (`keys::dropped`).
+    pub fn drop_paths(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus);
+        cx.emit(PaneEvent::Focused);
+        match keys::dropped(paths) {
+            Some(text) => self.paste_text(&text, cx),
+            None => crate::note("a drop typed nothing: a path held a control character"),
+        }
     }
 
     /// The cell under `position` as (row in view, column), and which half of it.
@@ -1676,6 +1692,9 @@ impl Render for PaneView {
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::mouse_up))
             .on_mouse_move(cx.listener(Self::mouse_move))
+            .on_drop(cx.listener(|view, dropped: &ExternalPaths, window, cx| {
+                view.drop_paths(dropped.paths(), window, cx)
+            }))
             .child(
                 canvas(
                     move |bounds, window, cx: &mut App| {

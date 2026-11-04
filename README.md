@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags and the wheel at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -235,6 +235,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
 | divider drag | | resize the panes on either side |
+| file drop | | files dragged from Finder onto a pane type their paths there, separated by spaces, with a backslash before each character a shell reads specially (`/tmp/Screen\ Shot.png`, `it\'s`), and non-ASCII as it is; a paste, bracketed when the program asked for that, so an agent such as Claude Code gets a dropped screenshot's path as pasted text. The pane takes the keyboard. A path holding a control character, which would arrive as a key (Enter, Ctrl+U), types nothing |
 | tab click | | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
 | double click on the bar | | zoom the window, as on any titlebar (System Settings decides what a double click does) |
 | wheel | | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
@@ -433,7 +434,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to
   one action per chord (the defaults, `keys`, then `[bind]`) that `main.rs` binds in GPUI.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
-  protocol, and a claimed chord's Cmd as kitty's super) and paste wrapping, unit tested.
+  protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
+  escaped for a shell, unit tested (the escaping against sh and zsh themselves).
 - `script.rs` — `--script`, which drives the real window the way a person would and dumps what it
   draws; how rtty is checked against Neovim, Emacs and the rest without a screenshot.
 
@@ -555,5 +557,6 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    rtty.log now records each Cmd chord as AppKit hands it over and as GPUI dispatches it, so the
    next one says which layer takes it.
 2. **A look on screen** at what scripts check only in the dump: IME with a real input method,
-   the drawn box, block and powerline characters, a selection dragged past a pane, and
-   notifications from the `.app`, posted and clicked.
+   a file dragged from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
+   box, block and powerline characters, a selection dragged past a pane, and notifications from
+   the `.app`, posted and clicked.

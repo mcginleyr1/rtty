@@ -21,6 +21,8 @@
 //!                        the end may be past the panes (negative rows are above them)
 //! move ROW COL [cmd]     with no button; `cmd` holds Cmd, as over a link
 //! wheel ROW COL LINES    positive scrolls up
+//! drop ROW COL "PATH"... files dropped from Finder onto the pane there, each path a JSON string
+//!                        ("/tmp/a b.png" "/tmp/café.png"), through the pane's drop handler
 //! focus in|out           the keyboard comes to the focused pane or leaves the window's elements
 //! bar click tab N        in the titlebar's bar: the pointer onto tab N's pill (from 1), then a
 //!                        press and release there
@@ -62,6 +64,7 @@ pub enum Step {
     Drag { from: (i32, i32), to: (i32, i32), hold: Duration },
     Move { row: u16, col: u16, cmd: bool },
     Wheel { row: u16, col: u16, lines: f32 },
+    Drop { row: u16, col: u16, paths: Vec<PathBuf> },
     Focus(bool),
     BarClick(Hit),
     BarHover(Option<Hit>),
@@ -163,6 +166,17 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 let lines = args.get(2).and_then(|lines| lines.parse().ok());
                 let lines = lines.ok_or_else(|| error("a number of lines expected"))?;
                 Step::Wheel { row: cell[0], col: cell[1], lines }
+            }
+            "drop" => {
+                let cell = numbers(2)?;
+                let quoted = rest.splitn(3, ' ').nth(2).unwrap_or_default();
+                let paths: Result<Vec<PathBuf>, _> =
+                    serde_json::Deserializer::from_str(quoted).into_iter().collect();
+                let paths = paths.map_err(|_| error("paths as JSON strings expected"))?;
+                if paths.is_empty() {
+                    return Err(error("a path expected"));
+                }
+                Step::Drop { row: cell[0], col: cell[1], paths }
             }
             "focus" => match rest.trim() {
                 "in" => Step::Focus(true),
@@ -344,6 +358,15 @@ async fn perform(
             };
             dispatch(Mouse::Wheel(wheel), cx)?;
         }
+        Step::Drop { row, col, paths } => {
+            let position = center((*row).into(), (*col).into(), cx)?;
+            this.update_in(cx, |this, window, cx| {
+                let pane = this.pane_at(position, window, cx).ok_or("no pane there")?;
+                pane.update(cx, |pane, cx| pane.drop_paths(paths, window, cx));
+                Ok::<_, String>(())
+            })
+            .map_err(|err| err.to_string())??
+        }
         Step::Focus(true) => pane
             .update_in(cx, |pane, window, _| pane.focus(window))
             .map_err(|err| err.to_string())?,
@@ -519,6 +542,13 @@ mod tests {
         );
         assert!(matches!(drags[1].1, Step::Drag { to: (7, 8), hold: Duration::ZERO, .. }));
         assert!(parse("drag 1 2 3").unwrap_err().contains("ROW COL ROW COL [MS] expected"));
+        let drop = parse(r#"drop 2 7 "/tmp/a b.png" "/tmp/it's \"x\"" "/tmp/café""#).unwrap();
+        let paths = ["/tmp/a b.png", "/tmp/it's \"x\"", "/tmp/café"].map(PathBuf::from);
+        assert!(
+            matches!(&drop[0].1, Step::Drop { row: 2, col: 7, paths: dropped } if *dropped == paths)
+        );
+        assert!(parse("drop 2 7").unwrap_err().contains("a path expected"));
+        assert!(parse("drop 2 7 /tmp/a").unwrap_err().contains("paths as JSON strings expected"));
         let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
         assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
         assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));

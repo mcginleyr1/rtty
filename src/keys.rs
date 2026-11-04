@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gpui::Keystroke;
 
 /// How the program asked for keys: DECCKM, xterm's modifyOtherKeys and the kitty keyboard flags.
@@ -260,6 +262,27 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// What sh, bash, zsh or fish read as something other than itself somewhere in a word.
+const SHELL_SPECIAL: &str = " !\"#$&'()*;<>?[\\]^`{|}~";
+
+/// Dropped files' paths as a shell reads them back, separated by spaces: every character a shell
+/// treats specially behind a backslash, the rest (non-ASCII included) as it is. `None` when a path
+/// holds a control character, which reaches the shell's line editor as a key (Enter, Ctrl+U,
+/// Ctrl+D) whatever quotes it.
+pub fn dropped(paths: &[PathBuf]) -> Option<String> {
+    let quoted = paths.iter().map(|path| {
+        let path = path.to_str().filter(|path| !path.chars().any(char::is_control))?;
+        Some(path.chars().fold(String::new(), |mut quoted, c| {
+            if SHELL_SPECIAL.contains(c) {
+                quoted.push('\\');
+            }
+            quoted.push(c);
+            quoted
+        }))
+    });
+    quoted.collect::<Option<Vec<String>>>().map(|paths| paths.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +502,47 @@ mod tests {
         assert_eq!(paste("a\nb", true), b"\x1b[200~a\nb\x1b[201~");
         assert_eq!(paste("a\x1b[201~b", true), b"\x1b[200~a[201~b\x1b[201~");
         assert_eq!(paste("a\r\nb\nc", false), b"a\rb\rc");
+    }
+
+    const AWKWARD: [&str; 5] = [
+        "/tmp/shot.png",
+        "/tmp/Screen Shot 2026-11-04 at 9.41.07.png",
+        "/tmp/it's \"done\".txt",
+        "/tmp/café 日本/naïve.md",
+        "/tmp/a$(b)&c;d|e*f?[g]{h}<i>!j#k~l^m`n\\o",
+    ];
+
+    #[test]
+    fn dropped_paths_escape_what_a_shell_would_read_otherwise() {
+        let drop = |paths: &[&str]| dropped(&paths.iter().map(PathBuf::from).collect::<Vec<_>>());
+        assert_eq!(drop(&AWKWARD[..1]).unwrap(), "/tmp/shot.png");
+        assert_eq!(
+            drop(&AWKWARD[1..3]).unwrap(),
+            "/tmp/Screen\\ Shot\\ 2026-11-04\\ at\\ 9.41.07.png /tmp/it\\'s\\ \\\"done\\\".txt"
+        );
+        assert_eq!(drop(&AWKWARD[3..4]).unwrap(), "/tmp/café\\ 日本/naïve.md");
+        assert_eq!(
+            drop(&AWKWARD[4..]).unwrap(),
+            "/tmp/a\\$\\(b\\)\\&c\\;d\\|e\\*f\\?\\[g\\]\\{h\\}\\<i\\>\\!j\\#k\\~l\\^m\\`n\\\\o"
+        );
+        for control in ["/tmp/a\nb", "/tmp/a\rls", "/tmp/a\x1b[201~", "/tmp/a\u{85}b"] {
+            assert_eq!(drop(&["/tmp/fine", control]), None, "{control:?}");
+        }
+    }
+
+    /// The shells themselves read each path back whole, as `printf` shows.
+    #[test]
+    fn shells_read_dropped_paths_back_as_they_were() {
+        let paths: Vec<PathBuf> = AWKWARD.iter().map(PathBuf::from).collect();
+        let words = dropped(&paths).unwrap();
+        for shell in ["/bin/sh", "/bin/zsh"] {
+            let output = std::process::Command::new(shell)
+                .args(["-c", &format!("printf '%s\\n' {words}")])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{shell}: {output:?}");
+            let read = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(read.lines().collect::<Vec<_>>(), AWKWARD, "{shell}");
+        }
     }
 }
