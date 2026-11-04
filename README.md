@@ -943,8 +943,7 @@ insert mode is a bar), and a hollow block while the window or pane is not focuse
 DECSCUSR asks for blinking, or, while DECSCUSR is at its default, when ATT610 (`CSI ? 12 h`) does;
 it stops blinking and stays on after 10 s without a key, so an idle window draws nothing.
 
-Not yet: in a launch where rtty's window is key, Cmd+D has quit rtty instead of splitting and
-Cmd+F has done nothing ([Roadmap](#roadmap)). IME is wired through GPUI's input handler
+Not yet: IME is wired through GPUI's input handler
 (composition is drawn at the cursor and the candidate window is placed there) but unverified
 with a real input method; emoji and CJK rely on CoreText's font fallback (an emoji wider than its
 two cells is drawn smaller to fit them); the drawn box, block and powerline characters and a
@@ -991,12 +990,7 @@ from kitty's GPL source: the graphics protocol is implemented from its documenta
 
 The one item this held, tutti knowing rtty, has shipped (Status, above). What is left:
 
-1. **Cmd+D and Cmd+F in a normal launch.** There, with rtty's window key in the active app, Cmd+D
-   has quit rtty instead of splitting and Cmd+F has done nothing. No `--script` run reproduces
-   it, `nskey` through NSApplication included, because a scripted window never becomes key.
-   rtty.log now records each Cmd chord as AppKit hands it over and as GPUI dispatches it, so the
-   next one says which layer takes it.
-2. **A look on screen** at what scripts check only in the dump: IME with a real input method,
+1. **A look on screen** at what scripts check only in the dump: IME with a real input method,
    a dead key on the Option that is not Alt (é from Option+E, E: the text input inserts the
    characters a synthesized key event carries, and composes nothing from them), a file dragged
    from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
@@ -1004,4 +998,11 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    the `.app`, posted and clicked, closing's sheet and the window's close button, the
    progress line and the dock's badge, quick select's labels over their matches, the menu bar
    and a click on its items, the dock's Quit and a logout, Secure Keyboard Entry's lock and
-   check mark, a real press of the global hotkey, and a clipboard read's sheet.
+   check mark, a real press of the global hotkey, a clipboard read's sheet, kitty images and
+   their placeholders, the config reload's banner, and a restored window landing on its own
+   display.
+
+Cmd+D and Cmd+F, which once quit rtty and did nothing in a launch where its window was key,
+split and search in the installed app since a reinstall (seen on screen; the cause was never
+pinned down). rtty.log still records each Cmd chord as AppKit hands it over and as GPUI
+dispatches it, should it come back.
