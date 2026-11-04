@@ -56,6 +56,29 @@ every panic, on any thread, with its backtrace. Never what a pane shows or is se
 keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
 why) or panicked (and where).
 
+**Install.** With [just](https://github.com/casey/just):
+
+```sh
+just install                          # /Applications/rtty.app, and ~/.local/bin/rtty
+just install ~/Applications ~/bin     # somewhere else: the app's folder, then the link's
+just uninstall                        # the same arguments as install
+just bundle                           # only build target/rtty.app
+```
+
+`just install` builds the release binary, assembles `rtty.app` (the binary, `bundle/Info.plist`
+with Cargo.toml's version filled in, the icon), signs it, replaces the `rtty.app` in the folder,
+and links `~/.local/bin/rtty` to the binary inside it, so `rtty cli` works from any shell with
+`~/.local/bin` on its `PATH`. `just uninstall` removes the app, and the link only when it is the
+one install made. The signature is ad hoc (`codesign --sign -`, no developer identity), which is
+all an app built on the Mac that runs it needs: Gatekeeper's notarization check applies to
+downloaded apps, and a local build is not one.
+
+**The icon.** `bundle/icon.py` draws it from shapes, no fonts: a ❯_ prompt in One Dark Pro's
+colors on macOS's rounded app-icon square, with Pillow at 4× and downsampled. `just icon` (needs
+[uv](https://docs.astral.sh/uv/)) reruns it and rebuilds `bundle/rtty.icns` with `sips` and
+`iconutil`, leaving `target/icon/icon-sizes.png`, the icon at 16 to 256 px, to check it still
+reads small.
+
 ## Configuration
 
 `~/.config/rtty/config.toml` (`$XDG_CONFIG_HOME/rtty/config.toml` when that is set). Every key is
@@ -226,18 +249,11 @@ window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;noti
 window; clicking one brings rtty forward at its pane. macOS posts notifications only for an app
 with a bundle identifier: unbundled (`cargo run`), `UNUserNotificationCenter` aborts the process
 and the old `NSUserNotificationCenter` drops what it is given, so rtty posts nothing and says so
-once on stderr. The least that works is a minimal, ad-hoc signed `.app`:
-
-```sh
-cargo build --release
-mkdir -p target/rtty.app/Contents/MacOS
-cp target/release/rtty target/rtty.app/Contents/MacOS/
-cp bundle/Info.plist target/rtty.app/Contents/
-codesign --force --sign - target/rtty.app
-open target/rtty.app    # or run target/rtty.app/Contents/MacOS/rtty with arguments
-```
-
-The bundle's first notification asks for permission (System Settings › Notifications › rtty).
+once on stderr. An ad-hoc signed `rtty.app` is enough: `just install` puts one in
+`/Applications`, and `just bundle` builds one in `target/` (see [Install](#build-and-run)); run
+`target/rtty.app/Contents/MacOS/rtty` with arguments to try a build there. The bundle's first
+notification asks for permission (System Settings › Notifications › rtty), which macOS ties to
+its identifier, `local.rtty`.
 
 The terminal gets printable text (through the platform input handler, so dead keys and IME
 composition go through macOS), Enter, Backspace, Tab, Shift+Tab, Esc, the arrows,
