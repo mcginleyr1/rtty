@@ -3,6 +3,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{Keystroke, WindowAppearance};
 use serde::Deserialize;
@@ -32,8 +33,8 @@ pub struct Config {
     /// `undo-close`; 0 closes at once.
     pub undo_timeout: Option<u64>,
     pub shell_integration: Option<ShellIntegration>,
-    /// Seconds a command must run for its end out of view to be notified; 0 for never.
-    pub notify_after: Option<u64>,
+    /// Seconds a command must run for its end out of view to be notified (`notify_after()`).
+    notify_after: Option<u64>,
     /// A click on the command line being typed moves the shell's cursor there.
     pub click_to_move: Option<bool>,
     scheme: Option<String>,
@@ -291,6 +292,13 @@ impl Config {
         Ok(config)
     }
 
+    /// How long a command must run for its end out of view to be notified: `notify_after`
+    /// seconds, 10 when it is left out; `None`, never, for 0.
+    pub fn notify_after(&self) -> Option<Duration> {
+        let seconds = self.notify_after.unwrap_or(10);
+        (seconds > 0).then(|| Duration::from_secs(seconds))
+    }
+
     /// `scheme` pins one scheme; otherwise `scheme_dark` and `scheme_light` follow the OS.
     pub fn theme(&self, schemes: &[Scheme]) -> Result<Theme, String> {
         match (&self.scheme, &self.scheme_dark, &self.scheme_light) {
@@ -511,11 +519,14 @@ mod tests {
     fn shell_integration_keys_read_as_written() {
         let defaults: Config = toml::from_str("").unwrap();
         assert_eq!(defaults.shell_integration.unwrap_or_default(), ShellIntegration::Auto);
-        assert_eq!((defaults.notify_after, defaults.click_to_move), (None, None));
+        assert_eq!(defaults.notify_after(), Some(Duration::from_secs(10)), "the default notifies");
+        assert_eq!(defaults.click_to_move, None);
         let source = "shell_integration = 'none'\nnotify_after = 0\nclick_to_move = false";
         let config: Config = toml::from_str(source).unwrap();
         assert_eq!(config.shell_integration, Some(ShellIntegration::None));
-        assert_eq!((config.notify_after, config.click_to_move), (Some(0), Some(false)));
+        assert_eq!((config.notify_after(), config.click_to_move), (None, Some(false)));
+        let soon: Config = toml::from_str("notify_after = 3").unwrap();
+        assert_eq!(soon.notify_after(), Some(Duration::from_secs(3)));
         let err = toml::from_str::<Config>("shell_integration = 'zsh'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `zsh`, expected `auto` or `none`"), "{err}");
         assert!(toml::from_str::<Config>("notify_after = -1").is_err());

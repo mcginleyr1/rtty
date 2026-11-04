@@ -271,6 +271,7 @@ fn run(options: Options) -> Result<(), String> {
         .flat_map(|home| [home.join("rtty/colors"), home.join("wezterm/colors")])
         .collect();
     let theme = config.theme(&scheme::load(&scheme_dirs)?)?;
+    let notify_after = config.notify_after();
     let family = options.font.or(config.font).unwrap_or_else(|| "Menlo".into());
     let font_size = options.size.or(config.size).unwrap_or(14.);
     let ligatures = options.ligatures.or(config.ligatures).unwrap_or(true);
@@ -300,7 +301,6 @@ fn run(options: Options) -> Result<(), String> {
     let confirm_close = config.confirm_close.unwrap_or(true);
     let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
     let fallback = config.fallback;
-    let notify_after = config.notify_after.filter(|&seconds| seconds > 0).map(Duration::from_secs);
     let click_to_move = config.click_to_move.unwrap_or(true);
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
