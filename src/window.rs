@@ -35,7 +35,17 @@ use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
 actions!(
     rtty,
-    [NewWindow, NewTab, ClosePane, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab]
+    [
+        NewWindow,
+        NewTab,
+        ClosePane,
+        LastPane,
+        SplitRight,
+        SplitDown,
+        ToggleZoom,
+        PreviousTab,
+        NextTab
+    ]
 );
 
 /// Moves the keyboard to the nearest pane that way. `keystroke` is the chord bound to it, which
@@ -1020,6 +1030,10 @@ impl Render for TerminalWindow {
             }))
             .on_action(cx.listener(|this, action: &ResizePane, window, cx| {
                 this.resize(this.tabs.active().focus(), action.direction, RESIZE_STEP, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &LastPane, window, cx| {
+                this.tabs.active_mut().focus_previous();
+                this.focus_shown(window, cx);
             }))
             .on_action(cx.listener(|this, action: &SwapPane, window, cx| {
                 let (area, ..) = this.area(window, cx);

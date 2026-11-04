@@ -203,6 +203,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+Opt+arrows` | `focus-left`, `-right`, `-up`, `-down` | focus the nearest pane that way |
 | `Cmd+Ctrl+arrows` | `resize-left`, `-right`, `-up`, `-down` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
 | `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | `focus-…`, `resize-…` | with `keys = "tutti"` only: focus and resize, as in tutti |
+| none | `last-pane` | focus the pane the focus came from in this tab, and back again, as Vim's `wincmd p` does; nothing once that pane has closed |
 | none | `swap-left`, `-right`, `-up`, `-down` | trade places with the pane focus would go to that way; the splits stay, and the focus goes with the pane |
 | `Cmd+Shift+Enter` | `zoom` | zoom the pane to fill its tab, or back |
 | `Cmd+C` | `copy` | copy the selection |
@@ -388,8 +389,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `layout.rs` — a window's tabs, each a tree of splits with ratios, in cells, with no GPUI in it
   and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
   gets fewer than two across a split), split and close with the cascade to tab and window, a
-  divider dragged to a cell or moved by a resize, focus by direction, a swap with the pane that
-  way, zoom.
+  divider dragged to a cell or moved by a resize, focus by direction and back to the last pane, a
+  swap with the pane that way, zoom.
 - `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
   for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
 - `window.rs` — `TerminalWindow`: one window's tabs, the bar (drawn where `tabbar` puts it, in a

@@ -103,6 +103,8 @@ pub struct Divider {
 pub struct Layout {
     root: Node,
     focus: PaneId,
+    /// The pane that had the focus before, while it is open.
+    previous: Option<PaneId>,
     zoomed: bool,
     /// When each pane last had the focus, to choose between neighbours.
     focused_at: HashMap<PaneId, u64>,
@@ -114,6 +116,7 @@ impl Layout {
         Layout {
             root: Node::Pane(pane),
             focus: pane,
+            previous: None,
             zoomed: false,
             focused_at: HashMap::from([(pane, 0)]),
             clock: 0,
@@ -132,8 +135,20 @@ impl Layout {
         if self.panes().contains(&pane) {
             self.clock += 1;
             self.focused_at.insert(pane, self.clock);
+            if pane != self.focus {
+                self.previous = Some(self.focus);
+            }
             self.focus = pane;
         }
+    }
+
+    /// Moves the focus back to the pane that had it before, as Vim's `wincmd p` does, leaving
+    /// zoom; the pane it moved to, or `None` when there is none or it has closed.
+    pub fn focus_previous(&mut self) -> Option<PaneId> {
+        let pane = self.previous?;
+        self.zoomed = false;
+        self.set_focus(pane);
+        Some(pane)
     }
 
     /// Every pane, left to right and top to bottom as the tree has them.
@@ -170,6 +185,9 @@ impl Layout {
         if self.focus == pane {
             self.zoomed = false;
             self.set_focus(sibling);
+        }
+        if self.previous == Some(pane) {
+            self.previous = None;
         }
         false
     }
@@ -838,6 +856,32 @@ mod tests {
         assert_eq!(layout.neighbor(3, Direction::Left, AREA, false), Some(1));
         // From 5 to the left only 2 overlaps.
         assert_eq!(layout.neighbor(5, Direction::Left, AREA, false), Some(2));
+    }
+
+    #[test]
+    fn the_previous_focus_comes_back_until_it_closes() {
+        // Focused 1, then 2, then 3.
+        let mut layout = three();
+        assert_eq!(layout.focus_previous(), Some(2));
+        assert_eq!(layout.focus(), 2);
+        // Back and forth, as Vim's `wincmd p` goes; focusing the focused pane is no move.
+        assert_eq!(layout.focus_previous(), Some(3));
+        layout.set_focus(3);
+        assert_eq!(layout.focus_previous(), Some(2));
+        // It leaves zoom.
+        layout.toggle_zoom();
+        assert_eq!(layout.focus_previous(), Some(3));
+        assert!(!layout.zoomed());
+        // A closed pane is not replaced by one focused longer ago.
+        layout.close(2);
+        assert_eq!(layout.focus_previous(), None);
+        assert_eq!(layout.focus(), 3);
+        // Closing the focused pane passes the focus on; the closed one was the previous.
+        layout.set_focus(1);
+        layout.close(1);
+        assert_eq!(layout.focus(), 3);
+        assert_eq!(layout.focus_previous(), None);
+        assert_eq!(Layout::new(1).focus_previous(), None);
     }
 
     #[test]

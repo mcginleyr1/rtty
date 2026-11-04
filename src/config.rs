@@ -42,6 +42,7 @@ pub enum Action {
     SplitRight,
     SplitDown,
     ClosePane,
+    LastPane,
     Zoom,
     NewTab,
     NextTab,
@@ -72,6 +73,7 @@ impl Action {
             "split-right" => SplitRight,
             "split-down" => SplitDown,
             "close-pane" => ClosePane,
+            "last-pane" => LastPane,
             "zoom" => Zoom,
             "new-tab" => NewTab,
             "next-tab" => NextTab,
@@ -346,9 +348,9 @@ mod tests {
     fn every_action_has_its_name() {
         let names = "focus-left focus-right focus-up focus-down resize-left resize-right \
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
-                     split-down close-pane zoom new-tab \
-                     next-tab prev-tab tab-1 tab-9 new-window find copy paste font-bigger \
-                     font-smaller prompt-prev prompt-next quit";
+                     split-down close-pane last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
+                     new-window find copy paste font-bigger font-smaller prompt-prev \
+                     prompt-next quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }

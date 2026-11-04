@@ -43,7 +43,7 @@ use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
-    ClosePane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
+    ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
     SplitDown, SplitRight, SwapPane, ToggleZoom,
 };
 
@@ -207,6 +207,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
         Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
         Action::ClosePane => KeyBinding::new(chord, ClosePane, None),
+        Action::LastPane => KeyBinding::new(chord, LastPane, None),
         Action::Zoom => KeyBinding::new(chord, ToggleZoom, None),
         Action::NewTab => KeyBinding::new(chord, NewTab, None),
         Action::NextTab => KeyBinding::new(chord, NextTab, None),
