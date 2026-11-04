@@ -198,6 +198,17 @@ enum Reopen {
     Window,
 }
 
+impl Reopen {
+    /// Pane `pane` has gone from what the close took away: whether anything is left to bring back.
+    fn without(&mut self, pane: PaneId) -> bool {
+        match self {
+            Reopen::Pane(id, _) => *id != pane,
+            Reopen::Tab(_, tab) => !tab.close(pane),
+            Reopen::Window => true,
+        }
+    }
+}
+
 #[derive(Default)]
 struct LastClose(Option<Undo>);
 
@@ -234,6 +245,17 @@ fn forget(cx: &mut App) {
     crate::note(&format!("closed for good: {:?} with panes {panes:?}", undo.reopen));
     if matches!(undo.reopen, Reopen::Window) {
         let _ = undo.window.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
+/// Pane `pane`'s program exited. If the pane was closed and waits for `undo-close`, it leaves that
+/// close, whose other panes wait on; a close left with nothing to bring back ends.
+fn leave_undo(pane: PaneId, cx: &mut App) {
+    let Some(undo) = cx.default_global::<LastClose>().0.as_mut() else { return };
+    let Some(at) = undo.views.iter().position(|(id, _)| *id == pane) else { return };
+    undo.views.remove(at);
+    if !undo.reopen.without(pane) {
+        forget(cx);
     }
 }
 
@@ -641,11 +663,7 @@ impl TerminalWindow {
             }
             PaneEvent::Exited(status) => {
                 crate::note(&format!("pane {id}: its program exited: {status}"));
-                // A closed pane waiting for `undo-close` has nothing left to bring back.
-                let last = cx.try_global::<LastClose>().and_then(|last| last.0.as_ref());
-                if last.is_some_and(|undo| undo.views.iter().any(|(pane, _)| *pane == id)) {
-                    forget(cx);
-                }
+                leave_undo(id, cx);
                 self.close(id, false, window, cx)
             }
         }
@@ -1481,6 +1499,23 @@ mod tests {
 
     fn ask(closing: Closing, running: &[&str]) -> Option<(String, String, &'static str)> {
         question(closing, &running.iter().map(|command| command.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_closed_pane_that_exits_leaves_the_rest_of_its_close_to_bring_back() {
+        let mut tab = Layout::new(1);
+        tab.split(1, Direction::Right, 2);
+        let mut closed = Reopen::Tab(0, tab);
+        assert!(closed.without(2));
+        assert!(matches!(&closed, Reopen::Tab(0, tab) if tab.panes() == [1]));
+        assert!(closed.without(9), "a pane it never held");
+        assert!(!closed.without(1), "its last pane: nothing is left");
+        let mut split = Layout::new(1);
+        split.split(1, Direction::Down, 3);
+        let mut pane = Reopen::Pane(3, split.place(3).unwrap());
+        assert!(pane.without(1));
+        assert!(!pane.without(3));
+        assert!(Reopen::Window.without(5));
     }
 
     #[test]

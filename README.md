@@ -280,8 +280,10 @@ it back as it was: a pane into its split, at its side and share of the cells (be
 sat by, when the splits around it changed; in a tab of its own, when those went too), a tab at its
 place in the row, a window on screen again with its tabs. Only the last close waits: a close ends
 the one before it, as does its time running out, and then its programs are hung up on as a close
-always did. A pane whose program exits meanwhile has nothing to bring back. Closing the last
-window shown is for good, and so is quitting; `undo_timeout = 0` makes every close final.
+always did. A closed pane whose program exits meanwhile leaves the close, and the rest of it
+still comes back (the other panes of a closed tab or window); a close with nothing left ends.
+Closing the last window shown is for good, and so is quitting; `undo_timeout = 0` makes every
+close final.
 
 The focus, resize, close and last-pane keys are rtty's unless the pane's program claims them
 ([Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
