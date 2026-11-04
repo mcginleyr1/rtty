@@ -121,6 +121,26 @@ included). A chord is written in GPUI's keystroke syntax: modifiers (`ctrl`, `al
 An unknown action, a chord that is not one, two spellings of one chord, or `none` on a chord with
 nothing bound stops rtty with an error naming the chord and its line.
 
+A Neovim-like layout: the window keys smart-splits.nvim suggests, with LazyVim's split and zoom
+keys (`<leader>|`, `<leader>-`, `<leader>wm`) moved onto Option, since a terminal has no leader.
+In a pane where Neovim [claims the keys](#rtty-cli-and-editors), focus, resize, `Alt+x` and
+`Ctrl+\` go to Neovim, which hands focus and resize back to rtty past its own last window.
+
+```toml
+keys = "tutti"                  # Ctrl+h/j/k/l focus, Alt+h/j/k/l resize
+
+[bind]
+"alt-x" = "close-pane"
+"ctrl-\\" = "last-pane"
+"alt-\\" = "split-right"        # Option+\, for |
+"alt--" = "split-down"
+"alt-m" = "zoom"
+"alt-shift-h" = "swap-left"
+"alt-shift-j" = "swap-down"
+"alt-shift-k" = "swap-up"
+"alt-shift-l" = "swap-right"
+```
+
 **Fonts.** A character `font` lacks comes from the `fallback` families, in order, then from
 macOS's own fallback (emoji, CJK). macOS's knows no font with Nerd Font icons, so with no
 `fallback` key rtty adds an installed Nerd Font: Symbols Nerd Font Mono, else Symbols Nerd Font,
