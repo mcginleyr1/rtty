@@ -36,6 +36,9 @@
 //!                        its dump instead of showing a sheet
 //! window close N         the close button of window N (from 1, in the order they opened), as a
 //!                        click on it goes on; not the script's own window
+//! menu MENU ITEM         the menu bar's item (`menu Shell Split Right`): the action it carries,
+//!                        dispatched to the window as a click on it dispatches it to the key
+//!                        window, which a scripted window never is
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -49,8 +52,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AsyncWindowContext, Context, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
-    WeakEntity, Window, WindowAppearance, WindowHandle, point,
+    MouseMoveEvent, MouseUpEvent, OwnedMenuItem, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, WeakEntity, Window, WindowAppearance, WindowHandle, point,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
@@ -101,6 +104,8 @@ pub enum Step {
     BarHover(Option<Hit>),
     Answer(usize),
     WindowClose(usize),
+    /// The menu's title, the item's.
+    Menu(String, String),
     Appearance(WindowAppearance),
     Resize {
         rows: u16,
@@ -257,6 +262,10 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
             "window" => match (args.first().copied(), args.get(1).map(|n| n.parse::<usize>())) {
                 (Some("close"), Some(Ok(n))) if n > 0 => Step::WindowClose(n - 1),
                 _ => return Err(error("window close N, from 1, expected")),
+            },
+            "menu" => match rest.trim().split_once(' ') {
+                Some((menu, item)) => Step::Menu(menu.into(), item.trim().into()),
+                None => return Err(error("menu MENU ITEM expected")),
             },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
@@ -469,6 +478,20 @@ async fn perform(
                     .map_err(|_| format!("window {number} is the script's own"))
             })
             .map_err(|err| err.to_string())??,
+        Step::Menu(menu, item) => cx
+            .update(|window, cx| {
+                let menus = cx.get_menus().unwrap_or_default();
+                let items = menus.iter().filter(|bar| bar.name.as_ref() == menu);
+                let action = items.flat_map(|bar| &bar.items).find_map(|entry| match entry {
+                    OwnedMenuItem::Action { name, action, .. } if name == item => {
+                        Some(action.boxed_clone())
+                    }
+                    _ => None,
+                });
+                window.dispatch_action(action.ok_or(format!("no {item:?} in menu {menu}"))?, cx);
+                Ok::<_, String>(())
+            })
+            .map_err(|err| err.to_string())??,
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -615,6 +638,11 @@ mod tests {
         for wrong in ["window close 0", "window close", "window open 2"] {
             assert!(parse(wrong).unwrap_err().contains("window close N, from 1"), "{wrong}");
         }
+        let menu = parse("menu Shell Split Right").unwrap();
+        assert!(
+            matches!(&menu[0].1, Step::Menu(menu, item) if menu == "Shell" && item == "Split Right")
+        );
+        assert!(parse("menu Shell").unwrap_err().contains("menu MENU ITEM expected"));
         assert!(parse("bar wave").unwrap_err().contains("bar click|hover"));
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));

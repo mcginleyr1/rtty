@@ -55,7 +55,10 @@ actions!(
         PreviousTab,
         NextTab,
         UndoClose,
-        OpenConfig
+        OpenConfig,
+        CloseWindow,
+        Minimize,
+        ZoomWindow
     ]
 );
 
@@ -1420,6 +1423,7 @@ impl TerminalWindow {
         if let Some((said, at)) = &self.said {
             let _ = writeln!(out, "said {said:?} {} ms ago", at.elapsed().as_millis());
         }
+        out.push_str(&crate::app::dump());
         let rects = layout.rects(area);
         for (id, rect) in &rects {
             let _ =
@@ -1724,6 +1728,11 @@ impl Render for TerminalWindow {
                 cx.listener(|this, _: &PreviousTab, window, cx| this.cycle_tab(-1, window, cx)),
             )
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &CloseWindow, window, cx| this.close_button(window, cx)),
+            )
+            .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
             .on_drag_move(cx.listener(Self::drag_divider))
             .children(titlebar)
             .children(panes)

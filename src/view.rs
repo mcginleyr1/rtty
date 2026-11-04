@@ -646,8 +646,12 @@ impl PaneView {
     }
 
     /// A chord bound to focus, resize, close or last pane: the program's when it claimed them and
-    /// its encoding can say the chord (`keys::encode_chord`), else the window's to act on.
+    /// its encoding can say the chord (`keys::encode_chord`), else the window's to act on. A menu
+    /// item whose action has no chord carries none, and is the window's.
     fn claimed_chord(&mut self, keystroke: &str, cx: &mut Context<Self>) {
+        if keystroke.is_empty() {
+            return cx.propagate();
+        }
         let keystroke = Keystroke::parse(keystroke).expect("bound chords parse");
         let modes = self.key_modes();
         match self.claims_keys.then(|| keys::encode_chord(&keystroke, modes)).flatten() {

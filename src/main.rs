@@ -1,3 +1,4 @@
+mod app;
 mod cli;
 mod config;
 mod control;
@@ -39,8 +40,8 @@ use std::{iter, mem, slice};
 
 use block2::RcBlock;
 use gpui::{
-    App, Application, BorrowAppContext, FontFallbacks, FontFeatures, Global, KeyBinding, actions,
-    font, px,
+    App, Application, BorrowAppContext, DummyKeyboardMapper, FontFallbacks, FontFeatures, Global,
+    KeyBinding, KeyBindingContextPredicate, actions, font, px,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags, NSView};
@@ -56,8 +57,9 @@ use view::{
     QuickOpen, QuickSelect, Settings,
 };
 use window::{
-    ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, OpenConfig, PreviousTab,
-    ResizePane, SelectTab, SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
+    ClosePane, CloseWindow, LastPane, Minimize, MoveFocus, NewTab, NewWindow, NextTab, OpenConfig,
+    PreviousTab, ResizePane, SelectTab, SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
+    ZoomWindow,
 };
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize, ReloadConfig]);
@@ -218,47 +220,61 @@ fn nerd_font(installed: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// The GPUI binding of `chord` to `action`: the pane's own actions in its key context, the rest
-/// anywhere. Focus, resize, close and last pane carry their chord, which a pane that claims the
-/// keys gets instead (`PaneView::claimed_chord`).
-fn key_binding(chord: &str, action: Action) -> KeyBinding {
+/// What `action` is to GPUI, which keys and the menu bar run, and the key context its chord works
+/// in: the pane's own actions in the pane's, the rest anywhere. Focus, resize, close and last pane
+/// carry their chord, `chord`, which a pane that claims the keys gets instead
+/// (`PaneView::claimed_chord`).
+pub fn gpui_action(action: Action, chord: &str) -> (Box<dyn gpui::Action>, Option<&'static str>) {
     let keystroke = chord.to_owned();
     let pane = Some("Terminal");
     match action {
-        Action::Focus(direction) => {
-            KeyBinding::new(chord, MoveFocus { direction, keystroke }, None)
-        }
-        Action::Resize(direction) => {
-            KeyBinding::new(chord, ResizePane { direction, keystroke }, None)
-        }
-        Action::Swap(direction) => KeyBinding::new(chord, SwapPane(direction), None),
-        Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
-        Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
-        Action::ClosePane => KeyBinding::new(chord, ClosePane { keystroke }, None),
-        Action::UndoClose => KeyBinding::new(chord, UndoClose, None),
-        Action::LastPane => KeyBinding::new(chord, LastPane { keystroke }, None),
-        Action::Zoom => KeyBinding::new(chord, ToggleZoom, None),
-        Action::NewTab => KeyBinding::new(chord, NewTab, None),
-        Action::NextTab => KeyBinding::new(chord, NextTab, None),
-        Action::PrevTab => KeyBinding::new(chord, PreviousTab, None),
-        Action::Tab(index) => KeyBinding::new(chord, SelectTab(index), None),
-        Action::NewWindow => KeyBinding::new(chord, NewWindow, None),
-        Action::Find => KeyBinding::new(chord, Find, pane),
-        Action::Copy => KeyBinding::new(chord, Copy, pane),
-        Action::CopyLastOutput => KeyBinding::new(chord, CopyLastOutput, pane),
-        Action::Paste => KeyBinding::new(chord, Paste, pane),
-        Action::PromptPrev => KeyBinding::new(chord, PreviousPrompt, pane),
-        Action::PromptNext => KeyBinding::new(chord, NextPrompt, pane),
-        Action::ClearScrollback => KeyBinding::new(chord, ClearScrollback, pane),
-        Action::QuickSelect => KeyBinding::new(chord, QuickSelect, pane),
-        Action::QuickOpen => KeyBinding::new(chord, QuickOpen, pane),
-        Action::FontBigger => KeyBinding::new(chord, IncreaseFontSize, None),
-        Action::FontSmaller => KeyBinding::new(chord, DecreaseFontSize, None),
-        Action::FontReset => KeyBinding::new(chord, ResetFontSize, None),
-        Action::ReloadConfig => KeyBinding::new(chord, ReloadConfig, None),
-        Action::OpenConfig => KeyBinding::new(chord, OpenConfig, None),
-        Action::Quit => KeyBinding::new(chord, Quit, None),
+        Action::Focus(direction) => (Box::new(MoveFocus { direction, keystroke }), None),
+        Action::Resize(direction) => (Box::new(ResizePane { direction, keystroke }), None),
+        Action::Swap(direction) => (Box::new(SwapPane(direction)), None),
+        Action::SplitRight => (Box::new(SplitRight), None),
+        Action::SplitDown => (Box::new(SplitDown), None),
+        Action::ClosePane => (Box::new(ClosePane { keystroke }), None),
+        Action::UndoClose => (Box::new(UndoClose), None),
+        Action::LastPane => (Box::new(LastPane { keystroke }), None),
+        Action::Zoom => (Box::new(ToggleZoom), None),
+        Action::NewTab => (Box::new(NewTab), None),
+        Action::NextTab => (Box::new(NextTab), None),
+        Action::PrevTab => (Box::new(PreviousTab), None),
+        Action::Tab(index) => (Box::new(SelectTab(index)), None),
+        Action::NewWindow => (Box::new(NewWindow), None),
+        Action::Find => (Box::new(Find), pane),
+        Action::Copy => (Box::new(Copy), pane),
+        Action::CopyLastOutput => (Box::new(CopyLastOutput), pane),
+        Action::Paste => (Box::new(Paste), pane),
+        Action::PromptPrev => (Box::new(PreviousPrompt), pane),
+        Action::PromptNext => (Box::new(NextPrompt), pane),
+        Action::ClearScrollback => (Box::new(ClearScrollback), pane),
+        Action::QuickSelect => (Box::new(QuickSelect), pane),
+        Action::QuickOpen => (Box::new(QuickOpen), pane),
+        Action::FontBigger => (Box::new(IncreaseFontSize), None),
+        Action::FontSmaller => (Box::new(DecreaseFontSize), None),
+        Action::FontReset => (Box::new(ResetFontSize), None),
+        Action::ReloadConfig => (Box::new(ReloadConfig), None),
+        Action::OpenConfig => (Box::new(OpenConfig), None),
+        Action::Quit => (Box::new(Quit), None),
+        Action::CloseWindow => (Box::new(CloseWindow), None),
+        Action::Minimize => (Box::new(Minimize), None),
+        Action::ZoomWindow => (Box::new(ZoomWindow), None),
+        Action::About => (Box::new(app::About), None),
+        Action::Hide => (Box::new(app::Hide), None),
+        Action::HideOthers => (Box::new(app::HideOthers), None),
+        Action::ShowAll => (Box::new(app::ShowAll), None),
     }
+}
+
+/// The GPUI binding of `chord` to `action` (`gpui_action`).
+fn key_binding(chord: &str, action: Action) -> KeyBinding {
+    let (action, context) = gpui_action(action, chord);
+    let context = context.map(|context| {
+        KeyBindingContextPredicate::parse(context).expect("rtty's key contexts parse").into()
+    });
+    KeyBinding::load(chord, action, context, false, None, &DummyKeyboardMapper)
+        .expect("rtty's chords parse")
 }
 
 fn usage_error(message: &str) -> ExitCode {
@@ -498,6 +514,7 @@ fn run(options: Options) -> Result<(), String> {
         // What the key monitor below reads, which cannot reach the settings.
         let option_as_alt = Rc::new(Cell::new(settings.option_as_alt));
         configure(settings, cx);
+        app::init(&cx.global::<Settings>().bindings.clone(), cx);
         cx.observe_global::<Settings>({
             let option_as_alt = option_as_alt.clone();
             move |cx| option_as_alt.set(cx.global::<Settings>().option_as_alt)

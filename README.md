@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, a menu bar item's action, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--restore` | with `--script`: restore the saved layout and save it, as a normal launch does ([Restoring windows](#configuration)); the script drives the first window |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
@@ -342,6 +342,11 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+0` | `font-reset` | font size back to the configured one (`size`, or `--size`) |
 | `Cmd+Shift+,` | `reload-config` | read the config file again now ([Configuration](#configuration)); rtty also does when it changes |
 | `Cmd+,` | `open-config` | the config file in your editor, in a new tab; written first from rtty's commented template when there is none ([Configuration](#configuration)) |
+| `Cmd+Shift+W` | `close-window` | close the window, asking first as its close button does |
+| `Cmd+M` | `minimize` | minimize the window into the dock |
+| none | `zoom-window` | zoom the window, as a double click on its bar does |
+| `Cmd+H` / `Cmd+Opt+H` | `hide` / `hide-others` | hide rtty / hide every other app |
+| none | `show-all` / `about` | show every app again / rtty's About panel |
 | `Cmd` over a link, `Cmd+click` | | underline the link (a URL, or a path such as `src/main.rs:12:5`) under the pointer; open it (below) |
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |
@@ -350,6 +355,15 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | tab click | | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
 | double click on the bar | | zoom the window, as on any titlebar (System Settings decides what a double click does) |
 | wheel | | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
+
+**The menu bar.** rtty's menus hold the actions above: About, Hide, Hide Others, Show All and
+Quit; in Shell, New Window, New Tab, the splits, Close Pane, Close Window and Undo Close; in Edit,
+Copy, Paste, Find, Copy Last Output and Clear Scrollback; in View, Bigger, Smaller, Actual Size and
+Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab. An item runs its action as the
+action's chord does, and shows the chord `[bind]` gives that action: a rebound action shows its
+new chord, an unbound one none. So in a pane that claims the keys ([Editors](#rtty-cli-and-editors)),
+Close Pane goes to the program, as its chord would, when that chord is one the program's encoding
+can say (never the default `Cmd+W`).
 
 New panes, tabs and windows run the login shell in the focused pane's working directory: as its
 shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else the directory of the
@@ -761,6 +775,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   one action per chord (the defaults, `keys`, then `[bind]`) that `main.rs` binds in GPUI.
   `main.rs` turns them into the `Settings` global every window and pane reads as it draws and
   acts, and at a reload replaces it and the keymap whole.
+- `app.rs` — rtty as a macOS app: the menu bar, a table of titles and `[bind]` actions, each
+  item the GPUI action its chord runs (`gpui_action` in `main.rs`), so macOS shows the chord.
 - `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
   protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
   escaped for a shell, unit tested (the escaping against sh and zsh themselves).
@@ -845,7 +861,7 @@ jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouri
 select and quick open, the bell, notifications (from an app bundle), a program's progress on its
 tab's pill
 and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
-`Cmd+K` to clear, a config file with key bindings,
+`Cmd+K` to clear, a config file with key bindings, a menu bar showing them,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
 2031 reports), `rtty cli` and the editor plugins, the log, shell integration that loads
 itself (prompt jumps, the last command's output, notifications of long commands, click to move the
@@ -888,8 +904,11 @@ screen. Closing's question is checked through the `--script` dump, where a scrip
 it, and its `answer` step, and the window's close button through its `window close` step, which
 runs what a click runs; the native sheet itself, its buttons and Esc, the click on the close
 button as AppKit sends it, the dock's badge and the progress line's look are not yet checked by
-eye. Quitting another way than `Cmd+Q` (the dock's Quit, logging out) asks nothing. rtty has
-no menu bar.
+eye. Quitting another way than `Cmd+Q` (the dock's Quit, logging out) asks nothing. The menu
+bar's chords are checked in the `--script` dump, which lists the menus as AppKit has them, and its
+items by `--script`'s `menu` step, which dispatches an item's action to the scripted window (a
+click dispatches it to the key window, which a scripted window never is); the menus' look and a
+click on an item are not yet checked by eye.
 
 ## The GPUI pin
 

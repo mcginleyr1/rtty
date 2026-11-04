@@ -98,6 +98,13 @@ pub enum Action {
     ReloadConfig,
     OpenConfig,
     Quit,
+    CloseWindow,
+    Minimize,
+    ZoomWindow,
+    About,
+    Hide,
+    HideOthers,
+    ShowAll,
 }
 
 impl Action {
@@ -135,6 +142,13 @@ impl Action {
             "reload-config" => ReloadConfig,
             "open-config" => OpenConfig,
             "quit" => Quit,
+            "close-window" => CloseWindow,
+            "minimize" => Minimize,
+            "zoom-window" => ZoomWindow,
+            "about" => About,
+            "hide" => Hide,
+            "hide-others" => HideOthers,
+            "show-all" => ShowAll,
             _ => {
                 return toward("focus")
                     .map(Focus)
@@ -205,6 +219,11 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
         // Cmd+Shift+, as macOS reports it, and Cmd+, (a Mac app's settings): Ghostty's chords.
         ("cmd-<", ReloadConfig),
         ("cmd-,", OpenConfig),
+        // Every Mac app's.
+        ("cmd-shift-w", CloseWindow),
+        ("cmd-m", Minimize),
+        ("cmd-h", Hide),
+        ("cmd-alt-h", HideOthers),
     ];
     let fixed = fixed.into_iter().map(|(chord, action)| (chord.to_owned(), action));
     let arrows = Direction::ALL.into_iter().flat_map(|direction| {
@@ -611,11 +630,13 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 41);
+        assert_eq!(defaults.len(), 45);
         assert_eq!(defaults["cmd-d"], SplitRight);
         assert_eq!((defaults["cmd-<"], defaults["cmd-,"]), (ReloadConfig, OpenConfig));
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
         assert_eq!(defaults["cmd-z"], UndoClose);
+        assert_eq!((defaults["cmd-shift-w"], defaults["cmd-m"]), (CloseWindow, Minimize));
+        assert_eq!((defaults["cmd-h"], defaults["alt-cmd-h"]), (Hide, HideOthers));
         assert_eq!(defaults["cmd-shift-a"], CopyLastOutput);
         assert_eq!(
             (defaults["cmd-shift-space"], defaults["cmd-shift-o"]),
@@ -628,7 +649,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 49);
+        assert_eq!(tutti.len(), 53);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -638,7 +659,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 49 + 3 - 2);
+        assert_eq!(mine.len(), 53 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -651,7 +672,8 @@ mod tests {
                      split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
                      prompt-prev prompt-next clear-scrollback quick-select quick-open reload-config \
-                     open-config quit";
+                     open-config quit close-window minimize zoom-window about hide hide-others \
+                     show-all";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
