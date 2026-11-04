@@ -790,7 +790,8 @@ impl TerminalWindow {
 
     /// Closes the window; with `undo`, it hides instead and waits for `undo-close` until
     /// `undo_timeout` runs out. The last window shown closes for good, and the last close with
-    /// it, so rtty quits.
+    /// it, so rtty quits; so does a hidden window whose last pane's program exited, and the close
+    /// that hid it.
     fn close_window(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (this, hidden) = (window.window_handle().window_id(), hidden_window(cx));
         let others = cx.windows().into_iter().map(|other| other.window_id());
@@ -798,7 +799,7 @@ impl TerminalWindow {
         let waits = undo && shown > 0 && !cx.global::<Settings>().undo_timeout.is_zero();
         crate::note(if waits { "window hidden for undo-close" } else { "window closed" });
         if !waits {
-            if shown == 0 {
+            if shown == 0 || hidden == Some(this) {
                 forget(cx);
             }
             return window.remove_window();
