@@ -13,7 +13,14 @@ end
 # starts (C), after it its end and status (D).
 if status is-interactive
     function __rtty_prompt --on-event fish_prompt
-        printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
+        # Each part of the path escaped on its own, so the slashes between them stay slashes
+        # whatever the URL escaping does with one.
+        set -l path ''
+        for part in (string split --no-empty / -- $PWD)
+            set path "$path/"(string escape --style=url -- $part)
+        end
+        test -n "$path"; or set path /
+        printf '\e]7;file://%s%s\a' $hostname $path
         functions -q __rtty_user_prompt; and return
         functions -c fish_prompt __rtty_user_prompt
         # The user's prompt runs first, while $status and $pipestatus are still the command's, and
