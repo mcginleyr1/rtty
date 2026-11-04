@@ -79,6 +79,8 @@ pub struct Settings {
     pub minimum_contrast: f32,
     /// `confirm_close`: closing what runs a program asks first.
     pub confirm_close: bool,
+    /// How long a close waits for `undo-close`; zero closes at once (`undo_timeout`).
+    pub undo_timeout: Duration,
     /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
     /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
     pub prompts: bool,

@@ -46,7 +46,7 @@ use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{ClearScrollback, Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
     ClosePane, LastPane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
-    SplitDown, SplitRight, SwapPane, ToggleZoom,
+    SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
 };
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize]);
@@ -214,6 +214,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
         Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
         Action::ClosePane => KeyBinding::new(chord, ClosePane { keystroke }, None),
+        Action::UndoClose => KeyBinding::new(chord, UndoClose, None),
         Action::LastPane => KeyBinding::new(chord, LastPane { keystroke }, None),
         Action::Zoom => KeyBinding::new(chord, ToggleZoom, None),
         Action::NewTab => KeyBinding::new(chord, NewTab, None),
@@ -292,6 +293,7 @@ fn run(options: Options) -> Result<(), String> {
     let option_as_alt = config.option_as_alt.unwrap_or_default();
     let minimum_contrast = config.minimum_contrast.unwrap_or(1.);
     let confirm_close = config.confirm_close.unwrap_or(true);
+    let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
     let fallback = config.fallback;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
@@ -455,6 +457,7 @@ fn run(options: Options) -> Result<(), String> {
             bell,
             minimum_contrast,
             confirm_close,
+            undo_timeout,
             prompts: script.is_none(),
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {

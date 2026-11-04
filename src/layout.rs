@@ -98,6 +98,19 @@ pub struct Divider {
     pub rect: Rect,
 }
 
+/// Where a pane sat in its split, to put it back there once it has closed (`Layout::reopen`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    /// The path to its split, whose cells its sibling took when it closed.
+    path: Vec<bool>,
+    /// It was the split's second child: right of or below its sibling.
+    second: bool,
+    orientation: Orientation,
+    ratio: f32,
+    /// A pane of its sibling's, which finds the sibling when the path no longer leads there.
+    pub beside: PaneId,
+}
+
 /// One tab: its split tree, the pane with the focus, and whether that pane fills the tab.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
@@ -190,6 +203,35 @@ impl Layout {
             self.previous = None;
         }
         false
+    }
+
+    /// Where `pane` sits, while it shares a split.
+    pub fn place(&self, pane: PaneId) -> Option<Place> {
+        self.root.place(pane, &mut Vec::new())
+    }
+
+    /// Puts `pane` back where `place` says it sat, beside what took its cells when it closed and
+    /// sharing them as before, and focuses it; false when that has left this tab.
+    pub fn reopen(&mut self, pane: PaneId, place: &Place) -> bool {
+        let path_leads =
+            self.root.at_path(&place.path).is_some_and(|node| node.contains(place.beside));
+        let sibling = match path_leads {
+            true => self.root.at_path(&place.path),
+            false => self.root.find(place.beside),
+        };
+        let Some(sibling) = sibling else { return false };
+        let old = std::mem::replace(sibling, Node::Pane(pane));
+        let (first, second) =
+            if place.second { (old, Node::Pane(pane)) } else { (Node::Pane(pane), old) };
+        *sibling = Node::Split {
+            orientation: place.orientation,
+            ratio: place.ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        self.zoomed = false;
+        self.set_focus(pane);
+        true
     }
 
     /// Where each pane goes in `area`; zoomed, the focused pane takes all of it.
@@ -449,6 +491,24 @@ impl Node {
         }
     }
 
+    /// Where `pane` sits below this node, which `path` leads to.
+    fn place(&self, pane: PaneId, path: &mut Vec<bool>) -> Option<Place> {
+        let Node::Split { orientation, ratio, first, second } = self else { return None };
+        let side = second.contains(pane);
+        let (child, sibling) = if side { (second, first) } else { (first, second) };
+        if **child != Node::Pane(pane) {
+            path.push(side);
+            return child.place(pane, path);
+        }
+        Some(Place {
+            path: path.clone(),
+            second: side,
+            orientation: *orientation,
+            ratio: *ratio,
+            beside: sibling.first_pane(side),
+        })
+    }
+
     /// Replaces the split holding `pane` with the pane's sibling; the sibling's pane nearest the
     /// removed one.
     fn remove(&mut self, pane: PaneId) -> Option<PaneId> {
@@ -618,6 +678,12 @@ impl Tabs {
         self.close_tab(index).map(|(_, closed)| closed)
     }
 
+    /// Puts a closed tab back at `index` (last, when there are fewer tabs now) and shows it.
+    pub fn reopen(&mut self, index: usize, tab: Layout) {
+        self.active = index.min(self.tabs.len());
+        self.tabs.insert(self.active, tab);
+    }
+
     /// Closes tab `index` and every pane in it, as `close` does a tab left empty; the panes it
     /// held, and whether it was the window's last.
     pub fn close_tab(&mut self, index: usize) -> Option<(Vec<PaneId>, Closed)> {
@@ -693,6 +759,59 @@ mod tests {
         let mut layout = three();
         assert!(!layout.close(9));
         assert_eq!(layout, three());
+    }
+
+    #[test]
+    fn a_closed_pane_goes_back_into_its_split() {
+        // 3, below 2 in the right column of 1 | (2 / 3), the dividers moved off the middle.
+        let mut layout = three();
+        layout.drag(&[], AREA, (30, 0));
+        layout.drag(&[true], AREA, (50, 8));
+        let before = layout.rects(AREA);
+        let place = layout.place(3).unwrap();
+        assert_eq!(place.beside, 2);
+        layout.close(3);
+        assert!(layout.reopen(3, &place));
+        assert_eq!((layout.rects(AREA), layout.focus()), (before, 3));
+        // 1 goes back beside the whole column, which split again meanwhile.
+        let place = layout.place(1).unwrap();
+        layout.close(1);
+        layout.split(2, Direction::Right, 4);
+        assert!(layout.reopen(1, &place));
+        assert_eq!(layout.panes(), [1, 2, 4, 3]);
+        assert_eq!(layout.rects(AREA)[0].1, rect(0, 0, 30, 25));
+        // With its split's path gone, beside the pane it sat by.
+        let mut layout = three();
+        let place = layout.place(3).unwrap();
+        layout.close(3);
+        layout.close(1);
+        assert!(layout.reopen(3, &place));
+        assert_eq!(layout.rects(AREA), [(2, rect(0, 0, 81, 12)), (3, rect(0, 13, 81, 12))]);
+        // A lone pane sits in no split, and a pane whose sibling left the tab has no place.
+        assert_eq!(Layout::new(1).place(1), None);
+        let mut other = Layout::new(9);
+        assert!(!other.reopen(3, &place));
+        assert_eq!(other, Layout::new(9));
+    }
+
+    #[test]
+    fn a_closed_tab_goes_back_where_it_was() {
+        let mut tabs = Tabs::new(1);
+        tabs.open(2);
+        tabs.open(3);
+        let tab = tabs.all()[1].clone();
+        tabs.close_tab(1);
+        tabs.select(0);
+        tabs.reopen(1, tab);
+        let firsts: Vec<_> = tabs.all().iter().map(|tab| tab.panes()[0]).collect();
+        assert_eq!((firsts, tabs.index()), (vec![1, 2, 3], 1));
+        // Past the tabs left, it goes last.
+        let tab = tabs.all()[2].clone();
+        tabs.close_tab(2);
+        tabs.close_tab(1);
+        tabs.reopen(2, tab);
+        assert_eq!((tabs.all().len(), tabs.index()), (2, 1));
+        assert_eq!(tabs.active().panes(), [3]);
     }
 
     #[test]

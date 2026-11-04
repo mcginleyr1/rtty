@@ -103,6 +103,7 @@ bell = "visual"                   # the default: BEL flashes the pane (and the d
 option_as_alt = "both"            # the default; "left", "right" or "none": the Option keys that are Alt (Keys)
 minimum_contrast = 1              # the default, off; 4.5 keeps text legible (Color schemes)
 confirm_close = true              # the default: ask before closing what runs a program (Keys)
+undo_timeout = 5                  # the default: seconds a close waits for Cmd+Z (Keys); 0: none
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -232,6 +233,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `prev-tab` / `next-tab` | previous / next tab, round the ends |
 | `Cmd+D` / `Cmd+Shift+D` | `split-right` / `split-down` | split the pane right / down |
 | `Cmd+W` | `close-pane` | close the pane, asking first while it runs a program (below); the last pane closes its tab, the last tab its window, the last window quits |
+| `Cmd+Z` | `undo-close` | bring back the pane, tab or window closed last, within `undo_timeout` seconds (below) |
 | `Cmd+Opt+arrows` | `focus-left`, `-right`, `-up`, `-down` | focus the nearest pane that way |
 | `Cmd+Ctrl+arrows` | `resize-left`, `-right`, `-up`, `-down` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
 | `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | `focus-…`, `resize-…` | with `keys = "tutti"` only: focus and resize, as in tutti |
@@ -269,6 +271,15 @@ tab's, a window's and the quit's count the panes running something and name what
 `Close` (or `Quit`, the default button) goes on and `Cancel` (Esc) keeps everything. A pane
 whose shell sits at its prompt closes at once, as does a pane whose program exits.
 `confirm_close = false` never asks.
+
+**Undoing a close.** A closed pane, tab or window does not go at once: it waits, hidden, its
+programs running on, for `undo_timeout` seconds (5 by default), and `Cmd+Z` (`undo-close`) brings
+it back as it was: a pane into its split, at its side and share of the cells (beside the pane it
+sat by, when the splits around it changed; in a tab of its own, when those went too), a tab at its
+place in the row, a window on screen again with its tabs. Only the last close waits: a close ends
+the one before it, as does its time running out, and then its programs are hung up on as a close
+always did. A pane whose program exits meanwhile has nothing to bring back. Closing the last
+window shown is for good, and so is quitting; `undo_timeout = 0` makes every close final.
 
 The focus, resize, close and last-pane keys are rtty's unless the pane's program claims them
 ([Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
@@ -470,7 +481,7 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `layout.rs` — a window's tabs, each a tree of splits with ratios, in cells, with no GPUI in it
   and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
   gets fewer than two across a split), split and close with the cascade to tab and window, a
-  divider dragged to a cell or moved by a resize, focus by direction and back to the last pane, a
+  closed pane or tab put back where it was, a divider dragged to a cell or moved by a resize, focus by direction and back to the last pane, a
   swap with the pane that way, zoom.
 - `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
   for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
@@ -480,7 +491,9 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   and pty, shown or not, follow its cells on every resize. Each pane draws as a cached GPUI view,
   so output in one pane redraws that pane alone. `focus_toward` is the one call for moving focus
   by direction: the keys, `rtty cli` and so the editors all go through it. `answer` handles
-  `rtty cli`'s requests on the main thread.
+  `rtty cli`'s requests on the main thread. `confirm` is the one way a close asks first (its
+  wording, `question`, unit tested), and the last close waits in an app-wide slot, its panes'
+  views alive and a closed window ordered out, until `undo-close` or its timer.
 - `control.rs` and `cli.rs` — the socket (one JSON line each way, served on a thread of its own
   and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
 - `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to

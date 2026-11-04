@@ -28,6 +28,9 @@ pub struct Config {
     /// Ask before closing a pane, tab or window, or quitting, while a program other than a shell
     /// at its prompt runs there.
     pub confirm_close: Option<bool>,
+    /// How many seconds a closed pane, tab or window waits, its programs alive, for
+    /// `undo-close`; 0 closes at once.
+    pub undo_timeout: Option<u64>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -48,6 +51,7 @@ pub enum Action {
     SplitRight,
     SplitDown,
     ClosePane,
+    UndoClose,
     LastPane,
     Zoom,
     NewTab,
@@ -81,6 +85,7 @@ impl Action {
             "split-right" => SplitRight,
             "split-down" => SplitDown,
             "close-pane" => ClosePane,
+            "undo-close" => UndoClose,
             "last-pane" => LastPane,
             "zoom" => Zoom,
             "new-tab" => NewTab,
@@ -138,6 +143,7 @@ fn defaults(keys: Keys) -> BTreeMap<String, Action> {
         ("cmd-n", NewWindow),
         ("cmd-t", NewTab),
         ("cmd-w", ClosePane),
+        ("cmd-z", UndoClose),
         ("cmd-d", SplitRight),
         ("cmd-shift-d", SplitDown),
         ("cmd-shift-enter", Zoom),
@@ -359,9 +365,10 @@ mod tests {
         use Action::*;
         let bindings = |source| Config::parse(source).unwrap().bindings;
         let defaults = bindings("");
-        assert_eq!(defaults.len(), 35);
+        assert_eq!(defaults.len(), 36);
         assert_eq!(defaults["cmd-d"], SplitRight);
         assert_eq!((defaults["cmd-k"], defaults["cmd-0"]), (ClearScrollback, FontReset));
+        assert_eq!(defaults["cmd-z"], UndoClose);
         assert_eq!(defaults["cmd-{"], PrevTab);
         assert_eq!(defaults["cmd-9"], Tab(8));
         // As GPUI writes chords: ctrl, alt, cmd, shift.
@@ -369,7 +376,7 @@ mod tests {
         assert_eq!(defaults["ctrl-cmd-down"], Resize(Direction::Down));
         assert!(!defaults.contains_key("ctrl-h"));
         let tutti = bindings("keys = 'tutti'");
-        assert_eq!(tutti.len(), 43);
+        assert_eq!(tutti.len(), 44);
         assert_eq!(
             (tutti["ctrl-h"], tutti["alt-l"]),
             (Focus(Direction::Left), Resize(Direction::Right))
@@ -379,7 +386,7 @@ mod tests {
             "keys = 'tutti'\n[bind]\n'alt-\\' = 'split-right'\n'ctrl-alt-H' = 'zoom'\n\
              'cmd-d' = 'new-tab'\n'shift-cmd-d' = 'none'\n'ctrl-h' = 'none'\n'alt--' = 'split-down'",
         );
-        assert_eq!(mine.len(), 43 + 3 - 2);
+        assert_eq!(mine.len(), 44 + 3 - 2);
         assert_eq!((mine["alt-\\"], mine["alt--"]), (SplitRight, SplitDown));
         assert_eq!((mine["ctrl-alt-shift-h"], mine["cmd-d"]), (Zoom, NewTab));
         assert!(!mine.contains_key("cmd-shift-d") && !mine.contains_key("ctrl-h"));
@@ -389,7 +396,7 @@ mod tests {
     fn every_action_has_its_name() {
         let names = "focus-left focus-right focus-up focus-down resize-left resize-right \
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
-                     split-down close-pane last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
+                     split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy paste font-bigger font-smaller font-reset prompt-prev \
                      prompt-next clear-scrollback quit";
         for name in names.split_whitespace() {
@@ -429,6 +436,16 @@ mod tests {
         assert_eq!(confirm("").unwrap(), None);
         assert_eq!(confirm("confirm_close = false").unwrap(), Some(false));
         assert!(confirm("confirm-close = false").is_err(), "keys are written with underscores");
+    }
+
+    #[test]
+    fn a_close_waits_for_undo_whole_seconds() {
+        let wait = |source| toml::from_str::<Config>(source).map(|config| config.undo_timeout);
+        assert_eq!(wait("").unwrap(), None);
+        assert_eq!(wait("undo_timeout = 0").unwrap(), Some(0));
+        assert_eq!(wait("undo_timeout = 30").unwrap(), Some(30));
+        assert!(wait("undo_timeout = -1").is_err());
+        assert!(wait("undo_timeout = 2.5").is_err());
     }
 
     #[test]

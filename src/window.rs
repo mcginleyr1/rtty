@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::oneshot;
@@ -20,14 +20,18 @@ use gpui::{
     EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, PromptButton, PromptLevel, Render, SharedString, Size, Stateful,
     StyleRefinement, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle,
-    WindowOptions, actions, div, point, prelude::*, px, relative, size, svg, transparent_black,
+    WindowId, WindowOptions, actions, div, point, prelude::*, px, relative, size, svg,
+    transparent_black,
 };
+use objc2::rc::Retained;
+use objc2_app_kit::{NSView, NSWindow};
 use portable_pty::CommandBuilder;
+use raw_window_handle::RawWindowHandle;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
 
 use crate::cli::RESIZE_STEP;
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
-use crate::layout::{Amount, Closed, Direction, Orientation, PaneId, Rect, Tabs};
+use crate::layout::{Amount, Closed, Direction, Layout, Orientation, PaneId, Place, Rect, Tabs};
 use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::progress::{self, Progress, State};
@@ -35,7 +39,10 @@ use crate::scheme::Scheme;
 use crate::tabbar::{self, Bar, Hit};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
-actions!(rtty, [NewWindow, NewTab, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab]);
+actions!(
+    rtty,
+    [NewWindow, NewTab, SplitRight, SplitDown, ToggleZoom, PreviousTab, NextTab, UndoClose]
+);
 
 /// Moves the keyboard to the nearest pane that way. `keystroke` is the chord bound to it, which
 /// goes to the pane instead when the pane claimed the keys (`PaneView::claimed_chord`).
@@ -169,11 +176,107 @@ fn question(closing: Closing, running: &[String]) -> Option<(String, String, &'s
     Some((question.into(), format!("{panes}: {}.", named.join(", ")), button))
 }
 
+/// The last close, which `undo-close` takes back until `undo_timeout` runs out. One at a time: a
+/// close ends the one before it.
+struct Undo {
+    window: WindowHandle<TerminalWindow>,
+    reopen: Reopen,
+    /// The closed panes, hidden, their programs running on.
+    views: Vec<(PaneId, Entity<PaneView>)>,
+    /// When it runs out, which tells it from a later close.
+    until: Instant,
+}
+
+/// What a close took away, and where it goes back.
+#[derive(Debug)]
+enum Reopen {
+    /// A pane, into its split.
+    Pane(PaneId, Place),
+    /// A tab, at its index.
+    Tab(usize, Layout),
+    /// A window, hidden meanwhile.
+    Window,
+}
+
+#[derive(Default)]
+struct LastClose(Option<Undo>);
+
+impl Global for LastClose {}
+
+/// Keeps a close for `undo-close` until `undo_timeout` runs out, ending the one before it.
+fn remember(
+    window: WindowHandle<TerminalWindow>,
+    reopen: Reopen,
+    views: Vec<(PaneId, Entity<PaneView>)>,
+    cx: &mut App,
+) {
+    forget(cx);
+    let timeout = cx.global::<Settings>().undo_timeout;
+    let until = Instant::now() + timeout;
+    cx.default_global::<LastClose>().0 = Some(Undo { window, reopen, views, until });
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(timeout).await;
+        let _ = cx.update(|cx| {
+            let last = cx.default_global::<LastClose>().0.as_ref();
+            if last.is_some_and(|undo| undo.until == until) {
+                forget(cx)
+            }
+        });
+    })
+    .detach();
+}
+
+/// The last close is for good: its panes go, which hangs up on their programs, and a hidden
+/// window closes.
+fn forget(cx: &mut App) {
+    let Some(undo) = cx.default_global::<LastClose>().0.take() else { return };
+    let panes: Vec<PaneId> = undo.views.iter().map(|(pane, _)| *pane).collect();
+    crate::note(&format!("closed for good: {:?} with panes {panes:?}", undo.reopen));
+    if matches!(undo.reopen, Reopen::Window) {
+        let _ = undo.window.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
+/// The window a close hid, while `undo-close` can bring it back.
+fn hidden_window(cx: &App) -> Option<WindowId> {
+    let undo = cx.try_global::<LastClose>()?.0.as_ref()?;
+    matches!(undo.reopen, Reopen::Window).then(|| undo.window.window_id())
+}
+
+/// `undo-close`, from window `from`: brings the last close back (`TerminalWindow::reopen`).
+fn undo_close(from: WindowId, cx: &mut App) {
+    let Some(Undo { window, reopen, views, .. }) = cx.default_global::<LastClose>().0.take() else {
+        return;
+    };
+    let reopened =
+        window.update(cx, |this, window, cx| this.reopen(reopen, views, from, window, cx));
+    if reopened.is_err() {
+        crate::note("undo: the closed panes' window is gone");
+    }
+    refresh_badge(cx);
+}
+
+/// The window's AppKit window.
+fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    let handle = raw_window_handle::HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: GPUI's window handle is its live NSView, used on the main thread.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    view.window()
+}
+
 /// Cmd+Q: quits, once what runs in any window is confirmed, asked on the active window (else the
-/// first).
+/// first). A window a close hid is closed already.
 pub fn quit(cx: &mut App) {
-    let windows: Vec<WindowHandle<TerminalWindow>> =
-        cx.windows().into_iter().filter_map(|window| window.downcast()).collect();
+    let hidden = hidden_window(cx);
+    let windows: Vec<WindowHandle<TerminalWindow>> = cx
+        .windows()
+        .into_iter()
+        .filter(|window| Some(window.window_id()) != hidden)
+        .filter_map(|window| window.downcast())
+        .collect();
     let running: Vec<String> = windows
         .iter()
         .filter_map(|handle| handle.read(cx).ok())
@@ -270,8 +373,9 @@ impl Global for DockBadge {}
 /// once every program is done. It shows whether rtty is in front or not: a pill shows its own
 /// tab's progress, and the badge is the one place an error in a tab or window out of sight shows.
 pub fn refresh_badge(cx: &mut App) {
+    let hidden = hidden_window(cx);
     let mut all = Vec::new();
-    for window in cx.windows() {
+    for window in cx.windows().into_iter().filter(|window| Some(window.window_id()) != hidden) {
         if let Some(Ok(this)) = window.downcast::<TerminalWindow>().map(|handle| handle.read(cx)) {
             let tabs = 0..this.tabs.all().len();
             all.extend(tabs.filter_map(|index| this.tab_progress(index, cx)));
@@ -347,11 +451,13 @@ impl TerminalWindow {
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
         // The title dims while the window is in the background, as macOS's do.
         cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
-        // The window's close button asks first too, as closing its panes one by one would.
+        // The window's close button asks first too, as closing its panes one by one would, and
+        // the window waits for `undo-close` as theirs would.
         let this = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
-            let close =
-                |_: &mut Self, window: &mut Window, _: &mut Context<Self>| window.remove_window();
+            let close = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                this.close_window(true, window, cx)
+            };
             let asked = this.update(cx, |this, cx| {
                 let running = this.running(&this.panes(), cx);
                 this.confirm(Closing::Window, running, window, cx, close)
@@ -535,7 +641,12 @@ impl TerminalWindow {
             }
             PaneEvent::Exited(status) => {
                 crate::note(&format!("pane {id}: its program exited: {status}"));
-                self.close(id, window, cx)
+                // A closed pane waiting for `undo-close` has nothing left to bring back.
+                let last = cx.try_global::<LastClose>().and_then(|last| last.0.as_ref());
+                if last.is_some_and(|undo| undo.views.iter().any(|(pane, _)| *pane == id)) {
+                    forget(cx);
+                }
+                self.close(id, false, window, cx)
             }
         }
     }
@@ -594,25 +705,29 @@ impl TerminalWindow {
     }
 
     /// Closes a pane, its tab when it was the last there, and the window when that was the last
-    /// tab. Its program, if still running, is hung up on.
-    fn close(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+    /// tab. With `undo`, what closed waits, hidden and its programs running, for `undo-close`
+    /// (`take_out`); else its program, if still running, is hung up on.
+    fn close(&mut self, id: PaneId, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.tabs.find(id) else { return };
+        let tab = self.tabs.all()[index].clone();
         let Some(closed) = self.tabs.close(id) else { return };
-        self.views.remove(&id);
-        cx.defer(refresh_badge);
         let with = match closed {
             Closed::Pane => "",
             Closed::Tab => ", and its tab",
             Closed::Window => ", and its window",
         };
         crate::note(&format!("pane {id}: closed{with}"));
-        match closed {
-            Closed::Window => window.remove_window(),
-            Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
-        }
+        let reopen = match closed {
+            Closed::Window => return self.close_window(undo, window, cx),
+            Closed::Pane => Reopen::Pane(id, tab.place(id).expect("a pane beside another")),
+            Closed::Tab => Reopen::Tab(index, tab),
+        };
+        self.take_out(&[id], undo.then_some(reopen), window, cx);
+        self.focus_shown(window, cx);
     }
 
-    /// Tab `index`'s close button: closes the tab, once what runs in it is confirmed, and hangs
-    /// up on every program in it; the last tab closes the window.
+    /// Tab `index`'s close button: closes the tab, once what runs in it is confirmed, and its
+    /// panes wait for `undo-close`; the last tab closes the window.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.all().get(index) else { return };
         let (panes, pane) = (tab.panes(), tab.focus());
@@ -621,21 +736,93 @@ impl TerminalWindow {
         self.confirm(closing, running, window, cx, move |this, window, cx| {
             // Tabs may have moved while it asked: the tab is the one holding `pane`.
             let Some(index) = this.tabs.find(pane) else { return };
+            let tab = this.tabs.all()[index].clone();
             let Some((panes, closed)) = this.tabs.close_tab(index) else { return };
             let with = if closed == Closed::Window { ", and its window" } else { "" };
-            crate::note(&format!(
-                "tab {}: its close button closed panes {panes:?}{with}",
-                index + 1
-            ));
-            for pane in panes {
-                this.views.remove(&pane);
+            let number = index + 1;
+            crate::note(&format!("tab {number}: its close button closed panes {panes:?}{with}"));
+            if closed == Closed::Window {
+                return this.close_window(true, window, cx);
             }
-            cx.defer(refresh_badge);
-            match closed {
-                Closed::Window => window.remove_window(),
-                Closed::Pane | Closed::Tab => this.focus_shown(window, cx),
-            }
+            this.take_out(&panes, Some(Reopen::Tab(index, tab)), window, cx);
+            this.focus_shown(window, cx);
         });
+    }
+
+    /// Takes closed `panes` out of the window. With `reopen` they wait, hidden and their programs
+    /// running, for `undo-close` until `undo_timeout` runs out; else, or with no timeout, they go
+    /// now, which hangs up on their programs.
+    fn take_out(
+        &mut self,
+        panes: &[PaneId],
+        reopen: Option<Reopen>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let views = panes.iter().filter_map(|pane| Some((*pane, self.views.remove(pane)?)));
+        let views: Vec<_> = views.collect();
+        cx.defer(refresh_badge);
+        let waits = !cx.global::<Settings>().undo_timeout.is_zero();
+        if let Some(reopen) = reopen.filter(|_| waits) {
+            let handle = window.window_handle().downcast().expect("a terminal window");
+            remember(handle, reopen, views, cx);
+        }
+    }
+
+    /// Closes the window; with `undo`, it hides instead and waits for `undo-close` until
+    /// `undo_timeout` runs out. The last window shown closes for good, and the last close with
+    /// it, so rtty quits.
+    fn close_window(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (this, hidden) = (window.window_handle().window_id(), hidden_window(cx));
+        let others = cx.windows().into_iter().map(|other| other.window_id());
+        let shown = others.filter(|&other| other != this && Some(other) != hidden).count();
+        let waits = undo && shown > 0 && !cx.global::<Settings>().undo_timeout.is_zero();
+        crate::note(if waits { "window hidden for undo-close" } else { "window closed" });
+        if !waits {
+            if shown == 0 {
+                forget(cx);
+            }
+            return window.remove_window();
+        }
+        if let Some(ns_window) = ns_window(window) {
+            ns_window.orderOut(None);
+        }
+        let handle = window.window_handle().downcast().expect("a terminal window");
+        remember(handle, Reopen::Window, Vec::new(), cx);
+        cx.defer(refresh_badge);
+    }
+
+    /// Brings back what a close took away, with its panes: a pane into its split (or, with that
+    /// gone, into a tab of its own), a tab at its index, a hidden window. A window that was
+    /// hidden, or where the chord did not come from (`from`), comes to the front.
+    fn reopen(
+        &mut self,
+        reopen: Reopen,
+        views: Vec<(PaneId, Entity<PaneView>)>,
+        from: WindowId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::note(&format!("undo-close reopened {reopen:?}"));
+        let front = matches!(reopen, Reopen::Window) || from != window.window_handle().window_id();
+        match reopen {
+            Reopen::Pane(id, place) => {
+                if let Some(tab) = self.tabs.find(place.beside) {
+                    self.tabs.select(tab);
+                }
+                if !self.tabs.active_mut().reopen(id, &place) {
+                    self.tabs.open(id);
+                }
+            }
+            Reopen::Tab(index, tab) => self.tabs.reopen(index, tab),
+            Reopen::Window => {}
+        }
+        // Showing a hidden window as well.
+        if front {
+            window.activate_window();
+        }
+        self.views.extend(views);
+        self.focus_shown(window, cx);
     }
 
     /// A press in the bar: a tab shows at once, a close button or the + waits for the release,
@@ -943,7 +1130,13 @@ impl TerminalWindow {
         let bundled = if notify::bundled() { "an app bundle" } else { "no app bundle" };
         let _ = writeln!(out, "windows {} tabs {labels:?} in {bundled}", cx.windows().len());
         let badge = cx.try_global::<DockBadge>().and_then(|badge| badge.0.as_deref());
-        let _ = writeln!(out, "dock badge {badge:?}");
+        let visible = ns_window(window).map(|ns_window| ns_window.isVisible());
+        let _ = writeln!(out, "dock badge {badge:?}, this window on screen {visible:?}");
+        if let Some(undo) = cx.try_global::<LastClose>().and_then(|last| last.0.as_ref()) {
+            let panes: Vec<PaneId> = undo.views.iter().map(|(pane, _)| *pane).collect();
+            let left = undo.until.saturating_duration_since(Instant::now()).as_millis();
+            let _ = writeln!(out, "undo-close {:?} panes {panes:?} for {left} ms", undo.reopen);
+        }
         // The bar as the next frame draws it, and the title macOS has (the Window menu's).
         let hex = |Rgb(r, g, b): Rgb| format!("#{r:02x}{g:02x}{b:02x}");
         let bar = self.bar(window);
@@ -1237,8 +1430,14 @@ impl Render for TerminalWindow {
                 crate::note(&format!("pane {pane}: {}", action.keystroke));
                 let running = this.running(&[pane], cx);
                 this.confirm(Closing::Pane, running, window, cx, move |this, window, cx| {
-                    this.close(pane, window, cx)
+                    this.close(pane, true, window, cx)
                 });
+            }))
+            .on_action(cx.listener(|_, _: &UndoClose, window, cx| {
+                // Once this window is done with the chord, so that any window can take the
+                // close back, this one included.
+                let from = window.window_handle().window_id();
+                cx.defer(move |cx| undo_close(from, cx));
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {
                 this.focus_toward(this.tabs.active().focus(), action.direction, false, window, cx);
