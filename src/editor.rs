@@ -2,15 +2,16 @@
 //! (msgpack-rpc on a Unix socket, `nvim`), else in a new pane running the `editor` template or
 //! the shell's `$EDITOR` (`command`).
 
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use portable_pty::CommandBuilder;
-use regex::{Captures, Regex};
+use regex::bytes::{Captures, Regex};
 
 use crate::links::Location;
 
@@ -20,6 +21,7 @@ const NVIM_TIMEOUT: Duration = Duration::from_millis(300);
 /// What the plugin's `open` is called with, through `nvim_exec_lua`.
 const OPEN: &str = "require('rtty').open(...)";
 
+/// Bytes, so a path that is not UTF-8 is filled in as it is.
 static PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{(path|line|col)\}").expect("a regex"));
 
@@ -30,18 +32,18 @@ static PLACEHOLDER: LazyLock<Regex> =
 pub fn command(template: Option<&[String]>, at: &Location) -> CommandBuilder {
     let shell = CommandBuilder::new_default_prog().get_shell();
     let fish = shell.rsplit('/').next() == Some("fish");
-    let (path, line, col) = (at.path.to_string_lossy(), at.line.to_string(), at.col.to_string());
+    let (path, line, col) = (at.path.as_os_str(), at.line.to_string(), at.col.to_string());
     let fill = |arg: &String| {
         let value = |found: &Captures| match &found[1] {
-            "path" => path.to_string(),
-            "line" => line.clone(),
-            _ => col.clone(),
+            b"path" => path.as_bytes().to_vec(),
+            b"line" => line.clone().into_bytes(),
+            _ => col.clone().into_bytes(),
         };
-        PLACEHOLDER.replace_all(arg, value).into_owned()
+        OsString::from_vec(PLACEHOLDER.replace_all(arg.as_bytes(), value).into_owned())
     };
     let args = match template {
         Some(template) => template.iter().map(fill).collect(),
-        None => vec![format!("+{line}"), path.to_string()],
+        None => vec![format!("+{line}").into(), path.to_owned()],
     };
     let script = match (template.is_some(), fish) {
         (true, false) => r#"exec "$@""#,
@@ -52,9 +54,9 @@ pub fn command(template: Option<&[String]>, at: &Location) -> CommandBuilder {
         }
     };
     // sh, bash and zsh take the first argument after the script as $0.
-    let zero = (!fish).then(|| "rtty".to_owned());
-    let argv = [shell, "-l".into(), "-i".into(), "-c".into(), script.into()];
-    CommandBuilder::from_argv(argv.into_iter().chain(zero).chain(args).map(Into::into).collect())
+    let zero = (!fish).then(|| "rtty".into());
+    let argv = [shell.into(), "-l".into(), "-i".into(), "-c".into(), script.into()];
+    CommandBuilder::from_argv(argv.into_iter().chain(zero).chain(args).collect())
 }
 
 /// Has the Neovim serving `server` open `at`, through rtty's plugin, and waits for its answer:
@@ -135,6 +137,16 @@ mod tests {
 
     fn shell_is_fish() -> bool {
         CommandBuilder::new_default_prog().get_shell().ends_with("/fish")
+    }
+
+    #[test]
+    fn a_path_that_is_not_utf_8_reaches_the_editor_byte_for_byte() {
+        let path = PathBuf::from(OsString::from_vec(b"/src/caf\xe9 {col}.rs".to_vec()));
+        let at = Location { path: path.clone(), line: 2, col: 9 };
+        let template = ["vi", "{path}:{line}:{col}"].map(String::from);
+        let filled = command(Some(&template), &at).get_argv().last().unwrap().clone();
+        assert_eq!(filled.as_bytes(), b"/src/caf\xe9 {col}.rs:2:9");
+        assert_eq!(command(None, &at).get_argv().last().unwrap(), path.as_os_str());
     }
 
     /// What sh makes of the default command: the editor's argv, a path with a space and a quote
