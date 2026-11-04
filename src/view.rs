@@ -468,10 +468,11 @@ impl PaneView {
         window.focus(&self.focus);
     }
 
-    /// Gives the terminal, and through the pty its program, `rows`×`cols` cells of `cell`: the
-    /// window decides from its layout, for shown and hidden panes alike.
-    pub fn resize(&mut self, rows: u16, cols: u16, cell: Size<Pixels>) {
-        let grid = (rows, cols, (f32::from(cell.width) as u16, f32::from(cell.height) as u16));
+    /// Gives the terminal, and through the pty its program, `rows`×`cols` cells of `cell` on a
+    /// display of `scale` device pixels a point: the window decides from its layout, for shown and
+    /// hidden panes alike.
+    pub fn resize(&mut self, rows: u16, cols: u16, cell: Size<Pixels>, scale: f32) {
+        let grid = (rows, cols, device_pixels(cell, scale));
         if mem::replace(&mut self.grid, grid) != grid {
             self.pane.resize(rows, cols, grid.2);
             // Reflow renumbers the rows matches were found on.
@@ -1235,7 +1236,7 @@ impl PaneView {
                 control: modifiers.control,
             },
             cell,
-            pixel: (f32::from(offset.x).max(0.) as u32, f32::from(offset.y).max(0.) as u32),
+            pixel: pixel_offset(offset, grid.cell, self.grid.2),
         };
         if mouse::wanted(modes.mouse, &report)
             && let Some(bytes) = mouse::encode(&report, modes.mouse, modes.mouse_encoding)
@@ -2161,6 +2162,21 @@ pub fn hsla(Rgb(r, g, b): Rgb) -> Hsla {
     Rgba { r: channel(r), g: channel(g), b: channel(b), a: 1. }.into()
 }
 
+/// A cell of `cell` points in the device pixels of a display of `scale`: what rtty reports as
+/// the cell size (the pty's `ws_xpixel` and `ws_ypixel`, `CSI 14 t` and `16 t`), as Ghostty and
+/// WezTerm do, so that an image at its own size covers as many pixels on the display.
+fn device_pixels(cell: Size<Pixels>, scale: f32) -> (u16, u16) {
+    let pixels = |side: Pixels| (f32::from(side) * scale).round() as u16;
+    (pixels(cell.width), pixels(cell.height))
+}
+
+/// A point `offset` from a pane's top left as SGR pixel mouse reports (1016) give it: in cells of
+/// `cell` points, times the cell size in pixels rtty reports, `cell_pixels`.
+fn pixel_offset(offset: Point<Pixels>, cell: Size<Pixels>, cell_pixels: (u16, u16)) -> (u32, u32) {
+    let pixels = |at: Pixels, side: Pixels, size: u16| (at / side * f32::from(size)).max(0.) as u32;
+    (pixels(offset.x, cell.width, cell_pixels.0), pixels(offset.y, cell.height, cell_pixels.1))
+}
+
 /// An image of the engine's (RGBA) as GPUI draws it (BGRA).
 fn render_image(image: &rtty_vt::Image) -> Arc<RenderImage> {
     let mut pixels = image.rgba.clone();
@@ -2458,6 +2474,21 @@ mod tests {
         assert_eq!((wider.scale, wider.offset.x), (0.5, px(0.)));
         // One that keeps to its own cell stays as drawn, blank after it or not.
         assert!(fit_ink(ink(1., 0., 8., 10.), px(10.), px(10.), px(20.), px(15.)).is_none());
+    }
+
+    /// On a Retina display (2 pixels a point) a cell of 8×17 points is reported as 16×34 pixels,
+    /// and a mouse pixel report agrees with it: the top left of cell (3, 5) is 5 × 16, 3 × 34, and
+    /// half a point in is one pixel more. At 1× points and pixels are one.
+    #[test]
+    fn cell_sizes_and_mouse_pixels_are_device_pixels() {
+        let cell = size(px(8.), px(17.));
+        assert_eq!(device_pixels(cell, 2.), (16, 34));
+        assert_eq!(device_pixels(cell, 1.), (8, 17));
+        let corner = point(px(5. * 8.), px(3. * 17.));
+        assert_eq!(pixel_offset(corner, cell, (16, 34)), (80, 102));
+        assert_eq!(pixel_offset(corner + point(px(0.5), px(0.5)), cell, (16, 34)), (81, 103));
+        assert_eq!(pixel_offset(corner, cell, (8, 17)), (40, 51));
+        assert_eq!(pixel_offset(point(px(-3.), px(-1.)), cell, (16, 34)), (0, 0));
     }
 
     /// A pane of 10 rows of 20-pixel cells from y = 100: a pointer 50 pixels above it is 2.5

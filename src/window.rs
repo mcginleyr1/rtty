@@ -1575,10 +1575,11 @@ impl TerminalWindow {
 impl Render for TerminalWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (area, cell, bar) = self.area(window, cx);
+        let scale = window.scale_factor();
         for tab in self.tabs.all() {
             for (id, rect) in tab.grids(area) {
                 if let Some(view) = self.views.get(&id) {
-                    view.update(cx, |view, _| view.resize(rect.rows, rect.cols, cell));
+                    view.update(cx, |view, _| view.resize(rect.rows, rect.cols, cell, scale));
                 }
             }
         }

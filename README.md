@@ -631,10 +631,12 @@ tutti, which pass the placeholder text along. Each image is decoded once, by rtt
 GPUI image until rtty-vt evicts it (256 MiB of images per pane, the oldest first), and its pixels
 go to the GPU once.
 
-Clients size images by the cell size in pixels, which rtty reports in points (the pty's
-`ws_xpixel` and `ws_ypixel`, and `CSI 14 t` and `16 t`): on a Retina screen an image shown at its
-own size covers twice its pixels on the display. `graphics = false` drops every graphics command,
-as a terminal without the protocol does.
+Clients size images by the cell size in pixels, which rtty reports in the display's device
+pixels, as Ghostty and WezTerm do: the pty's `ws_xpixel` and `ws_ypixel`, `CSI 14 t` and `16 t`
+(on a Retina display a cell of 8×17 points is 16×34), and SGR-pixel mouse reports (mode 1016),
+which count a pointer's offset in those same pixels. So an image shown at its own size covers its
+pixels one to one. The scale is the window's, as each layout finds it. `graphics = false` drops
+every graphics command, as a terminal without the protocol does.
 
 ## rtty cli and editors
 
