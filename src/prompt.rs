@@ -19,6 +19,12 @@ pub fn marks(term: &Terminal) -> Vec<Mark> {
     marks
 }
 
+/// Whether a mark an event told of is on the rows held: one a program sent while the alternate
+/// screen was up is an event only, and says nothing of the shell's commands.
+pub fn held(term: &Terminal, mark: &Mark) -> bool {
+    term.marks(mark.row, mark.row + 1).contains(mark)
+}
+
 /// The rows prompts start on (A).
 pub fn prompts(term: &Terminal) -> Vec<u64> {
     let marks = marks(term).into_iter();
@@ -95,6 +101,7 @@ pub fn cursor_moves(term: &Terminal, at: (u64, u16)) -> Option<isize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtty_vt::Event;
 
     const A: &str = "\x1b]133;A\x07";
     const B: &str = "\x1b]133;B\x07";
@@ -108,6 +115,27 @@ mod tests {
 
     fn end(status: i32) -> String {
         format!("\x1b]133;D;{status}\x07")
+    }
+
+    /// The marks the stream's events told of, in order.
+    fn told(term: &mut Terminal) -> Vec<Mark> {
+        let events = term.take_events().into_iter();
+        events
+            .filter_map(|event| if let Event::Mark(mark) = event { Some(mark) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn a_mark_from_the_alternate_screen_is_not_the_shells() {
+        let mut term = term(10, 20, &format!("{A}$ {B}vim\r\n{C}"));
+        let shells = told(&mut term);
+        assert!(shells.iter().all(|mark| held(&term, mark)));
+        // A program on the alternate screen that marks an end (a shell inside it, say).
+        term.advance(format!("\x1b[?1049h{}", end(0)).as_bytes());
+        let [programs] = told(&mut term)[..] else { panic!("one mark") };
+        assert!(!held(&term, &programs));
+        term.advance(format!("\x1b[?1049l{}", end(0)).as_bytes());
+        assert!(told(&mut term).iter().all(|mark| held(&term, mark)));
     }
 
     #[test]

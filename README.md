@@ -458,7 +458,9 @@ after the shell has started.
 - A command that ran `notify_after` seconds or more (10 by default; 0 for never) and ends in a pane
   that is not the focused pane of the key window posts a notification: its command line, as typed
   after the prompt, then its exit status, how long it ran and the pane's title. Like a program's own
-  notification it needs the app bundle, and clicking it brings rtty forward at that pane.
+  notification it needs the app bundle, and clicking it brings rtty forward at that pane. A mark a
+  program sends while the alternate screen is up is not the shell's, and neither starts nor ends a
+  command.
 - A plain click on the command line being typed (after the last prompt, before a command runs), in
   the pane that already has the keyboard and whose program takes no mouse reports, moves the shell's
   cursor there with arrow keys, as Ghostty's `cursor-click-to-move` does (`click_to_move = false`

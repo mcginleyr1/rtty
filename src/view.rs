@@ -569,6 +569,9 @@ impl PaneView {
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
                 self.claims_keys = value == "pane"
             }
+            // A mark a program sent while the alternate screen was up is not the shell's: no grid
+            // row holds it, and it neither starts nor ends a command.
+            Notice::Event(Event::Mark(mark)) if !prompt::held(&self.pane.lock(), &mark) => {}
             Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
                 self.claims_keys = false;
                 self.command = None;
