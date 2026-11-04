@@ -473,18 +473,9 @@ impl TerminalWindow {
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
         // The title dims while the window is in the background, as macOS's do.
         cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
-        // The window's close button asks first too, as closing its panes one by one would, and
-        // the window waits for `undo-close` as theirs would.
         let this = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
-            let close = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                this.close_window(true, window, cx)
-            };
-            let asked = this.update(cx, |this, cx| {
-                let running = this.running(&this.panes(), cx);
-                this.confirm(Closing::Window, running, window, cx, close)
-            });
-            asked.is_err()
+            this.update(cx, |this, cx| this.close_button(window, cx)).is_err()
         });
         let mut this = TerminalWindow {
             tabs: Tabs::new(id),
@@ -765,6 +756,15 @@ impl TerminalWindow {
             }
             this.take_out(&panes, Some(Reopen::Tab(index, tab)), window, cx);
             this.focus_shown(window, cx);
+        });
+    }
+
+    /// The window's close button (and `--script`'s `window close`): it asks first too, as closing
+    /// the window's panes one by one would, and the window waits for `undo-close` as theirs would.
+    pub fn close_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let running = self.running(&self.panes(), cx);
+        self.confirm(Closing::Window, running, window, cx, |this, window, cx| {
+            this.close_window(true, window, cx)
         });
     }
 

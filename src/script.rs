@@ -34,6 +34,8 @@
 //! answer ok|cancel       press a button on the question closing asked first (Cmd+W, a tab's
 //!                        close button, the window's, Cmd+Q), which a scripted window keeps in
 //!                        its dump instead of showing a sheet
+//! window close N         the close button of window N (from 1, in the order they opened), as a
+//!                        click on it goes on; not the script's own window
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -48,7 +50,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     AsyncWindowContext, Context, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase,
-    WeakEntity, Window, WindowAppearance, point,
+    WeakEntity, Window, WindowAppearance, WindowHandle, point,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
@@ -98,6 +100,7 @@ pub enum Step {
     BarClick(Hit),
     BarHover(Option<Hit>),
     Answer(usize),
+    WindowClose(usize),
     Appearance(WindowAppearance),
     Resize {
         rows: u16,
@@ -250,6 +253,10 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 "ok" => Step::Answer(0),
                 "cancel" => Step::Answer(1),
                 _ => return Err(error("ok or cancel expected")),
+            },
+            "window" => match (args.first().copied(), args.get(1).map(|n| n.parse::<usize>())) {
+                (Some("close"), Some(Ok(n))) if n > 0 => Step::WindowClose(n - 1),
+                _ => return Err(error("window close N, from 1, expected")),
             },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
@@ -451,6 +458,17 @@ async fn perform(
         Step::Answer(button) => this
             .update(cx, |this, _| this.answer_question(*button))
             .map_err(|err| err.to_string())??,
+        Step::WindowClose(index) => cx
+            .update(|_, cx| {
+                let mut windows = cx.windows().into_iter().filter_map(|window| window.downcast());
+                let number = index + 1;
+                let handle: WindowHandle<TerminalWindow> =
+                    windows.nth(*index).ok_or(format!("no window {number}"))?;
+                handle
+                    .update(cx, |this, window, cx| this.close_button(window, cx))
+                    .map_err(|_| format!("window {number} is the script's own"))
+            })
+            .map_err(|err| err.to_string())??,
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -593,6 +611,10 @@ mod tests {
         let answers = parse("answer ok\nanswer cancel").unwrap();
         assert!(matches!((&answers[0].1, &answers[1].1), (Step::Answer(0), Step::Answer(1))));
         assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
+        assert!(matches!(parse("window close 2").unwrap()[0].1, Step::WindowClose(1)));
+        for wrong in ["window close 0", "window close", "window open 2"] {
+            assert!(parse(wrong).unwrap_err().contains("window close N, from 1"), "{wrong}");
+        }
         assert!(parse("bar wave").unwrap_err().contains("bar click|hover"));
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
