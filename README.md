@@ -382,6 +382,10 @@ only while `Cmd` is held over it and at the click, never per frame. A click on
   `.tool`, `.terminal`, `.jar`, `.fileloc`, `.inetloc` or `.webloc` that is not text are shown in
   Finder instead.
 
+A path is taken for what it really is, its symlinks resolved, so a link named `tool` to an app
+is the app. What is neither a file nor a directory (a FIFO, a socket, a device) is only shown in
+Finder, never read.
+
 **Quick select.** `Cmd+Shift+Space` (`quick-select`; WezTerm's QuickSelect is the idea, on
 Ctrl+Shift+Space there, a Ctrl key and so a program's here) labels everything worth copying on the
 focused pane's screen: URLs, paths, git hashes (7 to 40 hex digits), IPv4 and IPv6 addresses,

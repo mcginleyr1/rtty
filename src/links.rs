@@ -149,24 +149,30 @@ pub fn paths(text: &str) -> Vec<(Range<usize>, Location)> {
     found.collect()
 }
 
-/// `written` as the absolute path of something that exists: `~/…` from the home directory, a
-/// relative path from `cwd`.
+/// `written` as the real path of something that exists, symlinks resolved, so it is classified
+/// and opened as what it is (`opening`): `~/…` from the home directory, a relative path from
+/// `cwd`.
 pub fn resolve(written: &Path, cwd: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
     let path = match written.strip_prefix("~") {
         Ok(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
         Err(_) if written.is_relative() => cwd()?.join(written),
         Err(_) => written.to_owned(),
     };
-    path.exists().then_some(path)
+    fs::canonicalize(path).ok()
 }
 
-/// What opening `path` does: text (no NUL in its first 8 KiB) is edited; a directory, an image,
-/// a PDF and the like are opened; an app or other package (a directory with an extension), an
-/// executable, and a file that runs or opens something else when opened are only shown.
+/// What opening `path` (a real path, `resolve`'s) does: text (no NUL in its first 8 KiB) is
+/// edited; a directory, an image, a PDF and the like are opened; an app or other package (a
+/// directory with an extension), an executable, a file that runs or opens something else when
+/// opened, and anything neither a file nor a directory (a symlink, a FIFO, which reading would
+/// wait on, a device) are only shown.
 pub fn opening(path: &Path) -> Opening {
-    let Ok(meta) = fs::metadata(path) else { return Opening::Reveal };
+    let Ok(meta) = fs::symlink_metadata(path) else { return Opening::Reveal };
     if meta.is_dir() {
         return if path.extension().is_some() { Opening::Reveal } else { Opening::Open };
+    }
+    if !meta.is_file() {
+        return Opening::Reveal;
     }
     let mut head = [0; 8192];
     let read = File::open(path).and_then(|mut file| file.read(&mut head)).unwrap_or(0);
@@ -462,6 +468,29 @@ mod tests {
         for name in ["tool", "Site.webloc", "Thing.app", "gone"] {
             assert_eq!(opening(name), Opening::Reveal, "{name}");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A FIFO with no writer would hold a read forever, and a name without an extension could
+    /// stand for an app.
+    #[test]
+    fn a_link_is_classified_as_what_it_really_is_and_a_fifo_is_never_read() {
+        let dir = scratch("real", &[("notes.md", b"# notes\n"), ("Thing.app/Contents/Info", b"")]);
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success());
+        assert_eq!(opening(&fifo), Opening::Reveal);
+        std::os::unix::fs::symlink(dir.join("Thing.app"), dir.join("thing")).unwrap();
+        std::os::unix::fs::symlink(dir.join("notes.md"), dir.join("notes")).unwrap();
+        let real = |name: &str| resolve(Path::new(name), || Some(dir.clone())).unwrap();
+        assert_eq!(real("thing"), dir.join("Thing.app"));
+        assert_eq!(opening(&real("thing")), Opening::Reveal, "the app it stands for");
+        assert_eq!(opening(&real("notes")), Opening::Edit);
+        assert_eq!(
+            opening(&dir.join("thing")),
+            Opening::Reveal,
+            "a symlink itself is not followed"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
