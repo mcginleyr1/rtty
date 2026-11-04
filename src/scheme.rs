@@ -241,6 +241,32 @@ fn mix(Rgb(r1, g1, b1): Rgb, Rgb(r2, g2, b2): Rgb, share: f32) -> Rgb {
     Rgb(channel(r1, r2), channel(g1, g2), channel(b1, b2))
 }
 
+/// WCAG's contrast ratio of two colors, from 1 (the same) to 21 (black and white).
+pub fn contrast(a: Rgb, b: Rgb) -> f32 {
+    let (a, b) = (luminance(a) + 0.05, luminance(b) + 0.05);
+    a.max(b) / a.min(b)
+}
+
+/// `fg` moved toward white on a dark `bg`, toward black on a light one, just far enough that the
+/// two contrast by `ratio`; all the way when even that falls short.
+pub fn contrasted(fg: Rgb, bg: Rgb, ratio: f32) -> Rgb {
+    if ratio <= 1. || contrast(fg, bg) >= ratio {
+        return fg;
+    }
+    let target = if is_dark(bg) { Rgb(255, 255, 255) } else { Rgb(0, 0, 0) };
+    // The way there passes the background's lightness at most once, so contrast falls short
+    // until some share and is enough from then on: halve the gap to that share.
+    let (mut short, mut enough) = (0., 1.);
+    for _ in 0..10 {
+        let share = (short + enough) / 2.;
+        match contrast(mix(fg, target, share), bg) >= ratio {
+            true => enough = share,
+            false => short = share,
+        }
+    }
+    mix(fg, target, enough)
+}
+
 /// WCAG relative luminance, 0 for black to 1 for white.
 fn luminance(Rgb(r, g, b): Rgb) -> f32 {
     let linear = |channel: u8| {
@@ -385,6 +411,34 @@ mod tests {
         let bad_index = WEZTERM_FIXTURE.replace("59 = ", "fifty-nine = ");
         let err = Scheme::parse(&bad_index, path()).unwrap_err();
         assert!(err.contains("colors.indexed") && err.contains("fifty-nine"), "{err}");
+    }
+
+    /// By WCAG's formula, Solarized Light's base1 (its comments) on base3 is 2.48:1 and OneDark
+    /// Pro's comment grey on its background 2.32:1: both short of the 4.5 WCAG asks of text.
+    #[test]
+    fn a_minimum_contrast_moves_the_text_just_far_enough_toward_black_or_white() {
+        let schemes = load(&[]).unwrap();
+        let (light, dark) = (find(&schemes, "Solarized Light"), find(&schemes, "OneDark Pro"));
+        let (light, dark) = (light.unwrap(), dark.unwrap());
+        let (base1, base3) = (light.color(14), light.color(BACKGROUND));
+        let (grey, bg) = (dark.color(8), dark.color(BACKGROUND));
+        assert_eq!([base1, base3, grey, bg], [0x93a1a1, 0xfdf6e3, 0x5c6370, 0x282c34].map(rgb));
+        let ratio = |fg, bg| (contrast(fg, bg) * 100.).round() / 100.;
+        assert_eq!([ratio(base1, base3), ratio(grey, bg)], [2.48, 2.32]);
+        assert_eq!(ratio(rgb(0x000000), rgb(0xffffff)), 21.);
+        for (fg, bg, darker) in [(base1, base3, true), (grey, bg, false)] {
+            for minimum in [3., 4.5, 7.] {
+                let moved = contrasted(fg, bg, minimum);
+                let reached = contrast(moved, bg);
+                assert!((minimum..minimum + 0.1).contains(&reached), "{fg:?} {minimum}: {reached}");
+                let channels = |Rgb(r, g, b): Rgb| [r, g, b];
+                let mut toward = channels(moved).into_iter().zip(channels(fg));
+                assert!(toward.all(|(to, from)| (to < from) == darker && to != from));
+            }
+            assert_eq!([contrasted(fg, bg, 1.), contrasted(fg, bg, 2.)], [fg, fg]);
+        }
+        // Past what the background allows: all the way.
+        assert_eq!(contrasted(grey, bg, 21.), rgb(0xffffff));
     }
 
     #[test]

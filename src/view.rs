@@ -74,6 +74,8 @@ pub struct Settings {
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,
     pub bell: Bell,
+    /// `minimum_contrast`: the WCAG contrast ratio text keeps with its background.
+    pub minimum_contrast: f32,
 }
 
 impl Global for Settings {}
@@ -660,7 +662,8 @@ impl PaneView {
 
     /// What the next frame draws, as text, with the state it is drawn from: `--script`'s `dump`.
     pub fn dump(&self, window: &Window, cx: &App) -> String {
-        let font = cx.global::<Settings>().font.clone();
+        let settings = cx.global::<Settings>();
+        let (font, minimum_contrast) = (settings.font.clone(), settings.minimum_contrast);
         let text_system = window.text_system();
         let mut out = String::new();
         let fallbacks = font.fallbacks.iter().flat_map(|fallbacks| fallbacks.fallback_list());
@@ -672,7 +675,7 @@ impl PaneView {
         let primary = text_system.resolve_font(&font);
         let _ = writeln!(out, "font {:?} {primary:?} fallbacks {fallbacks:?}", font.family);
         let term = self.pane.lock();
-        let palette = Palette::new(&term, &self.scheme);
+        let palette = Palette::new(&term, &self.scheme, minimum_contrast);
         let (rows, cols) = term.size();
         let top = self.pane.top(&term);
         let selection = self.pane.selection.and_then(|selection| selection.range(&term));
@@ -1041,6 +1044,7 @@ impl PaneView {
         self.pane.drawing();
         let settings = cx.global::<Settings>();
         let (font, font_size) = (settings.font.clone(), settings.font_size);
+        let minimum_contrast = settings.minimum_contrast;
         let text_system = window.text_system().clone();
         let Metrics { cell, ascent, descent } = metrics(&text_system, &font, font_size);
         let (rows, cols, _) = self.grid;
@@ -1064,7 +1068,7 @@ impl PaneView {
                 return frame;
             }
         }
-        let palette = Palette::new(&term, &self.scheme);
+        let palette = Palette::new(&term, &self.scheme, minimum_contrast);
         let top = self.pane.top(&term);
         let selection = self.pane.selection.and_then(|selection| selection.range(&term));
         let mut scene = Scene::new(&term, &palette, top, rows, selection, focused);

@@ -101,6 +101,7 @@ scheme_light = "Solarized Light"  # the default
 keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and Alt+h/j/k/l (Keys)
 bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
 option_as_alt = "both"            # the default; "left", "right" or "none": the Option keys that are Alt (Keys)
+minimum_contrast = 1              # the default, off; 4.5 keeps text legible (Color schemes)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -197,6 +198,15 @@ their color indices, so everything already on screen recolors on the next frame.
 set itself (OSC 4/10/11/12) are the program's, not the scheme's, and survive a flip; a program
 that cares re-sets them when it hears about the flip (below). OSC 10/11/12/4 queries answer with
 the current scheme.
+
+**Minimum contrast.** `minimum_contrast` is a WCAG contrast ratio from 1 (the default, which
+changes nothing) to 21. Text whose color falls short of it on its cell's background moves toward
+white on a dark background, toward black on a light one, just far enough to reach it (or as far
+as it goes); only the text's color moves, never the background. At 4.5, WCAG's ratio for text,
+OneDark Pro's comment grey `#5c6370` (2.3:1) draws as `#8e939c`, and Solarized Light's comments,
+base1 `#93a1a1` (2.5:1), as `#697373`; Solarized Light's own text, base00 `#657b83`, is 4.1:1
+and darkens a shade, to `#60747c`. Text the program made inverse or hidden, the selection and
+search matches keep their colors. iTerm2 and Ghostty have a setting of the same name.
 
 **Telling programs (DEC mode 2031).** rtty implements contour's color palette update
 notifications. `CSI ? 996 n` asks for the scheme and gets `CSI ? 997 ; 1 n` (dark) or

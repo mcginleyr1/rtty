@@ -23,6 +23,8 @@ pub struct Config {
     keys: Option<Keys>,
     pub bell: Option<Bell>,
     pub option_as_alt: Option<OptionAsAlt>,
+    /// The WCAG contrast ratio, 1 to 21, text keeps with its background.
+    pub minimum_contrast: Option<f32>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -227,6 +229,9 @@ impl Config {
     /// chord; a mistake there names its chord and line.
     pub fn parse(source: &str) -> Result<Config, String> {
         let mut config: Config = toml::from_str(source).map_err(|err| err.to_string())?;
+        if let Some(ratio) = config.minimum_contrast.filter(|ratio| !(1. ..=21.).contains(ratio)) {
+            return Err(format!("minimum_contrast ={ratio}: a contrast ratio from 1 to 21"));
+        }
         config.bindings = defaults(config.keys.unwrap_or_default());
         let mut lines = HashMap::new();
         for (text, name) in config.bind.iter().flatten() {
@@ -415,6 +420,18 @@ mod tests {
         assert_eq!(bell("bell = 'none'").unwrap(), Some(Bell::None));
         let err = bell("bell = 'audible'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `audible`, expected `visual` or `none`"), "{err}");
+    }
+
+    #[test]
+    fn minimum_contrast_is_a_ratio_from_1_to_21() {
+        let contrast = |source: &str| Config::parse(source).map(|config| config.minimum_contrast);
+        assert_eq!(contrast("").unwrap(), None);
+        assert_eq!(contrast("minimum_contrast =4.5").unwrap(), Some(4.5));
+        assert_eq!(contrast("minimum_contrast =21").unwrap(), Some(21.));
+        for wrong in ["0.5", "22", "nan"] {
+            let err = contrast(&format!("minimum_contrast ={wrong}")).unwrap_err();
+            assert!(err.ends_with(": a contrast ratio from 1 to 21"), "{err}");
+        }
     }
 
     #[test]

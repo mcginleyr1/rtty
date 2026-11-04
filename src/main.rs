@@ -287,6 +287,7 @@ fn run(options: Options) -> Result<(), String> {
     let bindings = config.bindings;
     let bell = config.bell.unwrap_or_default();
     let option_as_alt = config.option_as_alt.unwrap_or_default();
+    let minimum_contrast = config.minimum_contrast.unwrap_or(1.);
     let fallback = config.fallback;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
@@ -446,6 +447,7 @@ fn run(options: Options) -> Result<(), String> {
             socket,
             open_links,
             bell,
+            minimum_contrast,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

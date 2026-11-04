@@ -25,10 +25,13 @@ pub struct Palette {
     /// current one (the background on the cursor's color).
     pub matched: (Rgb, Rgb),
     pub current_match: (Rgb, Rgb),
+    /// The WCAG contrast ratio a cell's text keeps with its background (`scheme::contrasted`); 1
+    /// leaves every color as it is.
+    minimum_contrast: f32,
 }
 
 impl Palette {
-    pub fn new(term: &Terminal, scheme: &Scheme) -> Palette {
+    pub fn new(term: &Terminal, scheme: &Scheme, minimum_contrast: f32) -> Palette {
         let colors: [Rgb; SLOTS] =
             std::array::from_fn(|i| term.color_override(i).unwrap_or(scheme.color(i)));
         Palette {
@@ -37,6 +40,7 @@ impl Palette {
             selection: scheme.selection,
             matched: (colors[BACKGROUND], colors[3]),
             current_match: (colors[BACKGROUND], colors[CURSOR]),
+            minimum_contrast,
             colors,
         }
     }
@@ -214,6 +218,10 @@ impl<'a> Scene<'a> {
             if attrs.contains(Attrs::DIM) {
                 fg = scheme::dim(fg);
             }
+            // Inverse and hidden text keep the colors the program chose them for.
+            if !attrs.contains(Attrs::INVERSE) && !attrs.contains(Attrs::HIDDEN) {
+                fg = scheme::contrasted(fg, bg, self.palette.minimum_contrast);
+            }
             if attrs.contains(Attrs::INVERSE) {
                 mem::swap(&mut fg, &mut bg);
             }
@@ -348,7 +356,7 @@ mod tests {
 
     /// The rows and cursor of a focused, unscrolled frame.
     fn draw(term: &Terminal) -> (Vec<Line>, Option<Cursor>) {
-        let palette = Palette::new(term, &onedark());
+        let palette = Palette::new(term, &onedark(), 1.);
         frame(term, &palette, term.screen_top(), term.size().0, None, true)
     }
 
@@ -441,6 +449,29 @@ mod tests {
         assert_eq!(lines[0].backgrounds, [Background { col: 0, cells: 1, color: rgb(FG) }]);
     }
 
+    /// OneDark Pro's comment grey (bright black) is 2.3:1 on its background. At 4.5 it lightens
+    /// to 4.5, its underline with it; inverse and hidden text, the selection and a search match
+    /// keep their colors.
+    #[test]
+    fn a_minimum_contrast_lifts_faint_text_but_not_what_a_program_or_rtty_colored() {
+        let term = term(b"\x1b[?25l\x1b[90;4mc\x1b[0;7;90mi\x1b[0;8;90mh\x1b[0;90ms m\x1b[0m");
+        let palette = Palette::new(&term, &onedark(), 4.5);
+        let mut scene = Scene::new(&term, &palette, 0, 3, Some(((0, 3), (0, 3))), true);
+        scene.matches = vec![((0, 5), (0, 5))];
+        let line = scene.line(term.row(0).unwrap(), 0);
+        let style = |col| line.runs.iter().find(|run| run.col == col).unwrap().style;
+        let (grey, bg) = (rgb(0x5c6370), rgb(BG));
+        let lifted = style(0).fg;
+        assert!(scheme::contrast(lifted, bg) >= 4.5 && lifted != grey, "{lifted:?}");
+        assert_eq!(style(0).underline_color, lifted);
+        assert_eq!((style(1).fg, style(1).bg), (bg, grey));
+        assert_eq!((style(2).fg, style(2).bg), (bg, bg));
+        assert_eq!((style(3).fg, style(3).bg), palette.selection.unwrap());
+        assert_eq!((style(5).fg, style(5).bg), palette.matched);
+        let (lines, _) = frame(&term, &Palette::new(&term, &onedark(), 1.), 0, 3, None, true);
+        assert_eq!(lines[0].runs[0].style.fg, grey, "1, the default, changes nothing");
+    }
+
     #[test]
     fn reverse_video_swaps_the_default_colors() {
         let (lines, _) = draw(&term(b"\x1b[?25l\x1b[?5hab\x1b[31mc"));
@@ -454,7 +485,7 @@ mod tests {
     #[test]
     fn a_selection_takes_the_scheme_selection_colors() {
         let term = term("ab日cd\x1b[?25l".as_bytes());
-        let palette = Palette::new(&term, &onedark());
+        let palette = Palette::new(&term, &onedark(), 1.);
         let (lines, _) = frame(&term, &palette, 0, 3, Some(((0, 1), (0, 2))), true);
         assert_eq!(texts(&lines[0]), [(0, "a"), (1, "b"), (2, "日"), (4, "cd")]);
         assert_eq!(lines[0].runs[1].style.bg, rgb(MAGENTA));
@@ -464,7 +495,7 @@ mod tests {
     #[test]
     fn search_matches_take_yellow_the_current_one_the_cursor_color_under_a_selection() {
         let term = term("ab日cd ab\x1b[?25l".as_bytes());
-        let palette = Palette::new(&term, &onedark());
+        let palette = Palette::new(&term, &onedark(), 1.);
         let mut scene = Scene::new(&term, &palette, 0, 3, Some(((0, 8), (0, 8))), true);
         // "日c" (cells 2–4) is the current match; "ab" at 7–8 another, its "b" also selected.
         scene.current_match = Some(((0, 2), (0, 4)));
@@ -490,7 +521,7 @@ mod tests {
     #[test]
     fn the_link_under_the_pointer_is_underlined_in_its_text_color() {
         let term = term(b"\x1b[31mgo\x1b[m https://x.y\x1b[?25l");
-        let palette = Palette::new(&term, &onedark());
+        let palette = Palette::new(&term, &onedark(), 1.);
         let mut scene = Scene::new(&term, &palette, 0, 3, None, true);
         scene.link = Some(((0, 3), (0, 11)));
         let line = scene.line(term.row(0).unwrap(), 0);
@@ -508,7 +539,7 @@ mod tests {
         assert_eq!(draw(&term).1.unwrap().shape, CursorShape::Underline);
         term.advance(b"\x1b[0 q");
         assert_eq!(draw(&term).1.unwrap().shape, CursorShape::Block);
-        let palette = Palette::new(&term, &onedark());
+        let palette = Palette::new(&term, &onedark(), 1.);
         let (_, unfocused) = frame(&term, &palette, 0, 3, None, false);
         assert_eq!(unfocused.unwrap().shape, CursorShape::Hollow);
         term.advance(b"\x1b[?25l");
@@ -535,7 +566,7 @@ mod tests {
     #[test]
     fn a_scrolled_view_draws_scrollback_rows_and_hides_a_cursor_below_it() {
         let term = term(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
-        let palette = Palette::new(&term, &onedark());
+        let palette = Palette::new(&term, &onedark(), 1.);
         let (lines, cursor) = frame(&term, &palette, 0, 3, None, true);
         let rows: Vec<_> = lines.iter().map(|line| line.runs[0].text.as_str()).collect();
         assert_eq!(rows, ["one", "two", "three"]);
