@@ -16,10 +16,11 @@ if status is-interactive
         printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
         functions -q __rtty_user_prompt; and return
         functions -c fish_prompt __rtty_user_prompt
+        # The user's prompt runs first, while $status and $pipestatus are still the command's, and
+        # its output goes out between the marks.
         function fish_prompt
-            printf '\e]133;A\a'
-            __rtty_user_prompt
-            printf '\e]133;B\a'
+            set -l prompt (__rtty_user_prompt | string collect)
+            printf '\e]133;A\a%s\e]133;B\a' $prompt
         end
     end
     function __rtty_preexec --on-event fish_preexec
