@@ -14,8 +14,9 @@ agents: a TUI you run in any terminal, whose daemon keeps sessions alive across 
 
 ## Build and run
 
-macOS only for now (GPUI's Metal renderer). Needs a Rust toolchain with edition 2024 and Xcode's
-SDK; the offline Metal compiler is **not** needed (see [the GPUI pin](#the-gpui-pin)).
+macOS only (GPUI's Metal renderer, and AppKit for notifications and Finder); no Linux port is
+planned. Needs a Rust toolchain with edition 2024 and Xcode's SDK; the offline Metal compiler is
+**not** needed (see [the GPUI pin](#the-gpui-pin)).
 
 ```sh
 cargo run --release                     # your login shell
@@ -447,29 +448,34 @@ font's `calt`, `liga` and `dlig` features.
 Works: windows, tabs and splits (above), each pane running a shell or `-e` program with colors,
 attributes, wide chars, ligatures, every underline style (single, double, curly, dotted, dashed;
 SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in theirs), overline,
-selection and copy/paste, scrollback, resize with reflow, mouse reports, a Ghostty-style tab bar
-in the titlebar, window and tab titles from OSC 0/2, the foreground process or the shell's
-directory, OSC 52 copy, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as
-the window is activated and deactivated and as the pane gains and loses the keyboard), the
-keyboard protocols above, scrollback search, prompt jumps, links, the bell, notifications (from
-an app bundle), a config file, and WezTerm-format color schemes that follow the macOS
-appearance live in every pane (with DEC mode 2031 reports). Checked with `--script` against
-Neovim in two side-by-side panes (each redraws at its own size through divider moves and window
-resizes; clicks reach the pane under them at its own cells; a light/dark flip reaches both) and
-Emacs `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one
-key walks through Neovim's windows on to Emacs and back.
+selection (scrolling the scrollback when dragged past the pane) and copy/paste, scrollback,
+resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, window and tab titles
+from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
+focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
+the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
+jumps, links, the bell, notifications (from an app bundle), a config file, WezTerm-format color
+schemes that follow the macOS appearance live in every pane (with DEC mode 2031 reports),
+`rtty cli` and the editor plugins, and the log. Checked with `--script` against Neovim in two
+side-by-side panes (each redraws at its own size through divider moves and window resizes;
+clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
+`-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key
+walks through Neovim's windows on to Emacs and back. tutti's TUI in an rtty pane claims rtty's
+keys and hands a move or resize past its own edge on to `rtty cli`, so the same keys walk
+through Neovim's windows, tutti's panes and rtty's (tutti's README, "tutti in rtty").
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
 DECSCUSR asks for blinking, or, while DECSCUSR is at its default, when ATT610 (`CSI ? 12 h`) does;
 it stops blinking and stays on after 10 s without a key, so an idle window draws nothing.
 
-Not yet: IME is wired through GPUI's input handler (composition is drawn at the cursor and the
-candidate window is placed there) but unverified with a real input method; emoji and CJK rely on
-CoreText's font fallback (an emoji wider than its two cells is drawn smaller to fit them); the
-drawn box, block and powerline characters are checked by their geometry and the `--script`
-dump, not yet by eye on screen; notifications need the `.app`
-above, and posting from it and clicking one are not yet checked on screen; macOS only.
+Not yet: in a launch where rtty's window is key, Cmd+D has quit rtty instead of splitting and
+Cmd+F has done nothing ([Roadmap](#roadmap)). IME is wired through GPUI's input handler
+(composition is drawn at the cursor and the candidate window is placed there) but unverified
+with a real input method; emoji and CJK rely on CoreText's font fallback (an emoji wider than its
+two cells is drawn smaller to fit them); the drawn box, block and powerline characters and a
+selection dragged past a pane are checked by the `--script` dump, not yet by eye on screen;
+notifications need the `.app` above, and posting from it and clicking one are not yet checked on
+screen. rtty has no menu bar.
 
 ## The GPUI pin
 
@@ -486,7 +492,13 @@ from Zed's GPL `terminal` / `terminal_view` crates.
 
 ## Roadmap
 
-1. **tutti knows rtty.** tutti detects rtty (XTVERSION) and uses what it offers: the kitty
-   keyboard protocol, live light/dark (mode 2031), notifications, OSC 52 and hyperlinks, and
-   undercurl and cursor shapes passed through to its panes; and a move past tutti's edge, from
-   tutti or its editor plugins, goes on to rtty's panes.
+The one item this held, tutti knowing rtty, has shipped (Status, above). What is left:
+
+1. **Cmd+D and Cmd+F in a normal launch.** There, with rtty's window key in the active app, Cmd+D
+   has quit rtty instead of splitting and Cmd+F has done nothing. No `--script` run reproduces
+   it, `nskey` through NSApplication included, because a scripted window never becomes key.
+   rtty.log now records each Cmd chord as AppKit hands it over and as GPUI dispatches it, so the
+   next one says which layer takes it.
+2. **A look on screen** at what scripts check only in the dump: IME with a real input method,
+   the drawn box, block and powerline characters, a selection dragged past a pane, and
+   notifications from the `.app`, posted and clicked.
