@@ -53,7 +53,9 @@ is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 **The log.** rtty appends to `$TMPDIR/rtty-<uid>/rtty.log`, next to its socket (`echo
 $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
 why, each pane's start, split, close (with the chord that closed it) and its program's exit
-status, a tab's close button, the dock's progress badge as it changes, each Cmd chord as AppKit hands it to rtty and as GPUI dispatched it
+status, a tab's close button, the question a close asked and its answer (never what runs), a
+close undone or made for good, the dock's progress badge as it changes, each Cmd chord as AppKit
+hands it to rtty and as GPUI dispatched it
 (the window's activation, the key contexts it met, the actions bound to it there and the one that
 ran), and every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
 keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
@@ -575,7 +577,9 @@ resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, wind
 from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
 focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
-jumps, links, the bell, notifications (from an app bundle), a config file with key bindings,
+jumps, links, the bell, notifications (from an app bundle), a program's progress on its tab's pill
+and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
+`Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
 2031 reports), `rtty cli` and the editor plugins, and the log. Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
@@ -597,7 +601,11 @@ with a real input method; emoji and CJK rely on CoreText's font fallback (an emo
 two cells is drawn smaller to fit them); the drawn box, block and powerline characters and a
 selection dragged past a pane are checked by the `--script` dump, not yet by eye on screen;
 notifications need the `.app` above, and posting from it and clicking one are not yet checked on
-screen. rtty has no menu bar.
+screen. Closing's question is checked through the `--script` dump, where a scripted window keeps
+it, and its `answer` step; the native sheet itself, its buttons and Esc, the window's close button
+(which a script cannot click), the dock's badge and the progress line's look are not yet checked
+by eye. Quitting another way than `Cmd+Q` (the dock's Quit, logging out) asks nothing. rtty has
+no menu bar.
 
 ## The GPUI pin
 
@@ -625,5 +633,6 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    a dead key on the Option that is not Alt (é from Option+E, E: the text input inserts the
    characters a synthesized key event carries, and composes nothing from them), a file dragged
    from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
-   box, block and powerline characters, a selection dragged past a pane, and notifications from
-   the `.app`, posted and clicked.
+   box, block and powerline characters, a selection dragged past a pane, notifications from
+   the `.app`, posted and clicked, closing's sheet and the window's close button, and the
+   progress line and the dock's badge.
