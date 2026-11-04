@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), another window's close button, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from, with the shell's marks; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -106,6 +106,7 @@ option_as_alt = "both"            # the default; "left", "right" or "none": the 
 minimum_contrast = 1              # the default, off; 4.5 keeps text legible (Color schemes)
 confirm_close = true              # the default: ask before closing what runs a program (Keys)
 undo_timeout = 5                  # the default: seconds a close waits for Cmd+Z (Keys); 0: none
+shell_integration = "auto"        # the default: zsh, bash and fish load rtty's (Shell integration); or "none"
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -261,9 +262,10 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 New panes, tabs and windows run the login shell in the focused pane's working directory: as its
 shell last reported it with OSC 7 (`ESC ] 7 ; file://host/path BEL`), else the directory of the
 pane's foreground process (the pty's process group leader: the shell at a prompt, or the program
-it runs), else your home directory. macOS's zsh and bash send OSC 7 only from
-`/etc/zshrc_$TERM_PROGRAM`, which exists for Terminal.app alone, so the foreground process is what
-usually answers. A pane closes when its program exits, with the same cascade as `Cmd+W`.
+it runs), else your home directory. rtty's [shell integration](#shell-integration) sends OSC 7 at
+each prompt; without it, macOS's zsh and bash send it only from `/etc/zshrc_$TERM_PROGRAM`, which
+exists for Terminal.app alone, and the foreground process is what answers. A pane closes when its
+program exits, with the same cascade as `Cmd+W`.
 
 **Closing what runs.** Closing a pane (`close-pane`, whatever chord it is bound to), a tab (its
 ×), a window (its close button) or rtty (`Cmd+Q`) asks first, in a sheet on the window, while
@@ -402,6 +404,50 @@ reports (1004), light/dark reports (2031), modifyOtherKeys and kitty's flags, ri
 stream, so what the shell sets for its next prompt stays. Bracketed paste and the cursor and keypad
 modes stay too: shells set those themselves. tutti does the same.
 
+## Shell integration
+
+zsh, bash and fish in rtty mark where each prompt starts, where its command line starts, where a
+command's output starts and where the command ends, with its status (OSC 133 A, B, C and D), and
+report their directory at each prompt (OSC 7), with no edit to your dotfiles.
+`shell_integration = "none"` leaves the shell as it is; a prompt that sends the marks itself
+(oh-my-posh can) still gets everything below.
+
+**How it loads.** The scripts (`shell/`) are built into rtty, which writes them at startup into its
+private directory, `$TMPDIR/rtty-<uid>/shell/`, so `cargo run` and the `.app` behave alike. A new
+pane's login shell loads them; a `-e` program and any other shell are left alone.
+
+- **zsh** starts with `ZDOTDIR` at rtty's directory, whose `.zshenv` puts your `ZDOTDIR` back (or
+  unsets it) and reads your `.zshenv`; zsh goes on to read your `.zprofile`, `.zshrc` and `.zlogin`
+  as always. rtty's prompt hook moves itself last among `precmd_functions`, after a theme's that
+  rebuilds `PS1`, so from the second prompt on its marks survive the theme. The end goes into
+  `PROMPT_EOL_MARK`, which zsh draws right where the output ended (from the hook only with
+  `PROMPT_SP` off).
+- **bash** starts as `bash --rcfile <rtty's script>`, since a login shell reads no rc file it is
+  given: an interactive shell that is not a login one (`shopt login_shell` is off, `logout` refuses,
+  `~/.bash_logout` is not read), so the script first reads what a login shell would: `/etc/profile`,
+  then the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`. Bash 4.4 marks the output
+  from `PS0`. macOS's `/bin/bash` 3.2 has no `PS0` and marks it from a `DEBUG` trap, unless you have
+  one of your own, and not for a command line that is only a subshell (`(make)`), which the trap
+  does not see.
+- **fish** finds rtty's `vendor_conf.d` through a directory put first in `XDG_DATA_DIRS`, which the
+  script puts back. It wraps `fish_prompt` at the first prompt for A and B and marks C and D from
+  `fish_preexec` and `fish_postexec`. Not yet tried with a real fish.
+
+Each script undoes its injection as it starts, so nothing of it reaches what the shell runs:
+another zsh or bash, or the shells tutti starts for its own panes, which are tutti's business.
+
+**Marked twice.** A prompt that marks itself as well (oh-my-posh, another terminal's integration
+copied into a dotfile) puts a second mark of a kind right after rtty's, on the same row. rtty's
+scripts add A and B to `PS1` only when it has none, and rtty counts a run of one kind of mark on one
+row as its first, so a prompt jump stops once per prompt, and what a command left on goes off once
+(above). Skipping rtty's
+integration when the user has one was the other way, but a prompt's marks show only once it draws,
+after the shell has started.
+
+**What the marks give.**
+
+- `Cmd+Up` and `Cmd+Down` jump between prompts ([Keys](#keys)).
+
 ## rtty cli and editors
 
 `rtty cli` is the same binary in another role: it asks the rtty a pane runs in, through a Unix
@@ -473,6 +519,11 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
   line) with what a click does with it (open, reveal in Finder, ignore) and what to show of a
   disguised one; both unit tested, and neither opens anything.
+- `shell.rs` and `shell/` — the shell integration scripts, written into rtty's directory at
+  startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
+  real zsh and bash through a pty.
+- `prompt.rs` — what the shell's OSC 133 marks say, as cells by absolute row: where prompts start;
+  a run of doubled marks counts once. Unit tested.
 - `notify.rs` — the dock's attention and progress badge, and macOS notifications, which need an
   app bundle.
 - `progress.rs` — what a program's OSC 9;4 and OSC 7501 reports say of its progress, and many
@@ -586,13 +637,18 @@ jumps, links, the bell, notifications (from an app bundle), a program's progress
 and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
-2031 reports), `rtty cli` and the editor plugins, and the log. Checked with `--script` against Neovim in two
+2031 reports), `rtty cli` and the editor plugins, the log, and shell integration that loads
+itself. Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key
 walks through Neovim's windows on to Emacs and back. tutti's TUI in an rtty pane claims rtty's
 keys and hands a move or resize past its own edge on to `rtty cli`, so the same keys walk
-through Neovim's windows, tutti's panes and rtty's (tutti's README, "tutti in rtty").
+through Neovim's windows, tutti's panes and rtty's (tutti's README, "tutti in rtty"). The shell
+integration is checked with `--script` against zsh 5.9, macOS's bash 3.2 and Homebrew's bash 5.3,
+each with a scratch home and no integration of its own, and against zsh with a prompt that marks
+itself too: the marks arrive and prompt jumps go from prompt to prompt. fish is not installed
+here, so its script is unchecked.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when

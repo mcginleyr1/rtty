@@ -31,6 +31,7 @@ pub struct Config {
     /// How many seconds a closed pane, tab or window waits, its programs alive, for
     /// `undo-close`; 0 closes at once.
     pub undo_timeout: Option<u64>,
+    pub shell_integration: Option<ShellIntegration>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -213,6 +214,16 @@ impl OptionAsAlt {
             OptionAsAlt::None => false,
         }
     }
+}
+
+/// Whether rtty's login shells load its shell integration (`shell.rs`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellIntegration {
+    /// zsh, bash and fish do; any other shell is left as it is.
+    #[default]
+    Auto,
+    None,
 }
 
 /// The scheme for each window appearance.
@@ -485,5 +496,17 @@ mod tests {
         assert_eq!(alt(OptionAsAlt::Left), [true, false, true, true]);
         assert_eq!(alt(OptionAsAlt::Right), [false, true, true, true]);
         assert_eq!(alt(OptionAsAlt::None), [false, false, false, false]);
+    }
+
+    #[test]
+    fn shell_integration_keys_read_as_written() {
+        let defaults: Config = toml::from_str("").unwrap();
+        assert_eq!(defaults.shell_integration.unwrap_or_default(), ShellIntegration::Auto);
+        let config: Config = toml::from_str("shell_integration = 'none'").unwrap();
+        assert_eq!(config.shell_integration, Some(ShellIntegration::None));
+        let err = toml::from_str::<Config>("shell_integration = 'zsh'").unwrap_err().to_string();
+        assert!(err.contains("unknown variant `zsh`, expected `auto` or `none`"), "{err}");
+        let dashed = toml::from_str::<Config>("shell-integration = 'none'");
+        assert!(dashed.is_err(), "written with underscores, as every key is");
     }
 }

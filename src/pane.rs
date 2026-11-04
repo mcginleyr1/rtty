@@ -21,11 +21,12 @@ use std::{mem, ptr};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
-use rtty_vt::{ColorScheme, Event, MarkKind, Terminal};
+use rtty_vt::{ColorScheme, Event, Terminal};
 
 use crate::scheme::{SLOTS, Scheme};
 use crate::selection::Selection;
 use crate::title::Foreground;
+use crate::{prompt, shell};
 
 pub const SCROLLBACK: usize = 10_000;
 
@@ -89,7 +90,8 @@ pub struct Pane {
 
 impl Pane {
     /// Runs `command` on a new `rows`×`cols` pty. With a `scheme`, color queries are answered
-    /// from the program's first byte on (see `set_scheme`). The receiver yields the pane's
+    /// from the program's first byte on (see `set_scheme`). A login shell loads the shell
+    /// integration `integration` holds (`shell::install`). The receiver yields the pane's
     /// notices.
     pub fn spawn(
         mut command: CommandBuilder,
@@ -97,6 +99,7 @@ impl Pane {
         cols: u16,
         scheme: Option<&Scheme>,
         trace: Option<Trace>,
+        integration: Option<&Path>,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
         let pty = open_pty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         command.env("TERM", "xterm-256color");
@@ -109,6 +112,9 @@ impl Pane {
             command.env_remove(outer);
         }
         let login_shell = command.is_default_prog();
+        if let Some(dir) = integration.filter(|_| login_shell) {
+            shell::inject(&mut command, dir);
+        }
         let mut child = pty.slave.spawn_command(command).map_err(io::Error::other)?;
         // The child holds the only other end, so reads end when it and its children are gone.
         drop(pty.slave);
@@ -254,10 +260,7 @@ impl Pane {
     pub fn jump_to_prompt(&mut self, up: bool) -> bool {
         let term = self.lock();
         let (top, screen_top) = (self.top(&term), term.screen_top());
-        let end = screen_top + u64::from(term.size().0);
-        let marks = term.marks(term.oldest_row(), end).into_iter();
-        let prompts: Vec<u64> =
-            marks.filter(|mark| mark.kind == MarkKind::PromptStart).map(|mark| mark.row).collect();
+        let prompts = prompt::prompts(&term);
         drop(term);
         let target = if up {
             prompts.iter().rev().find(|&&row| row < top)
@@ -427,6 +430,7 @@ pub fn shell_command(command: &str) -> CommandBuilder {
 mod tests {
     use super::*;
     use crate::scheme::{find, load};
+    use rtty_vt::{Mark, MarkKind};
     use std::time::{Duration, Instant};
 
     fn wait_for(pane: &Pane, text: &str) {
@@ -485,7 +489,8 @@ mod tests {
     #[test]
     fn output_reaches_the_terminal_and_the_exit_code_the_waiter() {
         let (pane, _) =
-            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None, None).unwrap();
+            Pane::spawn(shell_command("printf 'a\\033[1mb'; exit 3"), 24, 80, None, None, None)
+                .unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
     }
 
@@ -493,7 +498,7 @@ mod tests {
     fn the_program_hears_it_runs_in_rtty_and_in_no_multiplexer() {
         let mut command = shell_command("printf '%s:%s' \"$TERM_PROGRAM\" \"${TMUX-none}\"");
         command.env("TMUX", "/tmp/outer,1,0");
-        let (pane, _) = Pane::spawn(command, 24, 80, None, None).unwrap();
+        let (pane, _) = Pane::spawn(command, 24, 80, None, None, None).unwrap();
         assert_eq!(finish(pane).0, "rtty:none");
     }
 
@@ -502,7 +507,7 @@ mod tests {
     fn replies_go_back_to_the_program() {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033[6n'; \
                       dd bs=1 count=6 2>/dev/null | od -c";
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None, None).unwrap();
+        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, None, None, None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   1   ;   1   R"), "{screen}");
     }
@@ -515,7 +520,8 @@ mod tests {
                       dd bs=1 count=9 2>/dev/null | od -c";
         let schemes = load(&[]).unwrap();
         let dark = find(&schemes, "OneDark Pro").unwrap();
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
         wait_for(&pane, "ready");
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let (screen, _) = finish(pane);
@@ -532,7 +538,8 @@ mod tests {
                       dd bs=1 count=9 2>/dev/null | od -c";
         let schemes = load(&[]).unwrap();
         let dark = find(&schemes, "OneDark Pro").unwrap();
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
         wait_for(&pane, "ready");
         pane.set_scheme(&find(&schemes, "Solarized Light").unwrap());
         let modes = pane.lock().modes().clone();
@@ -547,7 +554,8 @@ mod tests {
         let script = "stty -icanon -echo min 0 time 20; printf '\\033]11;?\\007'; \
                       dd bs=1 count=24 2>/dev/null | tr '\\033\\007' EB";
         let dark = find(&load(&[]).unwrap(), "OneDark Pro").unwrap();
-        let (pane, _) = Pane::spawn(shell_command(script), 24, 80, Some(&dark), None).unwrap();
+        let (pane, _) =
+            Pane::spawn(shell_command(script), 24, 80, Some(&dark), None, None).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("E]11;rgb:2828/2c2c/3434B"), "{screen}");
     }
@@ -558,7 +566,7 @@ mod tests {
     fn prompt_jumps_go_from_mark_to_mark() {
         let script = "for p in one two three; do printf '\\033]133;A\\007$ %s\\n' $p; seq 1 30; done; \
                       printf '\\033]133;A\\007$ last'; sleep 5";
-        let (mut pane, _) = Pane::spawn(shell_command(script), 10, 20, None, None).unwrap();
+        let (mut pane, _) = Pane::spawn(shell_command(script), 10, 20, None, None, None).unwrap();
         wait_for(&pane, "$ last");
         let (prompts, screen_top): (Vec<u64>, u64) = {
             let term = pane.lock();
@@ -588,7 +596,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rtty-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = format!("cd '{}' && exec sleep 5", dir.display());
-        let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None).unwrap();
+        let (pane, _) = Pane::spawn(shell_command(&script), 24, 80, None, None, None).unwrap();
         let foreground = foreground_when(&pane, |process| process.argv == ["sleep", "5"]);
         assert!(!foreground.shell);
         assert_eq!(foreground.cwd.unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
@@ -616,7 +624,7 @@ mod tests {
         shell.env("SHELL", "/bin/dash");
         shell.env("HOME", &home);
         shell.cwd(&home);
-        let (pane, _) = Pane::spawn(shell, 24, 80, None, None).unwrap();
+        let (pane, _) = Pane::spawn(shell, 24, 80, None, None, None).unwrap();
         wait_for(&pane, "$");
         let at_prompt = foreground_when(&pane, |process| process.shell);
         assert_eq!(at_prompt.cwd.unwrap().canonicalize().unwrap(), home.canonicalize().unwrap());
@@ -627,12 +635,53 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    /// Real zsh and bash (macOS's 3.2, and Homebrew's where it is installed) as login shells, each
+    /// with a home of its own whose startup files know nothing of rtty: they load the integration,
+    /// still count as the pane's shell, mark prompts, command lines, output and ends, and leave
+    /// nothing of the integration in what their commands inherit.
+    #[test]
+    fn login_shells_load_the_integration_and_keep_it_to_themselves() {
+        let id = std::process::id();
+        let integration = shell::install(&std::env::temp_dir().join(format!("rtty-int-{id}")));
+        let integration = integration.unwrap();
+        let homes = std::env::temp_dir().join(format!("rtty-homes-{id}"));
+        let brew = Path::new("/opt/homebrew/bin/bash").exists().then_some("/opt/homebrew/bin/bash");
+        for path in ["/bin/zsh", "/bin/bash"].into_iter().chain(brew) {
+            let home = homes.join(path.replace('/', "-"));
+            std::fs::create_dir_all(home.join("zdotdir")).unwrap();
+            std::fs::write(home.join("zdotdir/.zshrc"), "PS1='ready> '").unwrap();
+            std::fs::write(home.join(".bash_profile"), "PS1='ready> '").unwrap();
+            let mut shell = CommandBuilder::new_default_prog();
+            shell.env("SHELL", path);
+            shell.env("HOME", &home);
+            shell.env("ZDOTDIR", home.join("zdotdir"));
+            shell.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
+            shell.cwd(&home);
+            let (pane, _) = Pane::spawn(shell, 24, 80, None, None, Some(&integration)).unwrap();
+            wait_for(&pane, "ready>");
+            assert!(foreground_when(&pane, |process| process.shell).shell, "{path}");
+            pane.write(b"env | grep -c rtty-int; echo $ZDOTDIR\n".to_vec());
+            wait_for(&pane, &format!("\n0\n{}\nready>", home.join("zdotdir").display()));
+            let marks = prompt::marks(&pane.lock());
+            let kinds = [MarkKind::PromptStart, MarkKind::CommandStart, MarkKind::OutputStart];
+            for kind in kinds {
+                assert!(marks.iter().any(|mark| mark.kind == kind), "{path}: no {kind:?}");
+            }
+            let ends = |mark: &Mark| matches!(mark.kind, MarkKind::CommandEnd { exit: Some(0) });
+            assert!(marks.iter().any(ends), "{path}: no end");
+            drop(pane);
+        }
+        std::fs::remove_dir_all(integration.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(homes).unwrap();
+    }
+
     #[test]
     fn the_view_scrolls_within_the_scrollback_and_stays_put_under_output() {
         let (mut pane, _) = Pane::spawn(
             shell_command("seq 1 40; printf done; sleep 1; seq 41 45"),
             10,
             20,
+            None,
             None,
             None,
         )

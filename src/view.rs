@@ -33,6 +33,7 @@ use crate::links::{self, Link};
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::progress::{self, Progress};
+use crate::prompt;
 use crate::render::{self, CursorShape, Drawn, Line, Palette, Run, Scene};
 use crate::scheme::Scheme;
 use crate::search::{self, Match, Query};
@@ -84,6 +85,8 @@ pub struct Settings {
     /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
     /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
     pub prompts: bool,
+    /// Where the shell integration's scripts are, when login shells load it.
+    pub shell_integration: Option<PathBuf>,
 }
 
 impl Global for Settings {}
@@ -741,6 +744,12 @@ impl PaneView {
         }
         if let Some(progress) = self.progress {
             let _ = writeln!(out, "progress {progress:?}");
+        }
+        let marks = prompt::marks(&term).into_iter();
+        let marks: Vec<String> =
+            marks.map(|mark| format!("{:?} {},{}", mark.kind, mark.row, mark.col)).collect();
+        if !marks.is_empty() {
+            let _ = writeln!(out, "marks {}", marks.join(", "));
         }
         if self.link.is_some() || !self.followed.is_empty() {
             let _ = writeln!(out, "link {:?} followed {:?}", self.link, self.followed);

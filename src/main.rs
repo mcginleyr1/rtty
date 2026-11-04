@@ -9,11 +9,13 @@ mod mouse;
 mod notify;
 mod pane;
 mod progress;
+mod prompt;
 mod render;
 mod scheme;
 mod script;
 mod search;
 mod selection;
+mod shell;
 mod tabbar;
 mod title;
 mod view;
@@ -39,7 +41,7 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags, NSView}
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
-use config::{Action, Config};
+use config::{Action, Config, ShellIntegration};
 use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
@@ -299,6 +301,12 @@ fn run(options: Options) -> Result<(), String> {
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
     control::sweep(dir);
+    let shell_integration = match config.shell_integration.unwrap_or_default() {
+        ShellIntegration::Auto => {
+            Some(shell::install(dir).map_err(|err| format!("{}: {err}", dir.display()))?)
+        }
+        ShellIntegration::None => None,
+    };
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
@@ -459,6 +467,7 @@ fn run(options: Options) -> Result<(), String> {
             confirm_close,
             undo_timeout,
             prompts: script.is_none(),
+            shell_integration,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
@@ -485,7 +494,7 @@ fn finish(pane: &mut Pane) -> Option<u32> {
 fn smoke() -> ExitCode {
     let (rows, cols) = START_SIZE;
     let (mut pane, _notices) =
-        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None, None)
+        Pane::spawn(shell_command("printf hello-rtty; exit 7"), rows, cols, None, None, None)
             .expect("spawn /bin/sh");
     let exit_code = finish(&mut pane);
     let screen = pane.lock().contents();
@@ -514,7 +523,7 @@ fn bench(command: &str) -> ExitCode {
 
     let started = Instant::now();
     let (mut pane, _notices) =
-        Pane::spawn(shell_command(command), rows, cols, None, None).expect("spawn /bin/sh");
+        Pane::spawn(shell_command(command), rows, cols, None, None, None).expect("spawn /bin/sh");
     finish(&mut pane);
     let pipeline = started.elapsed();
 
