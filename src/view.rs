@@ -77,6 +77,11 @@ pub struct Settings {
     pub bell: Bell,
     /// `minimum_contrast`: the WCAG contrast ratio text keeps with its background.
     pub minimum_contrast: f32,
+    /// `confirm_close`: closing what runs a program asks first.
+    pub confirm_close: bool,
+    /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
+    /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
+    pub prompts: bool,
 }
 
 impl Global for Settings {}
@@ -460,6 +465,13 @@ impl PaneView {
         let title =
             title::title(&program, reported.as_deref(), foreground.as_ref(), home.as_deref());
         mem::replace(&mut self.title, title) != self.title
+    }
+
+    /// The command line of what runs in the pane's foreground, unless that is its shell at a
+    /// prompt: what closing the pane would end. Empty when its arguments cannot be read.
+    pub fn running(&self) -> Option<String> {
+        let foreground = self.pane.foreground().filter(|process| !process.shell)?;
+        Some(title::command(&foreground.argv))
     }
 
     /// The grid, as rows and columns.

@@ -14,12 +14,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::oneshot;
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AssetSource, Bounds, Context, Div, DragMoveEvent,
     EmptyView, Entity, FontWeight, Global, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, SharedString, Size, Stateful, StyleRefinement,
-    TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle, WindowOptions, actions,
-    div, point, prelude::*, px, relative, size, svg, transparent_black,
+    MouseUpEvent, Pixels, Point, PromptButton, PromptLevel, Render, SharedString, Size, Stateful,
+    StyleRefinement, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowHandle,
+    WindowOptions, actions, div, point, prelude::*, px, relative, size, svg, transparent_black,
 };
 use portable_pty::CommandBuilder;
 use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
@@ -127,6 +128,69 @@ pub struct TerminalWindow {
     bar_press: Option<Hit>,
     /// What bells and notifications asked of macOS, and what came of it, for `--script`'s dump.
     attention: Vec<String>,
+    /// Under `--script`, the question asked before closing, waiting for the script's `answer`.
+    asked: Option<oneshot::Sender<usize>>,
+}
+
+/// What closing ends: a pane, a tab, a window, or every window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Closing {
+    Pane,
+    Tab,
+    Window,
+    Quit,
+}
+
+/// What to ask before `closing` ends `running`, the command lines of what runs in the panes it
+/// closes (`PaneView::running`): the question, what it is about, and the button that goes on.
+/// Nothing to ask while nothing runs there but shells at their prompts.
+fn question(closing: Closing, running: &[String]) -> Option<(String, String, &'static str)> {
+    if running.is_empty() {
+        return None;
+    }
+    let named: Vec<&str> = running
+        .iter()
+        .map(|command| if command.is_empty() { "a program" } else { command.as_str() })
+        .collect();
+    let (question, within) = match closing {
+        Closing::Pane => {
+            let detail = format!("It is still running {}.", named[0]);
+            return Some(("Close this pane?".into(), detail, "Close"));
+        }
+        Closing::Tab => ("Close this tab?", " in it"),
+        Closing::Window => ("Close this window?", " in it"),
+        Closing::Quit => ("Quit rtty?", ""),
+    };
+    let panes = match named.len() {
+        1 => format!("1 pane{within} is still running a program"),
+        count => format!("{count} panes{within} are still running programs"),
+    };
+    let button = if closing == Closing::Quit { "Quit" } else { "Close" };
+    Some((question.into(), format!("{panes}: {}.", named.join(", ")), button))
+}
+
+/// Cmd+Q: quits, once what runs in any window is confirmed, asked on the active window (else the
+/// first).
+pub fn quit(cx: &mut App) {
+    let windows: Vec<WindowHandle<TerminalWindow>> =
+        cx.windows().into_iter().filter_map(|window| window.downcast()).collect();
+    let running: Vec<String> = windows
+        .iter()
+        .filter_map(|handle| handle.read(cx).ok())
+        .flat_map(|this| this.running(&this.panes(), cx))
+        .collect();
+    let active = cx.active_window().and_then(|window| window.downcast::<TerminalWindow>());
+    let quit = |_: &mut TerminalWindow, _: &mut Window, cx: &mut Context<TerminalWindow>| {
+        crate::note("quitting: Cmd+Q");
+        cx.quit()
+    };
+    let asked = active.or(windows.first().copied()).map(|asker| {
+        asker.update(cx, |this, window, cx| this.confirm(Closing::Quit, running, window, cx, quit))
+    });
+    if !matches!(asked, Some(Ok(()))) {
+        crate::note("quitting: Cmd+Q");
+        cx.quit()
+    }
 }
 
 /// Opens a window with `command` running in its one pane: the first window centered, later ones
@@ -283,6 +347,17 @@ impl TerminalWindow {
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
         // The title dims while the window is in the background, as macOS's do.
         cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
+        // The window's close button asks first too, as closing its panes one by one would.
+        let this = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            let close =
+                |_: &mut Self, window: &mut Window, _: &mut Context<Self>| window.remove_window();
+            let asked = this.update(cx, |this, cx| {
+                let running = this.running(&this.panes(), cx);
+                this.confirm(Closing::Window, running, window, cx, close)
+            });
+            asked.is_err()
+        });
         let mut this = TerminalWindow {
             tabs: Tabs::new(id),
             views: HashMap::new(),
@@ -290,6 +365,7 @@ impl TerminalWindow {
             bar_hover: None,
             bar_press: None,
             attention: Vec::new(),
+            asked: None,
         };
         this.add(id, pane, notices, window, cx);
         this
@@ -464,6 +540,59 @@ impl TerminalWindow {
         }
     }
 
+    /// Every pane in the window's tabs.
+    fn panes(&self) -> Vec<PaneId> {
+        self.tabs.all().iter().flat_map(|tab| tab.panes()).collect()
+    }
+
+    /// What runs in `panes` other than shells at their prompts (`PaneView::running`).
+    fn running(&self, panes: &[PaneId], cx: &App) -> Vec<String> {
+        panes.iter().filter_map(|id| self.views.get(id)?.read(cx).running()).collect()
+    }
+
+    /// Does `then` at once while nothing but shells runs in what `closing` ends, or closing does
+    /// not ask (`confirm_close = false`); else asks first, with a sheet on the window (or under
+    /// `--script` in the dump, for the script's `answer`), and does it on the go-ahead.
+    fn confirm(
+        &mut self,
+        closing: Closing,
+        running: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let settings = cx.global::<Settings>();
+        let (asks, native) = (settings.confirm_close, settings.prompts);
+        let Some((question, detail, button)) = question(closing, &running).filter(|_| asks) else {
+            return then(self, window, cx);
+        };
+        crate::note(&format!("{question} asked first: {} running", running.len()));
+        self.attention.push(format!("asked {question:?} {detail:?} [{button}, Cancel]"));
+        let answer = if native {
+            let buttons = [PromptButton::ok(button), PromptButton::cancel("Cancel")];
+            window.prompt(PromptLevel::Warning, &question, Some(&detail), &buttons, cx)
+        } else {
+            let (asked, answer) = oneshot::channel();
+            self.asked = Some(asked);
+            answer
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let go = answer.await == Ok(0);
+            crate::note(&format!("{question} {}", if go { button } else { "Cancel" }));
+            if go {
+                this.update_in(cx, |this, window, cx| then(this, window, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// `--script`'s `answer`: the button `button` (0 goes on, 1 cancels) pressed on the question
+    /// waiting.
+    pub fn answer_question(&mut self, button: usize) -> Result<(), String> {
+        let asked = self.asked.take().ok_or("no question is waiting")?;
+        asked.send(button).map_err(|_| "the question is gone".into())
+    }
+
     /// Closes a pane, its tab when it was the last there, and the window when that was the last
     /// tab. Its program, if still running, is hung up on.
     fn close(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
@@ -482,19 +611,31 @@ impl TerminalWindow {
         }
     }
 
-    /// Closes tab `index` and hangs up on every program in it; the last tab closes the window.
+    /// Tab `index`'s close button: closes the tab, once what runs in it is confirmed, and hangs
+    /// up on every program in it; the last tab closes the window.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((panes, closed)) = self.tabs.close_tab(index) else { return };
-        let with = if closed == Closed::Window { ", and its window" } else { "" };
-        crate::note(&format!("tab {}: its close button closed panes {panes:?}{with}", index + 1));
-        for pane in panes {
-            self.views.remove(&pane);
-        }
-        cx.defer(refresh_badge);
-        match closed {
-            Closed::Window => window.remove_window(),
-            Closed::Pane | Closed::Tab => self.focus_shown(window, cx),
-        }
+        let Some(tab) = self.tabs.all().get(index) else { return };
+        let (panes, pane) = (tab.panes(), tab.focus());
+        let closing = if self.tabs.all().len() == 1 { Closing::Window } else { Closing::Tab };
+        let running = self.running(&panes, cx);
+        self.confirm(closing, running, window, cx, move |this, window, cx| {
+            // Tabs may have moved while it asked: the tab is the one holding `pane`.
+            let Some(index) = this.tabs.find(pane) else { return };
+            let Some((panes, closed)) = this.tabs.close_tab(index) else { return };
+            let with = if closed == Closed::Window { ", and its window" } else { "" };
+            crate::note(&format!(
+                "tab {}: its close button closed panes {panes:?}{with}",
+                index + 1
+            ));
+            for pane in panes {
+                this.views.remove(&pane);
+            }
+            cx.defer(refresh_badge);
+            match closed {
+                Closed::Window => window.remove_window(),
+                Closed::Pane | Closed::Tab => this.focus_shown(window, cx),
+            }
+        });
     }
 
     /// A press in the bar: a tab shows at once, a close button or the + waits for the release,
@@ -1092,8 +1233,12 @@ impl Render for TerminalWindow {
                 this.split_focused(Direction::Down, window, cx)
             }))
             .on_action(cx.listener(|this, action: &ClosePane, window, cx| {
-                crate::note(&format!("pane {}: {}", this.tabs.active().focus(), action.keystroke));
-                this.close(this.tabs.active().focus(), window, cx)
+                let pane = this.tabs.active().focus();
+                crate::note(&format!("pane {pane}: {}", action.keystroke));
+                let running = this.running(&[pane], cx);
+                this.confirm(Closing::Pane, running, window, cx, move |this, window, cx| {
+                    this.close(pane, window, cx)
+                });
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {
                 this.focus_toward(this.tabs.active().focus(), action.direction, false, window, cx);
@@ -1128,5 +1273,43 @@ impl Render for TerminalWindow {
             .children(titlebar)
             .children(panes)
             .children(dividers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ask(closing: Closing, running: &[&str]) -> Option<(String, String, &'static str)> {
+        question(closing, &running.iter().map(|command| command.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn nothing_is_asked_while_only_shells_at_their_prompts_would_close() {
+        for closing in [Closing::Pane, Closing::Tab, Closing::Window, Closing::Quit] {
+            assert_eq!(ask(closing, &[]), None, "{closing:?}");
+        }
+    }
+
+    #[test]
+    fn a_pane_names_its_program_and_the_rest_count_their_panes() {
+        let pane = ask(Closing::Pane, &["sleep 100"]).unwrap();
+        assert_eq!(
+            pane,
+            ("Close this pane?".into(), "It is still running sleep 100.".into(), "Close")
+        );
+        let tab = ask(Closing::Tab, &["sleep 100"]).unwrap();
+        assert_eq!(tab.1, "1 pane in it is still running a program: sleep 100.");
+        let window = ask(Closing::Window, &["nvim notes.md", "cargo build"]).unwrap();
+        assert_eq!(window.0, "Close this window?");
+        assert_eq!(
+            window.1,
+            "2 panes in it are still running programs: nvim notes.md, cargo build."
+        );
+        let quit = ask(Closing::Quit, &["claude", "", "htop"]).unwrap();
+        let detail = "3 panes are still running programs: claude, a program, htop.";
+        assert_eq!(quit, ("Quit rtty?".into(), detail.into(), "Quit"));
+        // A program whose arguments could not be read.
+        assert_eq!(ask(Closing::Pane, &[""]).unwrap().1, "It is still running a program.");
     }
 }

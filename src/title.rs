@@ -42,7 +42,7 @@ pub fn title(
 
 /// The command line as typed: the program's name without its directory (or a login shell's
 /// `-`), then its arguments.
-fn command(argv: &[String]) -> String {
+pub fn command(argv: &[String]) -> String {
     let Some((program, args)) = argv.split_first() else { return String::new() };
     let name = program.rsplit('/').next().unwrap_or(program);
     let name = name.strip_prefix('-').unwrap_or(name);

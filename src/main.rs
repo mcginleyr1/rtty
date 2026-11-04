@@ -291,6 +291,7 @@ fn run(options: Options) -> Result<(), String> {
     let bell = config.bell.unwrap_or_default();
     let option_as_alt = config.option_as_alt.unwrap_or_default();
     let minimum_contrast = config.minimum_contrast.unwrap_or(1.);
+    let confirm_close = config.confirm_close.unwrap_or(true);
     let fallback = config.fallback;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
@@ -375,10 +376,8 @@ fn run(options: Options) -> Result<(), String> {
         mem::forget(unsafe {
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &monitor)
         });
-        cx.on_action(|_: &Quit, cx| {
-            note("quitting: Cmd+Q");
-            cx.quit()
-        });
+        // Once the window that took the chord is done with it, so the question can show on one.
+        cx.on_action(|_: &Quit, cx| cx.defer(window::quit));
         // Every pane in every window follows the one size, and reflows when it changes.
         let step = |points: f32| {
             move |cx: &mut App| {
@@ -455,6 +454,8 @@ fn run(options: Options) -> Result<(), String> {
             open_links,
             bell,
             minimum_contrast,
+            confirm_close,
+            prompts: script.is_none(),
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

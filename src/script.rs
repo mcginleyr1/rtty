@@ -31,6 +31,9 @@
 //! bar click close N      ... on tab N's close button
 //! bar click new          ... on the +
 //! bar hover tab N|new|none   the pointer onto tab N's pill or the +, or off the bar
+//! answer ok|cancel       press a button on the question closing asked first (Cmd+W, a tab's
+//!                        close button, the window's, Cmd+Q), which a scripted window keeps in
+//!                        its dump instead of showing a sheet
 //! appearance dark|light  what the window does when macOS flips
 //! resize ROWS COLS       the window, to fit that many cells of panes
 //! dump FILE
@@ -94,6 +97,7 @@ pub enum Step {
     Focus(bool),
     BarClick(Hit),
     BarHover(Option<Hit>),
+    Answer(usize),
     Appearance(WindowAppearance),
     Resize {
         rows: u16,
@@ -242,6 +246,11 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                     _ => return Err(error("bar click|hover tab N, close N, new or none expected")),
                 }
             }
+            "answer" => match rest.trim() {
+                "ok" => Step::Answer(0),
+                "cancel" => Step::Answer(1),
+                _ => return Err(error("ok or cancel expected")),
+            },
             "appearance" => match rest.trim() {
                 "dark" => Step::Appearance(WindowAppearance::Dark),
                 "light" => Step::Appearance(WindowAppearance::Light),
@@ -439,6 +448,9 @@ async fn perform(
                 Ok::<_, String>(())
             })
             .map_err(|err| err.to_string())??,
+        Step::Answer(button) => this
+            .update(cx, |this, _| this.answer_question(*button))
+            .map_err(|err| err.to_string())??,
         Step::Appearance(appearance) => {
             this.update(cx, |this, cx| this.follow_appearance(*appearance, cx))
                 .map_err(|err| err.to_string())?;
@@ -578,6 +590,9 @@ mod tests {
         assert!(matches!(bar[3], Step::BarHover(Some(Hit::Tab(2)))));
         assert!(matches!(bar[4], Step::BarHover(None)));
         assert!(parse("bar click tab 0").unwrap_err().contains("a tab number from 1"));
+        let answers = parse("answer ok\nanswer cancel").unwrap();
+        assert!(matches!((&answers[0].1, &answers[1].1), (Step::Answer(0), Step::Answer(1))));
+        assert!(parse("answer maybe").unwrap_err().contains("ok or cancel expected"));
         assert!(parse("bar wave").unwrap_err().contains("bar click|hover"));
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));

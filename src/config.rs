@@ -25,6 +25,9 @@ pub struct Config {
     pub option_as_alt: Option<OptionAsAlt>,
     /// The WCAG contrast ratio, 1 to 21, text keeps with its background.
     pub minimum_contrast: Option<f32>,
+    /// Ask before closing a pane, tab or window, or quitting, while a program other than a shell
+    /// at its prompt runs there.
+    pub confirm_close: Option<bool>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -418,6 +421,14 @@ mod tests {
         );
         let typed = err("'cmd-d' = 1");
         assert!(typed.contains("line 3") && typed.contains("expected a string"), "{typed}");
+    }
+
+    #[test]
+    fn closing_asks_first_unless_told_not_to() {
+        let confirm = |source| toml::from_str::<Config>(source).map(|config| config.confirm_close);
+        assert_eq!(confirm("").unwrap(), None);
+        assert_eq!(confirm("confirm_close = false").unwrap(), Some(false));
+        assert!(confirm("confirm-close = false").is_err(), "keys are written with underscores");
     }
 
     #[test]

@@ -38,7 +38,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told |
-| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
+| `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing asked (which a scripted window keeps in its dump instead of showing a sheet), focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, colors, underlines, the cursor) and the modes it is drawn from; the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
 | `--activate` | with `--script`: take the keyboard as a normal launch does, for the checks that need a focused window (focus reports, the focused cursor) |
 | `--smoke` | run `/bin/sh -c 'printf hello-rtty; exit 7'` through the same pty and terminal with no window; pass when the grid shows `hello-rtty` and the exit code is 7 |
 | `--bench [COMMAND]` | time COMMAND (default `seq -f %.0f 1 2000000`) into a pipe, the parser alone on its output, and the whole pty pipeline |
@@ -102,6 +102,7 @@ keys = "rtty"                     # the default; "tutti" adds Ctrl+h/j/k/l and A
 bell = "visual"                   # the default: BEL flashes the pane (and the dock, unfocused); or "none"
 option_as_alt = "both"            # the default; "left", "right" or "none": the Option keys that are Alt (Keys)
 minimum_contrast = 1              # the default, off; 4.5 keeps text legible (Color schemes)
+confirm_close = true              # the default: ask before closing what runs a program (Keys)
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -224,13 +225,13 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 
 | Key | Action | Does |
 | --- | --- | --- |
-| `Cmd+Q` | `quit` | quit |
+| `Cmd+Q` | `quit` | quit; asks first while a pane in any window runs a program (below) |
 | `Cmd+N` | `new-window` | new window |
 | `Cmd+T` | `new-tab` | new tab, after the current one |
 | `Cmd+1`–`9` | `tab-1`–`tab-9` | show that tab |
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `prev-tab` / `next-tab` | previous / next tab, round the ends |
 | `Cmd+D` / `Cmd+Shift+D` | `split-right` / `split-down` | split the pane right / down |
-| `Cmd+W` | `close-pane` | close the pane; the last pane closes its tab, the last tab its window, the last window quits |
+| `Cmd+W` | `close-pane` | close the pane, asking first while it runs a program (below); the last pane closes its tab, the last tab its window, the last window quits |
 | `Cmd+Opt+arrows` | `focus-left`, `-right`, `-up`, `-down` | focus the nearest pane that way |
 | `Cmd+Ctrl+arrows` | `resize-left`, `-right`, `-up`, `-down` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
 | `Ctrl+h/j/k/l`, `Alt+h/j/k/l` | `focus-…`, `resize-…` | with `keys = "tutti"` only: focus and resize, as in tutti |
@@ -259,6 +260,15 @@ pane's foreground process (the pty's process group leader: the shell at a prompt
 it runs), else your home directory. macOS's zsh and bash send OSC 7 only from
 `/etc/zshrc_$TERM_PROGRAM`, which exists for Terminal.app alone, so the foreground process is what
 usually answers. A pane closes when its program exits, with the same cascade as `Cmd+W`.
+
+**Closing what runs.** Closing a pane (`close-pane`, whatever chord it is bound to), a tab (its
+×), a window (its close button) or rtty (`Cmd+Q`) asks first, in a sheet on the window, while
+anything other than a pane's shell at its prompt holds that pane's foreground (the pty's process
+group, as titles find it): an agent, Neovim, a build. A pane's question names its program; a
+tab's, a window's and the quit's count the panes running something and name what each runs.
+`Close` (or `Quit`, the default button) goes on and `Cancel` (Esc) keeps everything. A pane
+whose shell sits at its prompt closes at once, as does a pane whose program exits.
+`confirm_close = false` never asks.
 
 The focus, resize, close and last-pane keys are rtty's unless the pane's program claims them
 ([Editors](#rtty-cli-and-editors)). `keys = "tutti"` makes `Ctrl+h/j/k/l` and `Alt+h/j/k/l` rtty's
