@@ -748,12 +748,13 @@ impl TerminalWindow {
     /// panes wait for `undo-close`; the last tab closes the window.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.all().get(index) else { return };
-        let (panes, pane) = (tab.panes(), tab.focus());
+        let panes = tab.panes();
         let closing = if self.tabs.all().len() == 1 { Closing::Window } else { Closing::Tab };
         let running = self.running(&panes, cx);
         self.confirm(closing, running, window, cx, move |this, window, cx| {
-            // Tabs may have moved while it asked: the tab is the one holding `pane`.
-            let Some(index) = this.tabs.find(pane) else { return };
+            // While it asked, tabs may have moved and some of its panes closed: the tab is the
+            // one holding any of them still.
+            let Some(index) = this.tabs.find_any(&panes) else { return };
             let tab = this.tabs.all()[index].clone();
             let Some((panes, closed)) = this.tabs.close_tab(index) else { return };
             let with = if closed == Closed::Window { ", and its window" } else { "" };

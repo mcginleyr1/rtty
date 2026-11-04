@@ -655,6 +655,11 @@ impl Tabs {
         self.tabs.iter().position(|tab| tab.contains(pane))
     }
 
+    /// The tab holding any of `panes`, which finds a tab again after some of them closed.
+    pub fn find_any(&self, panes: &[PaneId]) -> Option<usize> {
+        panes.iter().find_map(|&pane| self.find(pane))
+    }
+
     /// Shows tab `index` if there is one.
     pub fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
@@ -792,6 +797,20 @@ mod tests {
         let mut other = Layout::new(9);
         assert!(!other.reopen(3, &place));
         assert_eq!(other, Layout::new(9));
+    }
+
+    #[test]
+    fn a_tab_is_found_by_any_pane_left_in_it() {
+        let mut tabs = Tabs::new(1);
+        tabs.open(2);
+        tabs.active_mut().split(2, Direction::Right, 3);
+        let panes = tabs.all()[1].panes();
+        assert_eq!(tabs.close(3), Some(Closed::Pane));
+        assert_eq!(tabs.find(3), None);
+        assert_eq!(tabs.find_any(&[3, 2]), Some(1));
+        assert_eq!(tabs.find_any(&panes), Some(1));
+        tabs.close(2);
+        assert_eq!(tabs.find_any(&panes), None);
     }
 
     #[test]
