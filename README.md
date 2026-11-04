@@ -849,8 +849,10 @@ and the dock's badge, a question before closing what runs a program and `Cmd+Z` 
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
 2031 reports), `rtty cli` and the editor plugins, the log, shell integration that loads
 itself (prompt jumps, the last command's output, notifications of long commands, click to move the
-cursor), and images (kitty's graphics protocol, Unicode placeholders included). Checked with
-`--script` against Neovim in two
+cursor), and images (kitty's graphics protocol, Unicode placeholders included; checked with
+`--script` and a program sending RGB, RGBA, PNG, chunked, compressed and temporary-file images,
+placements under and over text, a delete and placeholders, through a reflow and `clear`, by the
+dump's `image` lines, not yet by eye). Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key

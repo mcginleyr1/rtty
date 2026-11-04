@@ -1191,6 +1191,32 @@ impl PaneView {
                 );
             }
         }
+        // The images the next frame draws, lowest first, from the cell each counts from; and how
+        // many the last frame drew from how many GPUI images.
+        if !term.images().is_empty() {
+            let held: Vec<u32> = term.images().iter().map(|image| image.id).collect();
+            let drawn = self.cache.last.as_ref().map_or(0, |frame| frame.pictures.len());
+            let _ = writeln!(
+                out,
+                "images held {held:?}, the last frame drew {drawn} from {} GPUI images",
+                self.images.len()
+            );
+        }
+        for placement in term.placements(top, top + u64::from(rows)) {
+            let image = &placement.image;
+            let _ = writeln!(
+                out,
+                "image {} {}x{} at {},{} dest {:?} source {:?} z {}",
+                image.id,
+                image.width,
+                image.height,
+                placement.row as i64 - top as i64,
+                placement.col,
+                placement.dest,
+                placement.source,
+                placement.z
+            );
+        }
         if let Some((start, end)) = selection {
             let _ = writeln!(out, "selected {start:?}..={end:?} {:?}", term.text(start, end));
         }
