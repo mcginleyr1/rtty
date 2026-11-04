@@ -95,6 +95,7 @@ pub struct Settings {
     pub shell_integration: Option<PathBuf>,
     /// A command that ran this long notifies its end out of view; `None` never.
     pub notify_after: Option<Duration>,
+    pub click_to_move: bool,
 }
 
 impl Global for Settings {}
@@ -150,6 +151,8 @@ pub struct PaneView {
     status: Option<(&'static str, Instant)>,
     /// What the last command's output key copied, or under `--script` would have.
     copied: Option<String>,
+    /// Where a left click that may move the shell's cursor went down (`prompt::cursor_moves`).
+    click: Option<GridPoint>,
     /// What the pane is called, as of the last look (`refresh_title`).
     title: Title,
     /// What the program last said of its progress, until it removes it or a shell draws its
@@ -332,6 +335,7 @@ impl PaneView {
             command: None,
             status: None,
             copied: None,
+            click: None,
             title: Title::default(),
             progress: None,
             stats,
@@ -992,12 +996,17 @@ impl PaneView {
         true
     }
 
+    /// A press over this pane: it takes the keyboard, and the press follows a link (Cmd), goes to
+    /// a program that asked for mouse reports, or starts a selection. A plain left click in a pane
+    /// that already had the keyboard may move the shell's cursor too, when it comes up where it
+    /// went down (`mouse_up`).
     pub fn mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let had_keyboard = self.focus.is_focused(window) && !event.first_mouse;
         window.focus(&self.focus);
         cx.emit(PaneEvent::Focused);
         let cmd_click = event.modifiers.platform && event.button == MouseButton::Left;
@@ -1021,14 +1030,29 @@ impl PaneView {
         };
         self.pane.selection = Some(Selection::new(kind, point, side));
         self.selecting = Some(event.position);
+        let plain = event.click_count == 1 && !event.modifiers.modified();
+        let moves = had_keyboard && plain && cx.global::<Settings>().click_to_move;
+        self.click = moves.then_some(point);
         cx.notify();
     }
 
     /// A release over this pane, or anywhere after a press in it (the program hears it at the
-    /// nearest cell); a release that ends another pane's press is not this pane's.
-    pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    /// nearest cell); a release that ends another pane's press is not this pane's. A plain click
+    /// on the command line being typed moves the shell's cursor to it with arrow keys, as many as
+    /// `prompt::cursor_moves` counts.
+    pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left {
             (self.selecting, self.autoscroll) = (None, None);
+            let up = self.grid_point(event.position).map(|(point, _)| point);
+            let moves = self.click.take().filter(|&down| up == Some(down)).and_then(|down| {
+                prompt::cursor_moves(&self.pane.lock(), down).filter(|&moves| moves != 0)
+            });
+            if let Some(moves) = moves {
+                let arrow = Keystroke::parse(if moves < 0 { "left" } else { "right" });
+                let arrow =
+                    keys::encode(&arrow.expect("an arrow"), self.key_modes(), keys::Event::Press);
+                self.input(arrow.expect("arrows encode").repeat(moves.unsigned_abs()), cx);
+            }
         }
         if mem::take(&mut self.pressed) {
             let button = mouse_button(event.button);

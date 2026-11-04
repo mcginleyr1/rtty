@@ -1,11 +1,12 @@
 //! What the shell's marks (OSC 133) say about a pane's rows: where prompts start, the last
-//! command's output and a command's command line. A prompt that marks itself as well as rtty's
-//! integration does marks each thing twice, one right after the other on one row; such a run
-//! counts as its first.
+//! command's output, a command's command line, and how far a click on the command line being typed
+//! is from the shell's cursor. A prompt that marks itself as well as rtty's integration does marks
+//! each thing twice, one right after the other on one row; such a run counts as its first.
 
 use std::mem;
+use std::ops::Range;
 
-use rtty_vt::{Mark, MarkKind, Terminal};
+use rtty_vt::{Cell, Mark, MarkKind, Terminal};
 
 /// The marks on every row held, oldest first, each run of one kind on one row as its first.
 pub fn marks(term: &Terminal) -> Vec<Mark> {
@@ -51,6 +52,44 @@ pub fn command_line(term: &Terminal, output: &Mark) -> Option<String> {
     let at = |mark: &&Mark| (mark.row, mark.col) < (output.row, output.col);
     let typed = marks.iter().rev().find(at).filter(|mark| mark.kind == MarkKind::CommandStart)?;
     Some(between(term, typed, output).trim().to_owned()).filter(|line| !line.is_empty())
+}
+
+/// How many characters the shell's cursor goes, right when positive, to reach a click on cell
+/// `at` of the command line being typed: the line, soft wraps included, from the end of the last
+/// prompt (B) with no command run since. `None` for a click off it, or while the cursor is. A wide
+/// character is one character, clicked on either half; a click past the end of what is typed goes
+/// to the end.
+pub fn cursor_moves(term: &Terminal, at: (u64, u16)) -> Option<isize> {
+    let input = *marks(term).last().filter(|mark| mark.kind == MarkKind::CommandStart)?;
+    if term.modes().alt_screen {
+        return None;
+    }
+    let mut last_row = input.row;
+    while term.row(last_row).is_some_and(|row| row.wrapped()) {
+        last_row += 1;
+    }
+    let cells: Vec<Cell> =
+        term.rows(input.row, last_row + 1).flat_map(|(_, row)| row.cells().to_vec()).collect();
+    let cols = usize::from(term.size().1);
+    let index = |(row, col): (u64, u16)| {
+        let row = usize::try_from(row.checked_sub(input.row)?).ok()?;
+        Some(row * cols + usize::from(col)).filter(|&index| index <= cells.len())
+    };
+    let (row, col) = term.cursor_position();
+    let cursor =
+        index((term.screen_top() + u64::from(row), col))? + usize::from(term.wrap_pending());
+    let start = index((input.row, input.col))?;
+    let typed = cells.iter().rposition(|cell| cell.ch() != ' ').map_or(0, |last| last + 1);
+    let mut target = index(at).filter(|&target| target >= start && cursor >= start)?;
+    target = target.min(typed.max(cursor));
+    if cells.get(target).is_some_and(Cell::is_spacer) {
+        target -= 1;
+    }
+    let characters = |range: Range<usize>| {
+        let cells = cells[range].iter();
+        cells.filter(|cell| !cell.is_spacer() && !cell.is_pad()).count() as isize
+    };
+    Some(if target >= cursor { characters(cursor..target) } else { -characters(target..cursor) })
 }
 
 #[cfg(test)]
@@ -137,5 +176,53 @@ mod tests {
         let unmarked = format!("{A}$ ls\r\n{C}");
         let term = self::term(10, 12, &unmarked);
         assert_eq!(command_line(&term, marks(&term).last().unwrap()), None);
+    }
+
+    #[test]
+    fn a_click_on_the_command_line_moves_the_cursor_by_characters() {
+        // "$ echo hello" with the cursor at its end, column 12.
+        let term = term(10, 40, &format!("{A}$ {B}echo hello"));
+        assert_eq!(cursor_moves(&term, (0, 7)), Some(-5), "onto the h");
+        assert_eq!(cursor_moves(&term, (0, 2)), Some(-10), "the first character");
+        assert_eq!(cursor_moves(&term, (0, 30)), Some(0), "past the end: the end");
+        assert_eq!(cursor_moves(&term, (0, 0)), None, "on the prompt");
+        assert_eq!(cursor_moves(&term, (1, 3)), None, "below the line");
+        // Back at the start, a click goes right.
+        let mut term = term;
+        term.advance(b"\x1b[3G");
+        assert_eq!(cursor_moves(&term, (0, 11)), Some(9));
+    }
+
+    #[test]
+    fn wide_characters_are_one_character_on_either_half() {
+        let term = term(10, 40, &format!("{A}$ {B}echo 日本語 ok"));
+        // "$ echo " then 日, 本 and 語 at columns 7, 9 and 11, " ok" and the cursor at 16.
+        assert_eq!(cursor_moves(&term, (0, 7)), Some(-6));
+        assert_eq!(cursor_moves(&term, (0, 8)), Some(-6));
+        assert_eq!(cursor_moves(&term, (0, 13)), Some(-3), "the space after 語");
+    }
+
+    #[test]
+    fn a_soft_wrapped_command_line_is_one_line() {
+        // 10 columns: "$ " and 15 characters wrap onto a second row.
+        let term = term(10, 10, &format!("{A}$ {B}0123456789abcde"));
+        assert_eq!(term.cursor_position(), (1, 7));
+        assert_eq!(cursor_moves(&term, (0, 4)), Some(-13), "onto the 2");
+        assert_eq!(cursor_moves(&term, (1, 0)), Some(-7), "onto the 8");
+        // "$ 0123456" fills 9 of 10 columns: 日 goes to the next row, leaving a pad.
+        let wide = self::term(10, 10, &format!("{A}$ {B}0123456日"));
+        assert_eq!(cursor_moves(&wide, (1, 0)), Some(-1), "onto 日");
+        assert_eq!(cursor_moves(&wide, (0, 8)), Some(-2), "onto the 6, past the pad");
+    }
+
+    #[test]
+    fn no_command_line_while_a_command_runs_or_on_another_screen() {
+        let running = term(10, 40, &format!("{A}$ {B}sleep 5\r\n{C}"));
+        assert_eq!(cursor_moves(&running, (0, 4)), None);
+        let elsewhere = term(10, 40, &format!("{A}$ {B}ls\r\nmore output"));
+        assert_eq!(cursor_moves(&elsewhere, (0, 3)), None, "the cursor left the line");
+        let mut alternate = term(10, 40, &format!("{A}$ {B}vim"));
+        alternate.advance(b"\x1b[?1049h");
+        assert_eq!(cursor_moves(&alternate, (0, 3)), None);
     }
 }

@@ -108,6 +108,7 @@ confirm_close = true              # the default: ask before closing what runs a 
 undo_timeout = 5                  # the default: seconds a close waits for Cmd+Z (Keys); 0: none
 shell_integration = "auto"        # the default: zsh, bash and fish load rtty's (Shell integration); or "none"
 notify_after = 10                 # the default: notify a command of 10 s or more that ends out of view; 0: never
+click_to_move = true              # the default: a click on the command line moves the shell's cursor there
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -254,7 +255,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+0` | `font-reset` | font size back to the configured one (`size`, or `--size`) |
 | `Cmd` over a link, `Cmd+click` | | underline the link under the pointer; open it (below) |
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
-| mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
+| mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |
 | divider drag | | resize the panes on either side |
 | file drop | | files dragged from Finder onto a pane type their paths there, separated by spaces, with a backslash before each character a shell reads specially (`/tmp/Screen\ Shot.png`, `it\'s`), and non-ASCII as it is; a paste, bracketed when the program asked for that, so an agent such as Claude Code gets a dropped screenshot's path as pasted text. The pane takes the keyboard. A path holding a control character, which would arrive as a key (Enter, Ctrl+U), types nothing |
 | tab click | | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
@@ -458,6 +459,13 @@ after the shell has started.
   that is not the focused pane of the key window posts a notification: its command line, as typed
   after the prompt, then its exit status, how long it ran and the pane's title. Like a program's own
   notification it needs the app bundle, and clicking it brings rtty forward at that pane.
+- A plain click on the command line being typed (after the last prompt, before a command runs), in
+  the pane that already has the keyboard and whose program takes no mouse reports, moves the shell's
+  cursor there with arrow keys, as Ghostty's `cursor-click-to-move` does (`click_to_move = false`
+  turns it off). An arrow moves a character, so a wide character is one, clicked on either half; the
+  line runs on across soft wraps; a click past what is typed goes to its end, and one on the prompt,
+  off the line, or ending a drag moves nothing. A right prompt (zsh's `RPROMPT`) on the line counts
+  as typed, so a click between the two sends more arrows than the shell can take.
 
 ## rtty cli and editors
 
@@ -534,8 +542,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
   real zsh and bash through a pty.
 - `prompt.rs` — what the shell's OSC 133 marks say, as cells by absolute row: where prompts start,
-  the last command's output and a command's command line; a run of doubled marks counts once. Unit
-  tested.
+  the last command's output, a command's command line, and how many arrows a click on the command
+  line is from the shell's cursor; a run of doubled marks counts once. Unit tested.
 - `notify.rs` — the dock's attention and progress badge, and macOS notifications, which need an
   app bundle.
 - `progress.rs` — what a program's OSC 9;4 and OSC 7501 reports say of its progress, and many
@@ -650,8 +658,8 @@ and the dock's badge, a question before closing what runs a program and `Cmd+Z` 
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
 2031 reports), `rtty cli` and the editor plugins, the log, and shell integration that loads
-itself (prompt jumps, the last command's output, notifications of long commands). Checked with
-`--script` against Neovim in two
+itself (prompt jumps, the last command's output, notifications of long commands, click to move the
+cursor). Checked with `--script` against Neovim in two
 side-by-side panes (each redraws at its own size through divider moves and window resizes;
 clicks reach the pane under them at its own cells; a light/dark flip reaches both) and Emacs
 `-nw` in a stacked split; and with the editor plugins, Neovim and Emacs side by side: one key
@@ -661,8 +669,9 @@ through Neovim's windows, tutti's panes and rtty's (tutti's README, "tutti in rt
 integration is checked with `--script` against zsh 5.9, macOS's bash 3.2 and Homebrew's bash 5.3,
 each with a scratch home and no integration of its own, and against zsh with a prompt that marks
 itself too: the marks arrive, prompt jumps go from prompt to prompt, `Cmd+Shift+A` copies the
-last output out of the scrollback, and a long command ending in a pane without the keyboard is
-notified. fish is not installed here, so its script is unchecked.
+last output out of the scrollback, a long command ending in a pane without the keyboard is
+notified, and a click moves the cursor across wide characters and a soft wrap. fish is not
+installed here, so its script is unchecked.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when

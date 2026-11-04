@@ -34,6 +34,8 @@ pub struct Config {
     pub shell_integration: Option<ShellIntegration>,
     /// Seconds a command must run for its end out of view to be notified; 0 for never.
     pub notify_after: Option<u64>,
+    /// A click on the command line being typed moves the shell's cursor there.
+    pub click_to_move: Option<bool>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -509,11 +511,11 @@ mod tests {
     fn shell_integration_keys_read_as_written() {
         let defaults: Config = toml::from_str("").unwrap();
         assert_eq!(defaults.shell_integration.unwrap_or_default(), ShellIntegration::Auto);
-        assert_eq!(defaults.notify_after, None);
-        let source = "shell_integration = 'none'\nnotify_after = 0";
+        assert_eq!((defaults.notify_after, defaults.click_to_move), (None, None));
+        let source = "shell_integration = 'none'\nnotify_after = 0\nclick_to_move = false";
         let config: Config = toml::from_str(source).unwrap();
         assert_eq!(config.shell_integration, Some(ShellIntegration::None));
-        assert_eq!(config.notify_after, Some(0));
+        assert_eq!((config.notify_after, config.click_to_move), (Some(0), Some(false)));
         let err = toml::from_str::<Config>("shell_integration = 'zsh'").unwrap_err().to_string();
         assert!(err.contains("unknown variant `zsh`, expected `auto` or `none`"), "{err}");
         assert!(toml::from_str::<Config>("notify_after = -1").is_err());
