@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::{StreamExt, future};
 use gpui::{
-    App, BorderStyle, Bounds, ClipboardItem, Context, Div, ElementInputHandler, EntityInputHandler,
-    EventEmitter, FocusHandle, Font, FontId, Global, Hsla, KeyDownEvent, KeyUpEvent, Keystroke,
-    LineLayout, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, PathBuilder, Pixels, Point, Render, Rgba, ScrollWheelEvent, ShapedGlyph, ShapedLine,
-    ShapedRun, Size, Task, TextRun, UTF16Selection, UnderlineStyle, Window, WindowAppearance,
-    WindowTextSystem, actions, canvas, div, fill, outline, point, prelude::*, px, size,
+    App, BorderStyle, Bounds, ClipboardItem, Context, DispatchPhase, Div, ElementInputHandler,
+    EntityInputHandler, EventEmitter, FocusHandle, Font, FontId, Global, Hsla, KeyDownEvent,
+    KeyUpEvent, Keystroke, LineLayout, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, PathBuilder, Pixels, Point, Render, Rgba,
+    ScrollWheelEvent, ShapedGlyph, ShapedLine, ShapedRun, Size, Task, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WindowAppearance, WindowTextSystem, actions, canvas, div, fill,
+    outline, point, prelude::*, px, size,
 };
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
@@ -54,6 +55,11 @@ const FLASH: Duration = Duration::from_millis(150);
 const BLINK_MS: u128 = 500;
 const BLINK_FOR: Duration = Duration::from_secs(10);
 
+/// A selecting drag held past the pane's top or bottom scrolls the view this many lines a second
+/// at the edge, and as many more for each cell further out; a step a frame.
+const AUTOSCROLL_SPEED: f32 = 10.;
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(16);
+
 /// What every window and pane shares: the font and its size (Cmd+= and Cmd+- change it for all of
 /// them), the color theme, and the diagnostics asked for.
 pub struct Settings {
@@ -87,6 +93,10 @@ pub struct PaneView {
     mouse_cell: Option<(u16, u16)>,
     /// A button went down in this pane and has not come up: the drag is this pane's.
     pressed: bool,
+    /// Where the pointer is while a left-button drag selects, in the pane or anywhere past it.
+    selecting: Option<Point<Pixels>>,
+    /// While that pointer is past the pane's top or bottom: the steps scrolling the view to it.
+    autoscroll: Option<Task<()>>,
     /// The program claimed rtty's navigation and resize chords (user var `RTTY_KEYS=pane`),
     /// until it clears the var or a shell draws its next prompt (OSC 133;A).
     claims_keys: bool,
@@ -273,6 +283,8 @@ impl PaneView {
             scroll_remainder: px(0.),
             mouse_cell: None,
             pressed: false,
+            selecting: None,
+            autoscroll: None,
             claims_keys: false,
             keys_down: Vec::new(),
             grid: (rows, cols, (0, 0)),
@@ -846,12 +858,14 @@ impl PaneView {
             _ => Kind::Cells,
         };
         self.pane.selection = Some(Selection::new(kind, point, side));
+        self.selecting = Some(event.position);
         cx.notify();
     }
 
     /// A release over this pane, or anywhere after a press in it (the program hears it at the
     /// nearest cell); a release that ends another pane's press is not this pane's.
     pub fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        (self.selecting, self.autoscroll) = (None, None);
         if mem::take(&mut self.pressed) {
             let button = mouse_button(event.button);
             self.report_mouse(button, Action::Release, event.position, event.modifiers);
@@ -905,12 +919,51 @@ impl PaneView {
         self.hover(event.modifiers.platform, cx);
         let pressed = event.pressed_button.filter(|_| self.pressed);
         let button = pressed.map_or(Button::None, mouse_button);
-        if self.report_mouse(button, Action::Motion, event.position, event.modifiers)
-            || pressed != Some(MouseButton::Left)
-        {
+        self.report_mouse(button, Action::Motion, event.position, event.modifiers);
+    }
+
+    /// Motion anywhere in the window, over this pane or not: while a drag selects, the selection
+    /// follows the pointer to the pane's nearest cell, and past the pane's top or bottom the view
+    /// scrolls that way until the pointer comes back or the button comes up.
+    pub fn drag_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selecting.is_none() {
             return;
         }
-        let Some((point, side)) = self.grid_point(event.position) else {
+        self.selecting = Some(event.position);
+        self.extend_selection(cx);
+        let past = self.geometry.is_some_and(|grid| beyond(event.position.y, grid) != 0.);
+        if !past {
+            self.autoscroll = None;
+        } else if self.autoscroll.is_none() {
+            self.autoscroll = Some(cx.spawn(async move |this, cx| {
+                let mut last = Instant::now();
+                loop {
+                    cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                    let elapsed = mem::replace(&mut last, Instant::now()).elapsed();
+                    if this.update(cx, |view, cx| view.autoscroll(elapsed, cx)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+    }
+
+    /// A step of a selecting drag held past the pane's top or bottom: the view scrolls toward the
+    /// pointer for the time since the last step, and the selection follows to the edge row.
+    fn autoscroll(&mut self, elapsed: Duration, cx: &mut Context<Self>) {
+        let (Some(pointer), Some(grid)) = (self.selecting, self.geometry) else { return };
+        self.scroll_remainder +=
+            grid.cell.height * autoscroll_lines(beyond(pointer.y, grid), elapsed);
+        let lines = (self.scroll_remainder / grid.cell.height) as i32;
+        self.scroll_remainder -= grid.cell.height * lines as f32;
+        self.pane.scroll(lines);
+        self.extend_selection(cx);
+    }
+
+    /// The selection, to the pane's cell nearest the dragging pointer.
+    fn extend_selection(&mut self, cx: &mut Context<Self>) {
+        let Some((point, side)) = self.selecting.and_then(|pointer| self.grid_point(pointer))
+        else {
             return;
         };
         if let Some(selection) = self.pane.selection.as_mut() {
@@ -1129,6 +1182,13 @@ impl PaneView {
     ) {
         let started = Instant::now();
         window.handle_input(&self.focus, ElementInputHandler::new(bounds, cx.entity()), cx);
+        // A drag goes on past the pane's edges, where the pane's own listeners hear nothing.
+        let view = cx.weak_entity();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble {
+                let _ = view.update(cx, |view, cx| view.drag_move(event, window, cx));
+            }
+        });
         let cell = frame.cell;
         let at = |row: u16, col: u16| {
             point(
@@ -1275,6 +1335,26 @@ fn paint_drawn(
             window.paint_path(path, color);
         }
     }
+}
+
+/// How many cells `y` is past the pane's top (negative) or bottom (positive); 0 within it.
+fn beyond(y: Pixels, grid: Geometry) -> f32 {
+    let top = grid.origin.y;
+    let bottom = top + grid.cell.height * f32::from(grid.rows);
+    match y {
+        y if y < top => (y - top) / grid.cell.height,
+        y if y > bottom => (y - bottom) / grid.cell.height,
+        _ => 0.,
+    }
+}
+
+/// How many lines up (negative: down) a selecting drag held `beyond` cells past the pane's edge
+/// scrolls the view in `elapsed`: toward the pointer, faster the further out it is.
+fn autoscroll_lines(beyond: f32, elapsed: Duration) -> f32 {
+    if beyond == 0. {
+        return 0.;
+    }
+    -beyond.signum() * AUTOSCROLL_SPEED * (1. + beyond.abs()) * elapsed.as_secs_f32()
 }
 
 fn blinked_off(blinking: Duration) -> bool {
@@ -1767,6 +1847,24 @@ mod tests {
         assert_eq!((wider.scale, wider.offset.x), (0.5, px(0.)));
         // One that keeps to its own cell stays as drawn, blank after it or not.
         assert!(fit_ink(ink(1., 0., 8., 10.), px(10.), px(10.), px(20.), px(15.)).is_none());
+    }
+
+    /// A pane of 10 rows of 20-pixel cells from y = 100: a pointer 50 pixels above it is 2.5
+    /// cells out and scrolls up at 35 lines a second; 2 cells below, down at 30; within, never.
+    #[test]
+    fn a_drag_past_the_pane_scrolls_toward_the_pointer_faster_further_out() {
+        let cell = size(px(10.), px(20.));
+        let cursor = Bounds::new(point(px(0.), px(100.)), cell);
+        let grid = Geometry { origin: point(px(0.), px(100.)), cell, rows: 10, cols: 8, cursor };
+        assert_eq!([beyond(px(50.), grid), beyond(px(340.), grid)], [-2.5, 2.]);
+        assert_eq!(
+            [beyond(px(100.), grid), beyond(px(250.), grid), beyond(px(300.), grid)],
+            [0.; 3]
+        );
+        let second = Duration::from_secs(1);
+        assert_eq!(autoscroll_lines(-2.5, second), 35.);
+        assert_eq!(autoscroll_lines(2., second / 10), -3.);
+        assert_eq!(autoscroll_lines(0., second), 0.);
     }
 
     #[test]

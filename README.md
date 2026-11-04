@@ -187,7 +187,7 @@ Ctrl keys belong to the terminal; Cmd chords belong to the app.
 | `Cmd+Up` / `Cmd+Down` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
 | `Cmd` over a link, `Cmd+click` | underline the link under the pointer; open it (below) |
 | `Cmd+=` / `Cmd+-` | font size up / down, in every pane of every window |
-| mouse drag | select (double click: word, triple click: line), within the pane; Shift+drag when a program takes the mouse |
+| mouse drag | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells |
 | divider drag | resize the panes on either side |
 | tab click | show that tab; its × (under the pointer) closes it and every pane in it; `+` opens a new tab, as `Cmd+T` does |
@@ -469,8 +469,7 @@ candidate window is placed there) but unverified with a real input method; emoji
 CoreText's font fallback (an emoji wider than its two cells is drawn smaller to fit them); the
 drawn box, block and powerline characters are checked by their geometry and the `--script`
 dump, not yet by eye on screen; notifications need the `.app`
-above, and posting from it and clicking one are not yet checked on screen; a selection drag stops
-at its pane's edge rather than scrolling; macOS only.
+above, and posting from it and clicking one are not yet checked on screen; macOS only.
 
 ## The GPUI pin
 

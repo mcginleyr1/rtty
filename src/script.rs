@@ -1,10 +1,10 @@
 //! `--script FILE`: drives the real window as a person would, to check rtty against real programs
 //! with nobody at the keyboard and no screenshots. Keys go through GPUI's own keystroke dispatch
 //! (key bindings, the key encoder, the text input handler) to the focused pane, mouse events to
-//! the pane under them as the window's hit test would send them, focus through GPUI's focus, and
-//! `dump` writes the window's layout and what the next frame draws in each shown pane. Rows and
-//! columns are the window's cells, counted from the top left of the panes. One step per line; `#`
-//! starts a comment.
+//! the pane under them as the window's hit test would send them (a drag to the pane it began in,
+//! wherever it goes), focus through GPUI's focus, and `dump` writes the window's layout and what
+//! the next frame draws in each shown pane. Rows and columns are the window's cells, counted from
+//! the top left of the panes. One step per line; `#` starts a comment.
 //!
 //! ```text
 //! wait TEXT              until the focused pane shows TEXT (10 s at most)
@@ -16,7 +16,8 @@
 //!                        input context, key down); only keys of a US layout's keyboard
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
-//! drag ROW COL ROW COL   with the left button
+//! drag ROW COL ROW COL [MS]  with the left button, held at the end for MS before the release;
+//!                        the end may be past the panes (negative rows are above them)
 //! move ROW COL [cmd]     with no button; `cmd` holds Cmd, as over a link
 //! wheel ROW COL LINES    positive scrolls up
 //! focus in|out           the keyboard comes to the focused pane or leaves the window's elements
@@ -57,7 +58,7 @@ pub enum Step {
     NsKeys(Vec<Keystroke>),
     Type(String),
     Click { row: u16, col: u16, button: MouseButton, clicks: usize, cmd: bool },
-    Drag { from: (u16, u16), to: (u16, u16) },
+    Drag { from: (i32, i32), to: (i32, i32), hold: Duration },
     Move { row: u16, col: u16, cmd: bool },
     Wheel { row: u16, col: u16, lines: f32 },
     Focus(bool),
@@ -141,8 +142,16 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                 Step::Click { row: cell[0], col: cell[1], button, clicks, cmd }
             }
             "drag" => {
-                let cells = numbers(4)?;
-                Step::Drag { from: (cells[0], cells[1]), to: (cells[2], cells[3]) }
+                let cells: Vec<i32> = args.iter().take(4).filter_map(|n| n.parse().ok()).collect();
+                let hold: Option<u64> = args.get(4).map_or(Some(0), |ms| ms.parse().ok());
+                match (cells.as_slice(), hold) {
+                    (&[from_row, from_col, to_row, to_col], Some(hold)) => Step::Drag {
+                        from: (from_row, from_col),
+                        to: (to_row, to_col),
+                        hold: Duration::from_millis(hold),
+                    },
+                    _ => return Err(error("ROW COL ROW COL [MS] expected")),
+                }
             }
             "move" => {
                 let cell = numbers(2)?;
@@ -221,13 +230,14 @@ async fn perform(
     {
         cx.background_executor().timer(Duration::from_millis(10)).await;
     }
-    let center = |row: u16, col: u16, cx: &mut AsyncWindowContext| {
+    let center = |row: i32, col: i32, cx: &mut AsyncWindowContext| {
         this.update_in(cx, |this, window, cx| this.cell_center(row, col, window, cx))
             .map_err(|err| err.to_string())
     };
     // gpui 0.2.2 keeps `Window::dispatch_event`'s result type private, so mouse events go to the
     // panes' own handlers as the window's hit testing would send them: to the pane under the
-    // pointer, and a release to the others too (`on_mouse_up_out`).
+    // pointer, a release to the others too (`on_mouse_up_out`), and motion to every pane's drag
+    // (`drag_move`, which listens to the whole window).
     let dispatch = |event: Mouse, cx: &mut AsyncWindowContext| {
         this.update_in(cx, |this, window, cx| {
             let under = this.pane_at(event.position(), window, cx);
@@ -236,7 +246,12 @@ async fn perform(
                 pane.update(cx, |pane, cx| match &event {
                     Mouse::Down(event) if over => pane.mouse_down(event, window, cx),
                     Mouse::Up(event) => pane.mouse_up(event, window, cx),
-                    Mouse::Move(event) if over => pane.mouse_move(event, window, cx),
+                    Mouse::Move(event) => {
+                        if over {
+                            pane.mouse_move(event, window, cx);
+                        }
+                        pane.drag_move(event, window, cx)
+                    }
                     Mouse::Wheel(event) if over => pane.scroll_wheel(event, window, cx),
                     _ => {}
                 });
@@ -288,7 +303,7 @@ async fn perform(
             }
         }
         Step::Click { row, col, button, clicks, cmd } => {
-            let position = center(*row, *col, cx)?;
+            let position = center((*row).into(), (*col).into(), cx)?;
             for click_count in 1..=*clicks {
                 let button = *button;
                 let modifiers = Modifiers { platform: *cmd, ..none };
@@ -299,7 +314,7 @@ async fn perform(
                 dispatch(Mouse::Up(up), cx)?;
             }
         }
-        Step::Drag { from, to } => {
+        Step::Drag { from, to, hold } => {
             let (start, end) = (center(from.0, from.1, cx)?, center(to.0, to.1, cx)?);
             let (button, modifiers, click_count) = (MouseButton::Left, none, 1);
             let position = start;
@@ -308,17 +323,18 @@ async fn perform(
             dispatch(Mouse::Down(down), cx)?;
             let drag = MouseMoveEvent { position: end, pressed_button: Some(button), modifiers };
             dispatch(Mouse::Move(drag), cx)?;
+            cx.background_executor().timer(*hold).await;
             let up = MouseUpEvent { button, position: end, modifiers, click_count };
             dispatch(Mouse::Up(up), cx)?;
         }
         Step::Move { row, col, cmd } => {
-            let position = center(*row, *col, cx)?;
+            let position = center((*row).into(), (*col).into(), cx)?;
             let modifiers = Modifiers { platform: *cmd, ..none };
             let motion = MouseMoveEvent { position, pressed_button: None, modifiers };
             dispatch(Mouse::Move(motion), cx)?;
         }
         Step::Wheel { row, col, lines } => {
-            let position = center(*row, *col, cx)?;
+            let position = center((*row).into(), (*col).into(), cx)?;
             let wheel = ScrollWheelEvent {
                 position,
                 delta: ScrollDelta::Lines(point(0., *lines)),
@@ -493,6 +509,13 @@ mod tests {
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
         assert!(parse("keys a-b").unwrap_err().contains("unknown keystroke"));
+        let drags = parse("drag 1 2 -3 4 500\ndrag 5 6 7 8").unwrap();
+        let held = Duration::from_millis(500);
+        assert!(
+            matches!(drags[0].1, Step::Drag { from: (1, 2), to: (-3, 4), hold } if hold == held)
+        );
+        assert!(matches!(drags[1].1, Step::Drag { to: (7, 8), hold: Duration::ZERO, .. }));
+        assert!(parse("drag 1 2 3").unwrap_err().contains("ROW COL ROW COL [MS] expected"));
         let appkit = parse("nskey cmd-shift-d cmd-f enter").unwrap();
         assert!(matches!(&appkit[0].1, Step::NsKeys(keys) if keys.len() == 3));
         assert!(parse("nskey f13").unwrap_err().contains("a key a US keyboard has"));

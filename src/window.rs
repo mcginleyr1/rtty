@@ -311,10 +311,11 @@ impl TerminalWindow {
         size(cells(cols, cell.width), bar + cells(rows, cell.height))
     }
 
-    /// The middle of the window's cell (`row`, `col`), counted from the top left of the panes.
-    pub fn cell_center(&self, row: u16, col: u16, window: &Window, cx: &App) -> Point<Pixels> {
+    /// The middle of the window's cell (`row`, `col`), counted from the top left of the panes;
+    /// negative ones are above or left of them.
+    pub fn cell_center(&self, row: i32, col: i32, window: &Window, cx: &App) -> Point<Pixels> {
         let (_, cell, bar) = self.area(window, cx);
-        let at = |index: u16, cell: Pixels| cell * (f32::from(index) + 0.5);
+        let at = |index: i32, cell: Pixels| cell * (index as f32 + 0.5);
         point(at(col, cell.width), bar + at(row, cell.height))
     }
 
