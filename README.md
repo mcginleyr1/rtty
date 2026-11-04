@@ -51,8 +51,10 @@ is and where [`rtty cli`](#rtty-cli-and-editors) reaches this rtty.
 
 **The log.** rtty appends to `$TMPDIR/rtty-<uid>/rtty.log`, next to its socket (`echo
 $TMPDIR` shows where `$TMPDIR` is; it is per user on macOS): when each rtty started and quit and
-why, each pane's start, split, `Cmd+W` and its program's exit status, a tab's close button, and
-every panic, on any thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
+why, each pane's start, split, `Cmd+W` and its program's exit status, a tab's close button, each
+Cmd chord as AppKit hands it to rtty and as GPUI dispatched it (the window's activation, the key
+contexts it met, the actions bound to it there and the one that ran), and every panic, on any
+thread, with its backtrace. Never what a pane shows or is sent. Past a megabyte it starts over,
 keeping the last as `rtty.log.old`. When rtty vanishes, its last lines say whether it quit (and
 why) or panicked (and where).
 

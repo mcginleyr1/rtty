@@ -21,16 +21,19 @@ mod window;
 use std::backtrace::Backtrace;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::iter;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
+use std::ptr::NonNull;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use std::{iter, mem, slice};
 
+use block2::RcBlock;
 use gpui::{
     App, Application, BorrowAppContext, FontFallbacks, FontFeatures, KeyBinding, actions, font, px,
 };
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags as Flags};
 use portable_pty::CommandBuilder;
 use rtty_vt::Terminal;
 
@@ -304,6 +307,48 @@ fn run(options: Options) -> Result<(), String> {
             (1..=9)
                 .map(|digit| KeyBinding::new(&format!("cmd-{digit}"), SelectTab(digit - 1), None)),
         );
+        // A Cmd chord GPUI dispatched: the contexts it met, the actions bound to it there, and the
+        // one that ran. Only Cmd chords, which are rtty's: never what goes to a pane.
+        cx.observe_keystrokes(|event, window, cx| {
+            let keystroke = &event.keystroke;
+            if !keystroke.modifiers.platform {
+                return;
+            }
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let (bound, _) =
+                keymap.bindings_for_input(slice::from_ref(keystroke), &event.context_stack);
+            let bound: Vec<&str> = bound.iter().map(|binding| binding.action().name()).collect();
+            let ran = event.action.as_ref().map_or("nothing", |action| action.name());
+            let (contexts, active) = (&event.context_stack, window.is_window_active());
+            note(&format!(
+                "key {keystroke}, window active {active}, contexts {contexts:?}: bound to \
+                 {bound:?}, ran {ran}"
+            ));
+        })
+        .detach();
+        // Cmd chords as AppKit hands them to rtty, before GPUI sees them: one logged here and
+        // not above never reached GPUI's dispatch.
+        let monitor = RcBlock::new(|event: NonNull<NSEvent>| {
+            // SAFETY: AppKit calls the monitor with a live event.
+            let key = unsafe { event.as_ref() };
+            let flags = key.modifierFlags();
+            if flags.contains(Flags::Command) {
+                let marks = [(Flags::Control, '⌃'), (Flags::Option, '⌥'), (Flags::Shift, '⇧')];
+                let held: String = marks
+                    .into_iter()
+                    .filter_map(|(flag, mark)| flags.contains(flag).then_some(mark))
+                    .collect();
+                let chars = key.charactersIgnoringModifiers().map(|chars| chars.to_string());
+                let (chars, code) = (chars.unwrap_or_default(), key.keyCode());
+                note(&format!("AppKit key down {held}⌘{chars:?} (key code {code})"));
+            }
+            event.as_ptr()
+        });
+        // SAFETY: the monitor returns the event it is given. It stays for rtty's life.
+        mem::forget(unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &monitor)
+        });
         cx.on_action(|_: &Quit, cx| {
             note("quitting: Cmd+Q");
             cx.quit()
