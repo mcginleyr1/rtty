@@ -362,13 +362,13 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | wheel | | scrollback on the primary screen; wheel reports to a program that asked for mouse reports; arrow keys to any other full-screen program (alternate scroll, on by default) |
 
 **The menu bar.** rtty's menus hold the actions above: About, Secure Keyboard Entry, Hide, Hide
-Others, Show All and Quit; in Shell, New Window, New Tab, the splits, Close Pane, Close Window and Undo Close; in Edit,
-Copy, Paste, Find, Copy Last Output and Clear Scrollback; in View, Bigger, Smaller, Actual Size and
-Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab. An item runs its action as the
-action's chord does, and shows the chord `[bind]` gives that action: a rebound action shows its
-new chord, an unbound one none. So in a pane that claims the keys ([Editors](#rtty-cli-and-editors)),
-Close Pane goes to the program, as its chord would, when that chord is one the program's encoding
-can say (never the default `Cmd+W`).
+Others, Show All and Quit; in Shell, New Window, New Tab, the splits, Close Pane, Close Window
+and Undo Close; in Edit, Copy, Paste, Find, Copy Last Output and Clear Scrollback; in View,
+Bigger, Smaller, Actual Size and Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab.
+An item runs its action as the action's chord does, and shows the chord `[bind]` gives that
+action: a rebound action shows its new chord, an unbound one none. In a pane that claims the keys
+([Editors](#rtty-cli-and-editors)), Close Pane therefore goes to the program, as its chord would,
+when that chord is one the program's encoding can say (never the default `Cmd+W`).
 
 **Secure Keyboard Entry.** While it is on, macOS sends keys to rtty alone, so no other program
 (a keylogger, an app's keyboard event tap) sees what is typed. `secure-input`, the App menu's
@@ -401,15 +401,14 @@ program exits, with the same cascade as `Cmd+W`.
 
 **Closing what runs.** Closing a pane (`close-pane`, whatever chord it is bound to), a tab (its
 ×), a window (its close button) or rtty (`Cmd+Q`, the menu's Quit, the dock's Quit, logging out)
-asks first, in a sheet on the window, while
-anything other than a pane's shell at its prompt holds that pane's foreground (the pty's process
-group, as titles find it): an agent, Neovim, a build. A pane's question names its program; a
-tab's, a window's and the quit's count the panes running something and name what each runs.
-`Close` (or `Quit`, the default button) goes on and `Cancel` (Esc) keeps everything. A pane
-whose shell sits at its prompt closes at once, as does a pane whose program exits.
-`confirm_close = false` never asks. When macOS quits rtty (the dock's Quit, logging out), it waits
-for the answer, through `applicationShouldTerminate:`: `Quit` lets the logout go on, `Cancel`
-stops it. Known limits: only the login shell rtty starts itself counts
+asks first, in a sheet on the window, while anything other than a pane's shell at its prompt
+holds that pane's foreground (the pty's process group, as titles find it): an agent, Neovim, a
+build. A pane's question names its program; a tab's, a window's and the quit's count the panes
+running something and name what each runs. `Close` (or `Quit`, the default button) goes on and
+`Cancel` (Esc) keeps everything. A pane whose shell sits at its prompt closes at once, as does a
+pane whose program exits. `confirm_close = false` never asks. When macOS quits rtty (the dock's
+Quit, logging out), it waits for the answer, through `applicationShouldTerminate:`: `Quit` lets
+the logout go on, `Cancel` stops it. Known limits: only the login shell rtty starts itself counts
 as a shell, so a pane started with `rtty -e /bin/zsh` asks even at an idle prompt; and a command
 forked a moment before the close may not hold the foreground yet, and then is not seen as
 running.
@@ -896,8 +895,7 @@ SGR 4:0–4:5) in its own color (SGR 58, so Neovim's diagnostics undercurl in th
 selection (scrolling the scrollback when dragged past the pane) and copy/paste, scrollback,
 resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, window and tab titles
 from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy and, with permission,
-read, synchronized updates,
-focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
+read, synchronized updates, focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
 jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouring Neovim), quick
 select and quick open, the bell, notifications (from an app bundle), a program's progress on its
@@ -949,11 +947,10 @@ button as AppKit sends it, the dock's badge and the progress line's look are not
 eye. Quitting as macOS asks is checked with `--script`'s `terminate` step, which sends AppKit's
 `terminate:` from the run loop, in process: the question, `Cancel` keeping rtty, `Quit` quitting
 it, and nothing asked over an idle shell; the dock's Quit and a logout themselves are not yet
-checked. The menu
-bar's chords are checked in the `--script` dump, which lists the menus as AppKit has them, and its
-items by `--script`'s `menu` step, which dispatches an item's action to the scripted window (a
-click dispatches it to the key window, which a scripted window never is); the menus' look and a
-click on an item are not yet checked by eye. Secure Keyboard Entry is checked through the dump,
+checked. The menu bar's chords are checked in the `--script` dump, which lists the menus as
+AppKit has them, and its items by `--script`'s `menu` step, which dispatches an item's action to
+the scripted window (a click dispatches it to the key window, which a scripted window never is);
+the menus' look and a click on an item are not yet checked by eye. Secure Keyboard Entry is checked through the dump,
 with `--script`'s `app` step standing in for macOS making rtty active and not: the enable and
 disable calls rtty made, one each way, macOS's own word (`IsSecureEventInputEnabled`), a
 password prompt holding it, and none held after quitting; the lock and the menu's check mark
@@ -993,4 +990,6 @@ The one item this held, tutti knowing rtty, has shipped (Status, above). What is
    from Finder (`drop` calls the pane's drop handler, past GPUI's drag), the drawn
    box, block and powerline characters, a selection dragged past a pane, notifications from
    the `.app`, posted and clicked, closing's sheet and the window's close button, the
-   progress line and the dock's badge, and quick select's labels over their matches.
+   progress line and the dock's badge, quick select's labels over their matches, the menu bar
+   and a click on its items, the dock's Quit and a logout, Secure Keyboard Entry's lock and
+   check mark, a real press of the global hotkey, and a clipboard read's sheet.
