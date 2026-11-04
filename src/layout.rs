@@ -334,6 +334,15 @@ impl Layout {
         Some(pane)
     }
 
+    /// Trades `pane`'s place with its neighbour in `direction` (see `neighbor`), leaving zoom: the
+    /// splits stay as they are and the focus stays with `pane`. The pane it traded with.
+    pub fn swap(&mut self, pane: PaneId, direction: Direction, area: Rect) -> Option<PaneId> {
+        let other = self.neighbor(pane, direction, area, false)?;
+        self.root.trade(pane, other);
+        self.zoomed = false;
+        Some(other)
+    }
+
     pub fn contains(&self, pane: PaneId) -> bool {
         self.root.contains(pane)
     }
@@ -393,6 +402,19 @@ impl Node {
         match self {
             Node::Pane(id) => *id == pane,
             Node::Split { first, second, .. } => first.contains(pane) || second.contains(pane),
+        }
+    }
+
+    /// Puts `a` where `b` is and `b` where `a` is.
+    fn trade(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Node::Pane(id) if *id == a => *id = b,
+            Node::Pane(id) if *id == b => *id = a,
+            Node::Pane(_) => {}
+            Node::Split { first, second, .. } => {
+                first.trade(a, b);
+                second.trade(a, b);
+            }
         }
     }
 
@@ -816,6 +838,37 @@ mod tests {
         assert_eq!(layout.neighbor(3, Direction::Left, AREA, false), Some(1));
         // From 5 to the left only 2 overlaps.
         assert_eq!(layout.neighbor(5, Direction::Left, AREA, false), Some(2));
+    }
+
+    #[test]
+    fn swapping_trades_places_with_the_neighbour_focus_would_go_to() {
+        let mut layout = three();
+        // 3, bottom right, swaps up with 2: the panes trade cells, and 3 keeps the focus.
+        assert_eq!(layout.swap(3, Direction::Up, AREA), Some(2));
+        assert_eq!(
+            layout.rects(AREA),
+            [(1, rect(0, 0, 40, 25)), (3, rect(41, 0, 40, 12)), (2, rect(41, 13, 40, 12))]
+        );
+        assert_eq!(layout.focus(), 3);
+        // The splits stay where they are.
+        layout.drag(&[], AREA, (20, 0));
+        let dividers = layout.dividers(AREA);
+        assert_eq!(layout.swap(3, Direction::Left, AREA), Some(1));
+        assert_eq!(
+            layout.rects(AREA),
+            [(3, rect(0, 0, 20, 25)), (1, rect(21, 0, 60, 12)), (2, rect(21, 13, 60, 12))]
+        );
+        assert_eq!(layout.dividers(AREA), dividers);
+        // At an edge nothing moves.
+        let before = layout.clone();
+        assert_eq!(layout.swap(3, Direction::Left, AREA), None);
+        assert_eq!(layout, before);
+        // Right from 3 both 1 and 2 are beside it: the last focused, 2, as for focus. A swap
+        // leaves zoom.
+        layout.toggle_zoom();
+        assert_eq!(layout.swap(3, Direction::Right, AREA), Some(2));
+        assert!(!layout.zoomed());
+        assert_eq!(layout.panes(), [2, 1, 3]);
     }
 
     #[test]

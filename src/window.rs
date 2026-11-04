@@ -55,6 +55,11 @@ pub struct ResizePane {
     pub keystroke: String,
 }
 
+/// Trades the focused pane's place with its neighbour that way; the focus stays with it.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = rtty, no_json)]
+pub struct SwapPane(pub Direction);
+
 /// Shows the tab at this index.
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = rtty, no_json)]
@@ -1015,6 +1020,12 @@ impl Render for TerminalWindow {
             }))
             .on_action(cx.listener(|this, action: &ResizePane, window, cx| {
                 this.resize(this.tabs.active().focus(), action.direction, RESIZE_STEP, window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &SwapPane, window, cx| {
+                let (area, ..) = this.area(window, cx);
+                let focus = this.tabs.active().focus();
+                this.tabs.active_mut().swap(focus, action.0, area);
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| {
                 this.tabs.active_mut().toggle_zoom();

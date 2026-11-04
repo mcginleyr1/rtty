@@ -38,6 +38,7 @@ pub struct Config {
 pub enum Action {
     Focus(Direction),
     Resize(Direction),
+    Swap(Direction),
     SplitRight,
     SplitDown,
     ClosePane,
@@ -88,6 +89,7 @@ impl Action {
                 return toward("focus")
                     .map(Focus)
                     .or_else(|| toward("resize").map(Resize))
+                    .or_else(|| toward("swap").map(Swap))
                     .or_else(|| (1..=9).find(|n| name == format!("tab-{n}")).map(|n| Tab(n - 1)));
             }
         })
@@ -343,13 +345,15 @@ mod tests {
     #[test]
     fn every_action_has_its_name() {
         let names = "focus-left focus-right focus-up focus-down resize-left resize-right \
-                     resize-up resize-down split-right split-down close-pane zoom new-tab \
+                     resize-up resize-down swap-left swap-right swap-up swap-down split-right \
+                     split-down close-pane zoom new-tab \
                      next-tab prev-tab tab-1 tab-9 new-window find copy paste font-bigger \
                      font-smaller prompt-prev prompt-next quit";
         for name in names.split_whitespace() {
             assert!(Action::named(name).is_some(), "{name}");
         }
         assert_eq!(Action::named("resize-up"), Some(Action::Resize(Direction::Up)));
+        assert_eq!(Action::named("swap-left"), Some(Action::Swap(Direction::Left)));
         assert_eq!(Action::named("tab-1"), Some(Action::Tab(0)));
         for name in ["tab-0", "tab-10", "focus-", "Quit", "none"] {
             assert_eq!(Action::named(name), None, "{name}");

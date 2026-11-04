@@ -44,7 +44,7 @@ use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{Copy, Find, NextPrompt, Paste, PreviousPrompt, Settings};
 use window::{
     ClosePane, MoveFocus, NewTab, NewWindow, NextTab, PreviousTab, ResizePane, SelectTab,
-    SplitDown, SplitRight, ToggleZoom,
+    SplitDown, SplitRight, SwapPane, ToggleZoom,
 };
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize]);
@@ -203,6 +203,7 @@ fn key_binding(chord: &str, action: Action) -> KeyBinding {
         Action::Resize(direction) => {
             KeyBinding::new(chord, ResizePane { direction, keystroke }, None)
         }
+        Action::Swap(direction) => KeyBinding::new(chord, SwapPane(direction), None),
         Action::SplitRight => KeyBinding::new(chord, SplitRight, None),
         Action::SplitDown => KeyBinding::new(chord, SplitDown, None),
         Action::ClosePane => KeyBinding::new(chord, ClosePane, None),
