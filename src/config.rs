@@ -37,6 +37,9 @@ pub struct Config {
     notify_after: Option<u64>,
     /// A click on the command line being typed moves the shell's cursor there.
     pub click_to_move: Option<bool>,
+    /// What edits a text file a Cmd+click opens, in a new pane: a program and its arguments,
+    /// `{path}`, `{line}` and `{col}` filled in; unset, the shell's `$EDITOR` (`editor::command`).
+    pub editor: Option<Vec<String>>,
     scheme: Option<String>,
     scheme_dark: Option<String>,
     scheme_light: Option<String>,
@@ -267,6 +270,9 @@ impl Config {
         if let Some(ratio) = config.minimum_contrast.filter(|ratio| !(1. ..=21.).contains(ratio)) {
             return Err(format!("minimum_contrast ={ratio}: a contrast ratio from 1 to 21"));
         }
+        if config.editor.as_ref().is_some_and(Vec::is_empty) {
+            return Err("editor = []: a program, then its arguments".into());
+        }
         config.bindings = defaults(config.keys.unwrap_or_default());
         let mut lines = HashMap::new();
         for (text, name) in config.bind.iter().flatten() {
@@ -495,6 +501,21 @@ mod tests {
             let err = contrast(&format!("minimum_contrast ={wrong}")).unwrap_err();
             assert!(err.ends_with(": a contrast ratio from 1 to 21"), "{err}");
         }
+    }
+
+    #[test]
+    fn the_editor_is_a_program_and_its_arguments() {
+        let editor = |source: &str| Config::parse(source).map(|config| config.editor);
+        assert_eq!(editor("").unwrap(), None);
+        let template = editor("editor = ['nvim', '+{line}', '{path}']").unwrap().unwrap();
+        assert_eq!(template, ["nvim", "+{line}", "{path}"]);
+        assert_eq!(
+            editor("editor = []").unwrap_err(),
+            "editor = []: a program, then its arguments"
+        );
+        assert!(
+            editor("editor = 'nvim +{line} {path}'").unwrap_err().contains("expected a sequence")
+        );
     }
 
     #[test]

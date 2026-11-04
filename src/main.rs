@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod control;
+mod editor;
 mod glyphs;
 mod keys;
 mod layout;
@@ -302,6 +303,7 @@ fn run(options: Options) -> Result<(), String> {
     let undo_timeout = Duration::from_secs(config.undo_timeout.unwrap_or(5));
     let fallback = config.fallback;
     let click_to_move = config.click_to_move.unwrap_or(true);
+    let editor = config.editor;
     let socket = control::socket_path()?;
     let dir = socket.parent().expect("the socket is in its directory");
     start_log(dir);
@@ -476,6 +478,7 @@ fn run(options: Options) -> Result<(), String> {
             shell_integration,
             notify_after,
             click_to_move,
+            editor,
         });
         let window = window::open(command(options.command), cx).unwrap_or_else(|err| {
             eprintln!("rtty: {err}");

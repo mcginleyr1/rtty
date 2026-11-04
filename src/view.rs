@@ -29,7 +29,7 @@ use rtty_vt::{
 use crate::config::{Bell, Theme};
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
-use crate::links::{self, Link};
+use crate::links::{self, Link, Location, Opening, Target};
 use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::progress::{self, Progress};
@@ -96,6 +96,8 @@ pub struct Settings {
     /// A command that ran this long notifies its end out of view; `None` never.
     pub notify_after: Option<Duration>,
     pub click_to_move: bool,
+    /// `editor`: what edits a file in a new pane, else the shell's `$EDITOR`.
+    pub editor: Option<Vec<String>>,
 }
 
 impl Global for Settings {}
@@ -122,6 +124,9 @@ pub struct PaneView {
     /// The program claimed the chords bound to focus, resize, close and last pane (user var
     /// `RTTY_KEYS=pane`), until it clears the var or a shell draws its next prompt (OSC 133;A).
     claims_keys: bool,
+    /// The server of a Neovim running rtty's plugin here (user var `RTTY_NVIM`), which edits the
+    /// files Cmd+clicks open, until it clears the var or a shell draws its next prompt.
+    nvim: Option<PathBuf>,
     /// Keys whose press went to the program and whose release has not.
     keys_down: Vec<String>,
     /// The grid and cell size in pixels the window last gave the pane.
@@ -188,6 +193,8 @@ pub enum PaneEvent {
     Progress,
     /// The program exited, as its status says.
     Exited(String),
+    /// A Cmd+click on a text file: the window has it edited (`TerminalWindow::edit`).
+    Edit(Location),
 }
 
 impl EventEmitter<PaneEvent> for PaneView {}
@@ -321,6 +328,7 @@ impl PaneView {
             selecting: None,
             autoscroll: None,
             claims_keys: false,
+            nvim: None,
             keys_down: Vec::new(),
             grid: (rows, cols, (0, 0)),
             focused: window.is_window_active(),
@@ -509,6 +517,10 @@ impl PaneView {
         self.claims_keys
     }
 
+    pub fn nvim(&self) -> Option<PathBuf> {
+        self.nvim.clone()
+    }
+
     pub fn progress(&self) -> Option<Progress> {
         self.progress
     }
@@ -569,11 +581,14 @@ impl PaneView {
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
                 self.claims_keys = value == "pane"
             }
+            Notice::Event(Event::UserVar { name, value }) if name == "RTTY_NVIM" => {
+                self.nvim = (!value.is_empty()).then(|| value.into())
+            }
             // A mark a program sent while the alternate screen was up is not the shell's: no grid
             // row holds it, and it neither starts nor ends a command.
             Notice::Event(Event::Mark(mark)) if !prompt::held(&self.pane.lock(), &mark) => {}
             Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
-                self.claims_keys = false;
+                (self.claims_keys, self.nvim) = (false, None);
                 self.command = None;
                 self.set_progress(None, cx)
             }
@@ -1067,8 +1082,8 @@ impl PaneView {
     /// text is not that.
     fn hover(&mut self, cmd: bool, cx: &mut Context<Self>) {
         let point = self.pointer.filter(|_| cmd).and_then(|position| self.grid_point(position));
+        let link = point.and_then(|(point, _)| self.link_at(point));
         let term = self.pane.lock();
-        let link = point.and_then(|(point, _)| links::link_at(&term, point));
         let link = link.map(|link| {
             let disguise = links::disguise(&term, &link);
             (link, disguise)
@@ -1080,28 +1095,59 @@ impl PaneView {
         }
     }
 
-    /// Cmd+click on a link: http, https and mailto open with the system's handler, a file shows
-    /// in Finder (never opened: that would run an app or a script), anything else is ignored;
-    /// under `--script` it is only recorded. Whether there was a link.
+    /// The link on a cell (`links::link_at`), a relative path found from the shell's directory,
+    /// else the foreground process's.
+    fn link_at(&self, point: GridPoint) -> Option<Link> {
+        links::link_at(&self.pane.lock(), point, || self.pane.foreground()?.cwd)
+    }
+
+    /// Cmd+click on a link. Whether there was a link.
     fn open_link(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
-        let Some((point, _)) = self.grid_point(position) else { return false };
-        let Some(link) = links::link_at(&self.pane.lock(), point) else { return false };
-        let act = cx.global::<Settings>().open_links;
-        let follow = links::follow(
-            &link.uri,
-            |uri| {
-                if act {
-                    cx.open_url(uri)
-                }
-            },
-            |uri| {
-                if act {
-                    reveal_in_finder(uri)
-                }
-            },
-        );
-        self.followed.push(format!("{follow:?} {}", link.uri));
+        let Some(link) = self.grid_point(position).and_then(|(point, _)| self.link_at(point))
+        else {
+            return false;
+        };
+        self.follow(link.target, cx);
         true
+    }
+
+    /// Follows a link: http, https and mailto open with the system's handler, a `file:` URL
+    /// shows in Finder (never opened: that would run an app or a script), any other scheme is
+    /// ignored; a file is edited, opened or shown in Finder as `links::opening` says, the window
+    /// finding the editor (`PaneEvent::Edit`). Under `--script` only the edit goes ahead; the
+    /// rest is recorded.
+    fn follow(&mut self, target: Target, cx: &mut Context<Self>) {
+        let act = cx.global::<Settings>().open_links;
+        let followed = match target {
+            Target::Uri(uri) => {
+                let follow = links::follow(
+                    &uri,
+                    |uri| {
+                        if act {
+                            cx.open_url(uri)
+                        }
+                    },
+                    |uri| {
+                        if act {
+                            reveal_in_finder(uri)
+                        }
+                    },
+                );
+                format!("{follow:?} {uri}")
+            }
+            Target::File(at) => {
+                let opening = links::opening(&at.path);
+                let place = format!("{opening:?} {}:{}:{}", at.path.display(), at.line, at.col);
+                match opening {
+                    Opening::Edit => cx.emit(PaneEvent::Edit(at)),
+                    Opening::Open if act => cx.open_with_system(&at.path),
+                    Opening::Reveal if act => cx.reveal_path(&at.path),
+                    Opening::Open | Opening::Reveal => {}
+                }
+                place
+            }
+        };
+        self.followed.push(followed);
     }
 
     /// Motion over this pane, with the button held only when it went down here.

@@ -109,6 +109,7 @@ undo_timeout = 5                  # the default: seconds a close waits for Cmd+Z
 shell_integration = "auto"        # the default: zsh, bash and fish load rtty's (Shell integration); or "none"
 notify_after = 10                 # the default: notify a command of 10 s or more that ends out of view; 0: never
 click_to_move = true              # the default: a click on the command line moves the shell's cursor there
+editor = ["nvim", "+{line}", "{path}"]  # edits the files Cmd+click opens (Links); unset: $EDITOR
 
 [bind]                            # chords and their actions, over the defaults (Keys)
 "alt-\\" = "split-right"
@@ -253,7 +254,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+K` | `clear-scrollback` | clear the pane's scrollback and screen, then send the program Ctrl+L so a shell draws its prompt again at the top, as Terminal.app does; under a full-screen program (the alternate screen: Neovim, less) only the scrollback goes, and the program is sent nothing |
 | `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
 | `Cmd+0` | `font-reset` | font size back to the configured one (`size`, or `--size`) |
-| `Cmd` over a link, `Cmd+click` | | underline the link under the pointer; open it (below) |
+| `Cmd` over a link, `Cmd+click` | | underline the link (a URL, or a path such as `src/main.rs:12:5`) under the pointer; open it (below) |
 | mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |
 | divider drag | | resize the panes on either side |
@@ -345,14 +346,38 @@ and `Shift+Enter` go to the next and previous match, round the ends, scrolling t
 Matches stay on their text while output scrolls it up, and output arriving with the bar open is
 searched again.
 
-**Links.** A link is an OSC 8 hyperlink, or a plain `http`, `https` or `file` URL in the text
-(trailing punctuation left out). Holding `Cmd` underlines the one under the pointer and `Cmd+click`
-follows it: `http`, `https` and `mailto` open with the system's handler; a `file` link is shown in
-Finder, selected, and never opened, since opening a file URL launches what it names (an app, a
-`.command` script, an executable) and an OSC 8 link's text can claim anything; any other scheme is
-ignored. Nothing happens without the click. While `Cmd` is held over a link whose text is not its
-target (an OSC 8 "click here", or one showing one address and going to another), the pane's bottom
-edge shows where it really goes and what a click will do.
+**Links.** A link is an OSC 8 hyperlink, a plain `http`, `https` or `file` URL in the text
+(trailing punctuation left out), or the path of a file that exists (below). Holding `Cmd`
+underlines the one under the pointer and `Cmd+click` follows it: `http`, `https` and `mailto` open
+with the system's handler; a `file` link is shown in Finder, selected, and never opened, since
+opening a file URL launches what it names (an app, a `.command` script, an executable) and an OSC 8
+link's text can claim anything; any other scheme is ignored. Nothing happens without the click.
+While `Cmd` is held over a link whose text is not its target (an OSC 8 "click here", or one showing
+one address and going to another), the pane's bottom edge shows where it really goes and what a
+click will do.
+
+**Paths.** A path is found as compilers, grep, test runners and stack traces print it, with a line
+and column after it or not: `src/view.rs:123:45`, `./a/b.rs:7`, `/abs/x.py:3`, `~/notes.md`,
+`Foo.java:12`, Python's `File "x.py", line 3`. It has a slash or is a name with an extension, holds
+no space, quote, bracket, colon or backslash, and starts a line or follows a space, a quote, an
+opening bracket or `=`, never a colon, so neither a URL's `//host` nor any part of a Windows
+`C:\x` is one; a sentence's full stop after it is left out. It is a link only when it exists: a
+relative path from the directory the shell last reported (OSC 7, which [shell
+integration](#shell-integration) sends at each prompt), else the foreground process's. rtty looks
+only while `Cmd` is held over it and at the click, never per frame. A click on
+
+- **text** (a file with no NUL byte in its first 8 KiB) edits it at the line and column:
+  1. in a Neovim running rtty's plugin, in that pane or else in another pane of its tab, which
+     then takes the keyboard (the plugin names its server to rtty: [editors](editors/README.md));
+  2. else in a new pane to the right, which runs `editor` with `{path}`, `{line}` and `{col}`
+     filled in, or with no `editor`, `$EDITOR +line path` (`vi` without an EDITOR). Your login
+     shell runs it, interactive, so it finds the PATH and EDITOR your dotfiles set, which an app
+     started from Finder lacks. The pane closes when the editor exits; a GUI editor's command
+     (`["code", "-g", "{path}:{line}:{col}"]`) returns at once, and its pane closes with it.
+- **anything else** (a directory, an image, a PDF) opens with macOS's `open`, except what opening
+  would run: a directory with an extension (an app, a bundle), an executable, and a `.command`,
+  `.tool`, `.terminal`, `.jar`, `.fileloc`, `.inetloc` or `.webloc` that is not text are shown in
+  Finder instead.
 
 **Bell and notifications.** BEL flashes its pane (`bell = "none"` turns that off) and, while the
 window is not the key window, bounces rtty's dock icon once. OSC 9, OSC 777;notify and kitty's OSC
@@ -548,8 +573,12 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `mouse.rs` — mouse reports in every encoding, unit tested.
 - `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
-  line) with what a click does with it (open, reveal in Finder, ignore) and what to show of a
-  disguised one; both unit tested, and neither opens anything.
+  line, else a path with its line and column to a file that exists) with what a click does with
+  it (open, reveal in Finder, edit, ignore) and what to show of a disguised one; both unit tested,
+  and neither opens anything.
+- `editor.rs` — editing a file at a line: the msgpack-rpc call that has a Neovim running rtty's
+  plugin open it, and what a new pane runs otherwise (`editor`, else `$EDITOR`, through the login
+  shell); unit tested, against sh and a stand-in Neovim socket.
 - `shell.rs` and `shell/` — the shell integration scripts, written into rtty's directory at
   startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
   real zsh and bash through a pty.
@@ -665,7 +694,8 @@ resize with reflow, mouse reports, a Ghostty-style tab bar in the titlebar, wind
 from OSC 0/2, the foreground process or the shell's directory, OSC 52 copy, synchronized updates,
 focus reports (mode 1004: `CSI I` and `CSI O` as the window is activated and deactivated and as
 the pane gains and loses the keyboard), the keyboard protocols above, scrollback search, prompt
-jumps, links, the bell, notifications (from an app bundle), a program's progress on its tab's pill
+jumps, links (URLs, and `path:line:col` opened in an editor pane or a neighbouring Neovim), the
+bell, notifications (from an app bundle), a program's progress on its tab's pill
 and the dock's badge, a question before closing what runs a program and `Cmd+Z` to undo a close,
 `Cmd+K` to clear, a config file with key bindings,
 WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode

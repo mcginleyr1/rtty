@@ -31,7 +31,9 @@ use rtty_vt::{BACKGROUND, FOREGROUND, Rgb};
 
 use crate::cli::RESIZE_STEP;
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
+use crate::editor;
 use crate::layout::{Amount, Closed, Direction, Layout, Orientation, PaneId, Place, Rect, Tabs};
+use crate::links::Location;
 use crate::notify;
 use crate::pane::{Notice, Pane, START_SIZE};
 use crate::progress::{self, Progress, State};
@@ -658,6 +660,34 @@ impl TerminalWindow {
                 leave_undo(id, cx);
                 self.close(id, false, window, cx)
             }
+            PaneEvent::Edit(at) => self.edit(id, at, window, cx),
+        }
+    }
+
+    /// Edits `at` for pane `from`: in the Neovim with rtty's plugin running there, else in one
+    /// running in another pane of its tab, which takes the keyboard; else in a new pane to
+    /// `from`'s right (`editor::command`).
+    fn edit(&mut self, from: PaneId, at: &Location, window: &mut Window, cx: &mut Context<Self>) {
+        let mut panes = self.tabs.active().panes();
+        panes.sort_by_key(|&pane| pane != from);
+        let server = |pane| Some((pane, self.views.get(&pane)?.read(cx).nvim()?));
+        let servers: Vec<_> = panes.into_iter().filter_map(server).collect();
+        let opened = servers.into_iter().find(|(pane, server)| match editor::nvim(server, at) {
+            Ok(()) => true,
+            Err(err) => {
+                crate::note(&format!(
+                    "pane {from}: pane {pane}'s Neovim did not open a file: {err}"
+                ));
+                false
+            }
+        });
+        if let Some((pane, _)) = opened {
+            crate::note(&format!("pane {from}: opened a file in pane {pane}'s Neovim"));
+            return self.show(pane, window, cx);
+        }
+        let command = editor::command(cx.global::<Settings>().editor.as_deref(), at);
+        if let Err(err) = self.split(from, Direction::Right, Some(command), window, cx) {
+            eprintln!("rtty: {err}");
         }
     }
 
@@ -929,12 +959,13 @@ impl TerminalWindow {
         }
     }
 
-    /// Splits `from`, showing its tab; the new pane starts in `from`'s working directory and
-    /// takes the keyboard.
+    /// Splits `from`, showing its tab; the new pane runs `program`, else the login shell, in
+    /// `from`'s working directory and takes the keyboard.
     fn split(
         &mut self,
         from: PaneId,
         direction: Direction,
+        program: Option<CommandBuilder>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<PaneId, String> {
@@ -946,16 +977,19 @@ impl TerminalWindow {
         let rects = layout.rects(area);
         let (_, rect) =
             rects.iter().find(|(pane, _)| *pane == id).expect("the new pane is laid out");
-        let cwd = self.views.get(&from).and_then(|view| view.read(cx).cwd());
+        let mut command = program.unwrap_or_else(CommandBuilder::new_default_prog);
+        if let Some(cwd) = self.views.get(&from).and_then(|view| view.read(cx).cwd()) {
+            command.cwd(cwd);
+        }
         crate::note(&format!("pane {from}: splitting {} into pane {id}", direction.name()));
-        let (pane, notices) = spawn(shell(cwd), id, rect.rows, rect.cols, &self.scheme, cx)?;
+        let (pane, notices) = spawn(command, id, rect.rows, rect.cols, &self.scheme, cx)?;
         *self.tabs.active_mut() = layout;
         self.add(id, pane, notices, window, cx);
         Ok(id)
     }
 
     fn split_focused(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(err) = self.split(self.tabs.active().focus(), direction, window, cx) {
+        if let Err(err) = self.split(self.tabs.active().focus(), direction, None, window, cx) {
             eprintln!("rtty: {err}");
         }
     }
@@ -995,7 +1029,7 @@ impl TerminalWindow {
                 Response::Done
             }
             Request::Split { pane, direction } => self
-                .split(pane.unwrap_or(focused), direction, window, cx)
+                .split(pane.unwrap_or(focused), direction, None, window, cx)
                 .map_or_else(Response::Error, Response::Pane),
             Request::Zoom { pane } => {
                 self.show(pane.unwrap_or(focused), window, cx);

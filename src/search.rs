@@ -1,6 +1,8 @@
 //! Finding text in a terminal's scrollback and screen, independent of GPUI. Matches are cells by
 //! absolute row, so they stay on their text while output scrolls it up.
 
+use std::ops::Range;
+
 use regex::{Regex, RegexBuilder};
 use rtty_vt::Terminal;
 
@@ -38,6 +40,21 @@ pub fn find(term: &Terminal, pattern: &Regex) -> Vec<Match> {
 /// `find` over rows `from..to`, which should start a line (`line_rows`).
 pub fn find_in(term: &Terminal, pattern: &Regex, from: u64, to: u64) -> Vec<Match> {
     let mut matches = Vec::new();
+    each_line(term, from, to, |text, cells| {
+        let found = pattern.find_iter(text).filter(|found| !found.is_empty());
+        matches.extend(found.map(|found| cells(found.range())));
+    });
+    matches
+}
+
+/// Each logical line in rows `from..to` (which should start one), soft wraps joined: its text,
+/// trailing blanks trimmed, and the cells a non-empty byte range of that text covers.
+pub fn each_line(
+    term: &Terminal,
+    from: u64,
+    to: u64,
+    mut visit: impl FnMut(&str, &dyn Fn(Range<usize>) -> Match),
+) {
     // The logical line so far, and where each grapheme in it starts and the cells it covers.
     let mut text = String::new();
     let mut cells: Vec<(usize, Point, Point)> = Vec::new();
@@ -56,15 +73,15 @@ pub fn find_in(term: &Terminal, pattern: &Regex, from: u64, to: u64) -> Vec<Matc
             continue;
         }
         let trimmed = text.trim_end_matches(' ').len();
-        for found in pattern.find_iter(&text[..trimmed]).filter(|found| !found.is_empty()) {
-            let first = cells.partition_point(|&(start, ..)| start <= found.start()) - 1;
-            let last = cells.partition_point(|&(start, ..)| start < found.end()) - 1;
-            matches.push((cells[first].1, cells[last].2));
-        }
+        let covers = |range: Range<usize>| {
+            let first = cells.partition_point(|&(start, ..)| start <= range.start) - 1;
+            let last = cells.partition_point(|&(start, ..)| start < range.end) - 1;
+            (cells[first].1, cells[last].2)
+        };
+        visit(&text[..trimmed], &covers);
         text.clear();
         cells.clear();
     }
-    matches
 }
 
 /// The rows of the logical line holding `row`: back while the row before soft-wraps into it,
