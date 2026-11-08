@@ -37,7 +37,8 @@ let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a k
 - `set_command_end_reset(true)`: at a shell's mark of a command's end
   (OSC 133;D, the first of a run), the reports and key encodings a killed
   program left on go off, there in the stream (mouse, 1004, 2031,
-  modifyOtherKeys, kitty's flags; bracketed paste, DECCKM and DECKPAM stay).
+  modifyOtherKeys and its format, kitty's flags; bracketed paste, DECCKM and
+  DECKPAM stay).
 - OSC 52: a set is `Event::Clipboard`, a query (`52;c;?`) is
   `Event::ClipboardRead`, which the engine never answers itself; a host that
   ignores the event leaves the query unanswered, as before.
@@ -61,15 +62,18 @@ let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a k
     host's own kitty terminal said of it: the text it typed, kitty's number
     for it, its shifted and base-layout keys. Encoded as the program asked:
     kitty's flags (`DISAMBIGUATE`, `EVENT_TYPES`, `ALTERNATE_KEYS`,
-    `ALL_KEYS`, `ASSOCIATED_TEXT`) first, else modifyOtherKeys 1 or 2, else
-    legacy xterm keys under DECCKM and DECKPAM. A host gives a keypad key
-    by kitty's number for it (`KP_0` 57399 to `KP_BEGIN` 57427): under
-    DECKPAM, unless Num Lock is on, the digits, operators and Enter send
-    xterm's `SS3` forms (`SS3 p` to `SS3 y`, `SS3 M`, `SS3 5 M` with
-    Ctrl); otherwise each is its main key, which modifyOtherKeys leaves
-    alone. The navigation keys are the cursor and editing keys (Begin
-    `CSI E`). `None` when the key sends nothing: a release or a lone
-    modifier nobody asked for, a key with no encoding.
+    `ALL_KEYS`, `ASSOCIATED_TEXT`) first, else modifyOtherKeys 1, 2 or 3
+    (`CSI > 4 ; n m`; xterm's level 3 spells out unmodified keys too, and
+    any other level is off), as `CSI 27 ; m ; code ~` or, under
+    formatOtherKeys (XTFMTKEYS `CSI > 4 ; 1 f`, asked for with XTQFMTKEYS
+    `CSI ? 4 g`), `CSI code ; m u`, else legacy xterm keys under DECCKM and
+    DECKPAM. A host gives a keypad key by kitty's number for it (`KP_0`
+    57399 to `KP_BEGIN` 57427): under DECKPAM, unless Num Lock is on, the
+    digits, operators and Enter send xterm's `SS3` forms (`SS3 p` to
+    `SS3 y`, `SS3 M`, `SS3 5 M` with Ctrl); otherwise each is its main key,
+    which modifyOtherKeys leaves alone. The navigation keys are the cursor
+    and editing keys (Begin `CSI E`). `None` when the key sends nothing: a
+    release or a lone modifier nobody asked for, a key with no encoding.
     A key that types text sends that text; a host with its own text input
     (an IME) compares and keeps those.
   - `encode_mouse(&Mouse, &Modes)`: a button, press, release or motion,

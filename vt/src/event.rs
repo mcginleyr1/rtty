@@ -71,8 +71,10 @@ pub enum ModeChange {
     ColorSchemeReports(bool),
     /// The active kitty keyboard flags.
     KittyKeyboard(u8),
-    /// The xterm modifyOtherKeys level (`CSI > 4 ; n m`): 0 off, 1, 2.
+    /// The xterm modifyOtherKeys level (`CSI > 4 ; n m`): 1 to 3, any other value off.
     ModifyOtherKeys(u8),
+    /// The xterm formatOtherKeys (`CSI > 4 ; n f`): 0 `CSI 27 ; m ; code ~`, else `CSI code ; m u`.
+    FormatOtherKeys(u8),
 }
 
 /// An OSC 133 mark: where on the grid a shell said a prompt, a command or

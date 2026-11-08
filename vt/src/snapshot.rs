@@ -524,6 +524,9 @@ impl Terminal {
         if modes.modify_other_keys != 0 || explicit {
             let _ = write!(e.out, "\x1b[>4;{}m", modes.modify_other_keys);
         }
+        if modes.format_other_keys != 0 || explicit {
+            let _ = write!(e.out, "\x1b[>4;{}f", modes.format_other_keys);
+        }
         if self.cursor_style.is_some() || explicit {
             let _ =
                 write!(e.out, "\x1b[{} q", self.cursor_style.map_or(0, |style| style.decscusr()));

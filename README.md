@@ -624,7 +624,10 @@ Programs that ask for more get it (rtty-vt's encoder, the same one tutti's TUI u
   `CSI 27 ; mod ; code ~` for Ctrl with keys that have no control character (`C-;`, `C-.`,
   `C-1`) and for Ctrl or Shift with Enter and Tab; every control character stays as it was. Level
   2 sends it for every key with Ctrl or Alt, and Enter, Tab, Backspace and Esc with any modifier.
-  Without it, Ctrl leaves a key it has no control character for as it is (`C-1` types 1).
+  Level 3, xterm's newest, sends it for every key, unmodified ones too (`CSI 27 ; 1 ; 32 ~` for
+  space); any other level is off, as in xterm. xterm's formatOtherKeys (`CSI > 4 ; 1 f`) turns
+  each of those into `CSI code ; mod u`. Without modifyOtherKeys, Ctrl leaves a key it has no
+  control character for as it is (`C-1` types 1).
 - **The kitty keyboard protocol** (`CSI > flags u`; Neovim pushes flags 3). Disambiguate: Esc is
   `CSI 27 u`, keys with Ctrl or Alt are `CSI code ; mod u` (so `C-i` is not Tab and `S-Enter` is
   not Enter), and the other keys use the `CSI 1 ; mod X` and `CSI n ; mod ~` forms, never `SS3`
@@ -640,9 +643,9 @@ has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1
 encodings it turned on, and the shell after it then gets a click, a focus change or a flip to dark
 as typing, and its keys in kitty's encoding. When the shell marks the command's end (OSC 133;D,
 the first of a run of them), rtty turns off the mouse reports (every mode and encoding), focus
-reports (1004), light/dark reports (2031), modifyOtherKeys and kitty's flags, right there in the
-stream, so what the shell sets for its next prompt stays. Bracketed paste and the cursor and keypad
-modes stay too: shells set those themselves. tutti does the same.
+reports (1004), light/dark reports (2031), modifyOtherKeys and its format, and kitty's flags, right
+there in the stream, so what the shell sets for its next prompt stays. Bracketed paste and the
+cursor and keypad modes stay too: shells set those themselves. tutti does the same.
 
 ## Shell integration
 

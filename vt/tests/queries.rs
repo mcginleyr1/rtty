@@ -82,6 +82,41 @@ fn modify_other_keys_is_tracked_announced_and_reported() {
     );
     term.advance(b"\x1b[>4;2m\x1bc");
     assert_eq!(term.modes().modify_other_keys, 0, "a reset turns it off");
+    term.advance(b"\x1b[>4;2m\x1b[!p");
+    assert_eq!(term.modes().modify_other_keys, 0, "so does DECSTR, as in xterm");
+}
+
+/// xterm keeps whatever level XTMODKEYS gives and answers it back: 3 sends every key, and the
+/// encoder treats any level past it as off. A level past a byte is kept as 255, not wrapped
+/// round to a level that spells keys out.
+#[test]
+fn modify_other_keys_keeps_any_level() {
+    let mut term = Terminal::new(24, 80, 0);
+    assert_eq!(replies(&mut term, "\x1b[>4;3m\x1b[?4m"), ["\x1b[>4;3m"]);
+    assert_eq!(replies(&mut term, "\x1b[>4;7m\x1b[?4m"), ["\x1b[>4;7m"]);
+    assert_eq!(replies(&mut term, "\x1b[>4;258m\x1b[?4m"), ["\x1b[>4;255m"]);
+    assert_eq!(replies(&mut term, "\x1b[>4m\x1b[?4m"), ["\x1b[>4;0m"], "no value resets it");
+}
+
+/// formatOtherKeys has controls of its own (xterm patch #398), not a parameter of XTMODKEYS:
+/// XTFMTKEYS `CSI > 4 ; n f` sets it, XTQFMTKEYS `CSI ? 4 g` asks for it, answered as the
+/// XTFMTKEYS that restores it.
+#[test]
+fn format_other_keys_is_tracked_announced_and_reported() {
+    let mut term = Terminal::new(24, 80, 0);
+    assert_eq!(replies(&mut term, "\x1b[?4g"), ["\x1b[>4;0f"]);
+    assert_eq!(replies(&mut term, "\x1b[>4;1f\x1b[6n"), ["\x1b[1;1R"], "not HVP");
+    assert_eq!(term.modes().format_other_keys, 1);
+    assert_eq!(replies(&mut term, "\x1b[?4g"), ["\x1b[>4;1f"]);
+    term.advance(b"\x1b[>4f\x1b[>4;2f\x1b[>4;2f");
+    assert_eq!(
+        term.take_events(),
+        [0, 2].map(|format| Event::Mode(ModeChange::FormatOtherKeys(format)))
+    );
+    term.advance(b"\x1b[!p");
+    assert_eq!(term.modes().format_other_keys, 0, "DECSTR resets it, as in xterm");
+    term.advance(b"\x1b[>4;1f\x1bc");
+    assert_eq!(term.modes().format_other_keys, 0, "so does RIS");
 }
 
 /// vim's probe: a terminal must swallow a DCS and a CSI it does not know.

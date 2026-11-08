@@ -233,13 +233,13 @@ impl Terminal {
     /// right there in the stream, what a program can leave on that the shell
     /// after it never asked for: the mouse's reports (every tracking mode and
     /// encoding), focus reports (1004), light/dark reports (2031) and the key
-    /// encodings (modifyOtherKeys, the current screen's kitty flags). A
-    /// program killed with SIGKILL turns none of them off, and the shell then
-    /// gets reports it takes for typing. Bracketed paste and the cursor and
-    /// keypad modes stay: shells set those themselves. Only the first of a
-    /// run of ends: zsh marks one from PROMPT_SP and another from precmd, and
-    /// what a hook between them turns on is the shell's. Mode events follow
-    /// the mark's.
+    /// encodings (modifyOtherKeys and its format, the current screen's kitty
+    /// flags). A program killed with SIGKILL turns none of them off, and the
+    /// shell then gets reports it takes for typing. Bracketed paste and the
+    /// cursor and keypad modes stay: shells set those themselves. Only the
+    /// first of a run of ends: zsh marks one from PROMPT_SP and another from
+    /// precmd, and what a hook between them turns on is the shell's. Mode
+    /// events follow the mark's.
     pub fn set_command_end_reset(&mut self, on: bool) {
         self.command_end_reset = on;
     }
@@ -1166,8 +1166,8 @@ impl Terminal {
         self.reset_graphics();
     }
 
-    /// DECSTR: modes, pen, margins and the saved cursor reset; the screen and
-    /// cursor position stay.
+    /// DECSTR: modes, pen, margins and the saved cursor reset, modifyOtherKeys and
+    /// formatOtherKeys too as in xterm; the screen and cursor position stay.
     pub(crate) fn soft_reset(&mut self) {
         let old = self.modes.clone();
         self.modes.cursor_visible = true;
@@ -1176,6 +1176,8 @@ impl Terminal {
         self.modes.autowrap = true;
         self.modes.cursor_keys = false;
         self.modes.keypad = false;
+        self.modes.modify_other_keys = 0;
+        self.modes.format_other_keys = 0;
         self.announce_mode_resets(&old);
         self.top = 0;
         self.bottom = self.grid.rows - 1;
@@ -1196,6 +1198,9 @@ impl Terminal {
         if old.modify_other_keys != new.modify_other_keys {
             self.mode_changed(ModeChange::ModifyOtherKeys(new.modify_other_keys));
         }
+        if old.format_other_keys != new.format_other_keys {
+            self.mode_changed(ModeChange::FormatOtherKeys(new.format_other_keys));
+        }
         let flags = [
             (old.focus_reports, new.focus_reports, ModeChange::FocusReports as fn(bool) -> _),
             (old.bracketed_paste, new.bracketed_paste, ModeChange::BracketedPaste),
@@ -1215,6 +1220,13 @@ impl Terminal {
         if self.modes.modify_other_keys != level {
             self.modes.modify_other_keys = level;
             self.mode_changed(ModeChange::ModifyOtherKeys(level));
+        }
+    }
+
+    pub(crate) fn set_format_other_keys(&mut self, format: u8) {
+        if self.modes.format_other_keys != format {
+            self.modes.format_other_keys = format;
+            self.mode_changed(ModeChange::FormatOtherKeys(format));
         }
     }
 
@@ -1281,6 +1293,7 @@ impl Terminal {
         self.modes.focus_reports = false;
         self.modes.color_scheme_reports = false;
         self.modes.modify_other_keys = 0;
+        self.modes.format_other_keys = 0;
         self.announce_mode_resets(&old);
         if self.kitty_keyboard() != 0 {
             self.kitty_pop(u16::MAX);

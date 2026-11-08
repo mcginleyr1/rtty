@@ -32,8 +32,12 @@ pub struct Modes {
     pub sync_update: bool,
     /// 2031.
     pub color_scheme_reports: bool,
-    /// XTMODKEYS `modifyOtherKeys` level (`CSI > 4 ; n m`).
+    /// XTMODKEYS `modifyOtherKeys` level (`CSI > 4 ; n m`): 1 and 2 spell out modified keys, 3
+    /// every key; xterm keeps any other level as given, and its keys then go as with 0.
     pub modify_other_keys: u8,
+    /// XTFMTKEYS `formatOtherKeys` (`CSI > 4 ; n f`): 0 spells keys out as `CSI 27 ; m ; code ~`,
+    /// any other value as `CSI code ; m u`.
+    pub format_other_keys: u8,
 }
 
 impl Default for Modes {
@@ -57,6 +61,7 @@ impl Default for Modes {
             sync_update: false,
             color_scheme_reports: false,
             modify_other_keys: 0,
+            format_other_keys: 0,
         }
     }
 }

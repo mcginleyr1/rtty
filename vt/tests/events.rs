@@ -221,7 +221,7 @@ fn a_mark_after_a_full_row_sits_past_its_last_column() {
 #[test]
 fn a_commands_end_turns_off_what_it_left_on() {
     let left = "\x1b]133;C\x07\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2031h\x1b[?2004h\
-                \x1b[?1h\x1b=\x1b[>4;2m\x1b[>1u";
+                \x1b[?1h\x1b=\x1b[>4;2m\x1b[>4;1f\x1b[>1u";
     let stream = format!("{left}\x1b]133;D;137\x1b\\\x1b]133;A\x07\x1b[?2031h$ ");
     for cut in 0..=stream.len() {
         let mut term = Terminal::new(3, 20, 0);
@@ -231,7 +231,8 @@ fn a_commands_end_turns_off_what_it_left_on() {
         let modes = term.modes();
         assert_eq!((modes.mouse, modes.mouse_encoding), (MouseMode::None, MouseEncoding::Default));
         assert!(!modes.focus_reports, "cut at {cut}");
-        assert_eq!((modes.modify_other_keys, term.kitty_keyboard()), (0, 0), "cut at {cut}");
+        let keys = (modes.modify_other_keys, modes.format_other_keys, term.kitty_keyboard());
+        assert_eq!(keys, (0, 0, 0), "cut at {cut}");
         assert!(modes.color_scheme_reports, "the prompt's own, after the mark");
         assert!(modes.bracketed_paste && modes.cursor_keys && modes.keypad && modes.alt_screen);
     }

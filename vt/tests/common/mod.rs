@@ -118,6 +118,7 @@ fn quiet(profile: Profile) -> impl Strategy<Value = Token> {
             "\x1b]11;#102030\x1b\\",
             "\x1b]104\x07",
             "\x1b[>4;2m",
+            "\x1b[>4;1f",
             "\x1b[22t",
             "\x1b[23t",
             "\x1b[!p",

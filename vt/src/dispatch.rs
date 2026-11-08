@@ -221,11 +221,20 @@ fn csi(term: &mut Terminal, params: &Params, intermediates: &[u8], action: char)
         }
         (b"", 'm') => select_graphic_rendition(term, params),
         // XTMODKEYS sets modifyOtherKeys, `CSI > 4 n` turns it off,
-        // XTQMODKEYS asks for it.
-        (b">", 'm') if arg(0, 0) == 4 => term.set_modify_other_keys(arg(1, 0) as u8),
+        // XTQMODKEYS asks for it; XTFMTKEYS sets formatOtherKeys, XTQFMTKEYS
+        // asks for it. Each keeps any value, as xterm does, past a byte as 255.
+        (b">", 'm') if arg(0, 0) == 4 => {
+            term.set_modify_other_keys(u8::try_from(arg(1, 0)).unwrap_or(u8::MAX));
+        }
         (b">", 'n') if arg(0, 0) == 4 => term.set_modify_other_keys(0),
         (b"?", 'm') if arg(0, 0) == 4 => {
             term.reply(format!("\x1b[>4;{}m", term.modes.modify_other_keys));
+        }
+        (b">", 'f') if arg(0, 0) == 4 => {
+            term.set_format_other_keys(u8::try_from(arg(1, 0)).unwrap_or(u8::MAX));
+        }
+        (b"?", 'g') if arg(0, 0) == 4 => {
+            term.reply(format!("\x1b[>4;{}f", term.modes.format_other_keys));
         }
         (b"", 'n') => match arg(0, 0) {
             5 => term.reply("\x1b[0n"),
