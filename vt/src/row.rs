@@ -284,11 +284,11 @@ impl Row {
             })
     }
 
-    /// Copy `cells` from `from` (another row) to the end of this one, side
-    /// entries included.
+    /// Copy `cells` from `from` (another row, blank past the cells it holds)
+    /// to the end of this one, side entries included.
     pub(crate) fn append_from(&mut self, from: &Row, cells: Range<usize>) {
-        for cell in &from.cells[cells] {
-            let mut cell = *cell;
+        for col in cells {
+            let mut cell = from.cells.get(col).copied().unwrap_or_default();
             cell.extra = from.extra(&cell).cloned().map_or(0, |extra| self.intern(extra));
             self.cells.push(cell);
         }

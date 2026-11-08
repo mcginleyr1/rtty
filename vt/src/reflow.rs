@@ -75,11 +75,6 @@ impl Terminal {
         let (mut ring, mapped) = if cols == self.grid.cols {
             (old, points)
         } else {
-            // Rewrapped at their full width, a line's points and marks past
-            // its text keep their columns.
-            for line in &mut old {
-                line.cells.resize(usize::from(self.grid.cols), Cell::default());
-            }
             // Placements go where the cells they start on go.
             let anchors: Vec<(Point, Anchor)> = old
                 .iter_mut()
@@ -91,7 +86,8 @@ impl Terminal {
                 .collect();
             let count = points.len();
             points.extend(anchors.iter().map(|(point, _)| *point));
-            let (rows, mut mapped) = rewrap(&old, usize::from(cols), &points);
+            let (rows, mut mapped) =
+                rewrap(&old, usize::from(self.grid.cols), usize::from(cols), &points);
             let mut ring = VecDeque::from(rows);
             for ((_, mut anchor), point) in anchors.into_iter().zip(mapped.drain(count..)) {
                 anchor.col = point.col.min(usize::from(cols) - 1) as u16;
@@ -202,14 +198,26 @@ fn clamp(cursor: &mut Cursor, rows: u16, cols: u16) {
     cursor.pending_wrap &= cursor.col == cols - 1;
 }
 
-/// Rejoin `old`'s soft-wrapped rows into lines and wrap them again at
+/// Rejoin the soft-wrapped rows of `old`, `old_cols` wide (a scrollback row
+/// blank past the cells it holds), into lines and wrap them again at
 /// `cols`, carrying `points` and the rows' marks along. A line's trailing
 /// blanks are dropped, but not before a point or mark on it.
-fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<Point>) {
+fn rewrap(
+    old: &VecDeque<Row>,
+    old_cols: usize,
+    cols: usize,
+    points: &[Point],
+) -> (Vec<Row>, Vec<Point>) {
     let mut out: Vec<Row> = Vec::with_capacity(old.len());
     let mut mapped = vec![Point::default(); points.len()];
     let mut marks: Vec<(Point, MarkKind)> = Vec::new();
-    let mut row = Row::new(0, Color::Default);
+    // Room for a full row from the start: none grows as it fills.
+    let empty = || {
+        let mut row = Row::new(0, Color::Default);
+        row.cells.reserve_exact(cols);
+        row
+    };
+    let mut row = empty();
     let mut i = 0;
     while i < old.len() {
         let mut last = i;
@@ -217,7 +225,6 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
             last += 1;
         }
         let tail = &old[last];
-        let len = tail.cells.len();
         let content = |cell: &Cell| !cell.is_default() && !cell.is_pad();
         let used = tail.cells.iter().rposition(content).map_or(0, |col| col + 1);
         let held = points
@@ -225,7 +232,7 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
             .filter(|point| point.row == last)
             .map(|point| point.col)
             .chain(tail.marks.iter().map(|&(col, _)| usize::from(col)))
-            .map(|col| (col + 1).min(len))
+            .map(|col| (col + 1).min(old_cols))
             .max()
             .unwrap_or(0);
         let line_end = used.max(held);
@@ -234,7 +241,7 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
             let end = if r < last { source.cells.len() } else { line_end };
             let mut col = 0;
             while col < end {
-                let cell = source.cells[col];
+                let cell = source.cells.get(col).copied().unwrap_or_default();
                 if cell.is_pad() {
                     // No text: what sat on it lands where the next cell does.
                     let here = Point { row: out.len(), col: row.cells.len() };
@@ -265,7 +272,7 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
                         row.cells[pad].set_pad();
                     }
                     row.wrapped = true;
-                    out.push(std::mem::replace(&mut row, Row::new(0, Color::Default)));
+                    out.push(std::mem::replace(&mut row, empty()));
                 }
                 let here = Point { row: out.len(), col: row.cells.len() };
                 for (target, point) in mapped.iter_mut().zip(points) {
@@ -307,7 +314,7 @@ fn rewrap(old: &VecDeque<Row>, cols: usize, points: &[Point]) -> (Vec<Row>, Vec<
             }
         }
         row.cells.resize(cols.max(row.cells.len()), Cell::default());
-        out.push(std::mem::replace(&mut row, Row::new(0, Color::Default)));
+        out.push(std::mem::replace(&mut row, empty()));
         i = last + 1;
     }
     for (point, kind) in marks {
@@ -340,10 +347,10 @@ mod tests {
     fn wrapped_rows_rejoin_and_rewrap() {
         let old: VecDeque<Row> =
             [line("abcde", 5, true), line("fgh", 5, false), line("ij", 5, false)].into();
-        let (rows, _) = rewrap(&old, 3, &[]);
+        let (rows, _) = rewrap(&old, 5, 3, &[]);
         let want = [("abc", true), ("def", true), ("gh", false), ("ij", false)];
         assert_eq!(texts(&rows), want.map(|(t, w)| (t.to_string(), w)));
-        let (rows, _) = rewrap(&old, 8, &[]);
+        let (rows, _) = rewrap(&old, 5, 8, &[]);
         let want = [("abcdefgh", false), ("ij", false)];
         assert_eq!(texts(&rows), want.map(|(t, w)| (t.to_string(), w)));
     }
@@ -352,7 +359,7 @@ mod tests {
     fn points_follow_their_characters() {
         let old: VecDeque<Row> = [line("abcde", 5, true), line("fgh", 5, false)].into();
         let points = [Point { row: 1, col: 1 }, Point { row: 1, col: 3 }, Point { row: 0, col: 4 }];
-        let (_, mapped) = rewrap(&old, 3, &points);
+        let (_, mapped) = rewrap(&old, 5, 3, &points);
         assert_eq!(mapped[0], Point { row: 2, col: 0 }, "on g");
         assert_eq!(mapped[1], Point { row: 2, col: 2 }, "after h");
         assert_eq!(mapped[2], Point { row: 1, col: 1 }, "on e");
@@ -361,7 +368,14 @@ mod tests {
     #[test]
     fn a_pending_wrap_maps_past_a_full_row() {
         let old: VecDeque<Row> = [line("abcd", 4, false)].into();
-        let (_, mapped) = rewrap(&old, 2, &[Point { row: 0, col: 4 }]);
+        let (_, mapped) = rewrap(&old, 4, 2, &[Point { row: 0, col: 4 }]);
         assert_eq!(mapped[0], Point { row: 1, col: 2 });
+    }
+
+    #[test]
+    fn a_scrollback_row_is_blank_past_its_cells() {
+        let old: VecDeque<Row> = [line("ab", 2, false)].into();
+        let (rows, mapped) = rewrap(&old, 6, 8, &[Point { row: 0, col: 4 }]);
+        assert_eq!((rows[0].text(), mapped[0]), ("ab".into(), Point { row: 0, col: 4 }));
     }
 }
