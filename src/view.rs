@@ -866,7 +866,9 @@ impl PaneView {
 
     /// Cmd+K, as Terminal.app's: the scrollback and the screen go, and the shell hears Ctrl+L to
     /// draw its prompt again at the top. A full-screen program keeps its screen and hears nothing.
+    /// Copy mode ends: the rows its cursor was on are gone.
     fn clear_scrollback(&mut self, _: &ClearScrollback, _: &mut Window, cx: &mut Context<Self>) {
+        self.leave_copy();
         if !self.pane.clear() {
             self.input(b"\x0c".to_vec(), cx);
         }

@@ -87,10 +87,19 @@ impl Mode {
             let row = row.clamp(oldest, bottom);
             (row, nonblank(term, row, false))
         };
+        // A character at a time left (-1) or right: a wide character's two cells are one step.
+        let across = |step: i16| {
+            let last_col = term.size().1 - 1;
+            (0..times).fold(at, |(row, col), _| {
+                let next = col.saturating_add_signed(step).min(last_col);
+                let over = step * i16::from(spacer(term, (row, next)));
+                (row, next.saturating_add_signed(over).min(last_col))
+            })
+        };
         let mut scroll = 0;
         let to = match key.as_str() {
-            "h" | "left" => (at.0, at.1.saturating_sub(times as u16)),
-            "l" | "right" => (at.0, at.1.saturating_add(times as u16)),
+            "h" | "left" => across(-1),
+            "l" | "right" => across(1),
             "j" | "down" => down(times as i64),
             "k" | "up" => down(-(times as i64)),
             "w" | "b" | "e" | "W" | "B" | "E" => (0..times).fold(at, |at, _| word(term, at, &key)),
@@ -169,12 +178,17 @@ impl Mode {
     pub fn go(&mut self, to: Point, term: &Terminal, selection: &mut Option<Selection>) {
         let bottom = term.screen_top() + u64::from(term.size().0) - 1;
         let (row, col) = (to.0.clamp(term.oldest_row(), bottom), to.1.min(term.size().1 - 1));
-        let cell = term.row(row).and_then(|cells| cells.cells().get(usize::from(col)).copied());
-        self.cursor = (row, col - u16::from(cell.is_some_and(|cell| cell.is_spacer())));
+        self.cursor = (row, col - u16::from(spacer(term, (row, col))));
         if let Some(selection) = selection {
             selection.extend_over(self.cursor);
         }
     }
+}
+
+/// Whether the cell is a wide character's right half.
+fn spacer(term: &Terminal, (row, col): Point) -> bool {
+    let cell = term.row(row).and_then(|cells| cells.cells().get(usize::from(col)).copied());
+    cell.is_some_and(|cell| cell.is_spacer())
 }
 
 /// The first column of `row` that is not blank (with `last`, the last one), else the first.
@@ -268,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn hjkl_and_the_arrows_move_a_cell_or_a_count_of_them_and_stop_at_the_edges() {
+    fn hjkl_and_the_arrows_move_a_step_or_a_count_of_them_and_stop_at_the_edges() {
         let term = term(5, 10, b"abc\r\ndef\r\nghi");
         assert_eq!(cursor(&term, (0, 0), "l l j"), (1, 2));
         assert_eq!(cursor(&term, (0, 0), "right down down left"), (2, 0));
@@ -276,6 +290,22 @@ mod tests {
         assert_eq!(cursor(&term, (0, 0), "h k 2 0 l 9 j"), (4, 9));
         // A key that is no motion changes nothing, and drops a count typed before it.
         assert_eq!(cursor(&term, (1, 1), "3 x l"), (1, 2));
+    }
+
+    #[test]
+    fn h_and_l_step_over_a_wide_character_as_one_character() {
+        // 日 covers columns 1–2, 本 3–4, and 字 the last two of the ten.
+        let term = term(3, 10, "a日本b  字".as_bytes());
+        assert_eq!(cursor(&term, (0, 0), "l"), (0, 1));
+        assert_eq!(cursor(&term, (0, 0), "l l"), (0, 3));
+        assert_eq!(cursor(&term, (0, 0), "l l l"), (0, 5));
+        assert_eq!(cursor(&term, (0, 0), "3 l"), (0, 5), "a count of characters");
+        assert_eq!(cursor(&term, (0, 5), "h"), (0, 3));
+        assert_eq!(cursor(&term, (0, 5), "h h h"), (0, 0));
+        assert_eq!(cursor(&term, (0, 5), "2 h"), (0, 1));
+        assert_eq!(cursor(&term, (0, 6), "l l"), (0, 8));
+        assert_eq!(cursor(&term, (0, 6), "l l l right"), (0, 8), "the last character stops it");
+        assert_eq!(cursor(&term, (0, 8), "left"), (0, 7));
     }
 
     #[test]

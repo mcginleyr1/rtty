@@ -558,7 +558,7 @@ arriving, and the cursor and the selection stay on their text as it scrolls up.
 
 | Key | Moves the cursor, or does |
 | --- | --- |
-| `h` `j` `k` `l`, arrows | a cell left, down, up, right |
+| `h` `j` `k` `l`, arrows | a character left, a row down, up, a character right (a wide character's two cells are one) |
 | `w` `b` `e` | to the next word's start, this or the last word's start, this or the next word's end: a word is a run of what a double click selects, or of the separators between (`,` `:` `\|` quotes, brackets); a soft wrap runs a word on, a line end is a blank |
 | `W` `B` `E` | the same, with words told apart by blanks alone |
 | `0` `^` `$` | the row's first column, first character, last character |
@@ -575,8 +575,9 @@ arriving, and the cursor and the selection stay on their text as it scrolls up.
 | `Esc`, `q`, `Cmd+Shift+C` | `Esc` ends the selection, else leaves; `q` and `Cmd+Shift+C` leave |
 
 The view stays where copy mode left it until something is typed. A resize ends copy mode, as
-it ends a selection: reflow renumbers the rows. Bindings still work in copy mode (`Cmd+C` copies
-its selection); `Ctrl+h/j/k/l` with `keys = "tutti"` stay the panes'.
+it ends a selection: reflow renumbers the rows; so does `Cmd+K`, which clears them. Bindings
+still work in copy mode (`Cmd+C` copies its selection); `Ctrl+h/j/k/l` with `keys = "tutti"`
+stay the panes'.
 
 **The clipboard.** A program copies with OSC 52 (`ESC ] 52 ; c ; base64 BEL`), as Neovim and
 tmux can, and rtty puts the text on the clipboard. A program's read (`ESC ] 52 ; c ; ?
