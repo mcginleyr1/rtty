@@ -622,12 +622,13 @@ Programs that ask for more get it (rtty-vt's encoder, the same one tutti's TUI u
 
 - **xterm's modifyOtherKeys** (`CSI > 4 ; n m`, which Emacs turns on at level 1). Level 1 sends
   `CSI 27 ; mod ; code ~` for Ctrl with keys that have no control character (`C-;`, `C-.`,
-  `C-1`) and for Ctrl or Shift with Enter and Tab; every control character stays as it was. Level
-  2 sends it for every key with Ctrl or Alt, and Enter, Tab, Backspace and Esc with any modifier.
-  Level 3, xterm's newest, sends it for every key, unmodified ones too (`CSI 27 ; 1 ; 32 ~` for
-  space); any other level is off, as in xterm. xterm's formatOtherKeys (`CSI > 4 ; 1 f`) turns
-  each of those into `CSI code ; mod u`. Without modifyOtherKeys, Ctrl leaves a key it has no
-  control character for as it is (`C-1` types 1).
+  `C-1`), for Ctrl or Shift with Enter and for Ctrl with Tab (Shift+Tab stays `CSI Z`); every
+  control character stays as it was. Level 2 sends it for every key with Ctrl or Alt, and Enter,
+  Tab (Shift+Tab is `CSI 27 ; 2 ; 9 ~`), Backspace and Esc with any modifier. Level 3, xterm's
+  newest, sends it for every key, unmodified ones too (`CSI 27 ; 1 ; 32 ~` for space); any other
+  level is off, as in xterm. xterm's formatOtherKeys (`CSI > 4 ; 1 f`) turns each of those into
+  `CSI code ; mod u`. Without modifyOtherKeys, Ctrl leaves a key it has no control character for
+  as it is (`C-1` types 1).
 - **The kitty keyboard protocol** (`CSI > flags u`; Neovim pushes flags 3). Disambiguate: Esc is
   `CSI 27 u`, keys with Ctrl or Alt are `CSI code ; mod u` (so `C-i` is not Tab and `S-Enter` is
   not Enter), and the other keys use the `CSI 1 ; mod X` and `CSI n ; mod ~` forms, never `SS3`

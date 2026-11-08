@@ -94,10 +94,11 @@ pub fn encode_key(key: &Key, modes: &Modes, flags: u8) -> Option<Vec<u8>> {
 /// xterm's encodings: control characters, an ESC before Alt's keys, `CSI 1 ; m X` and
 /// `CSI n ; m ~` with modifier parameters, and `CSI 27 ; m ; code ~` (`CSI code ; m u` under
 /// formatOtherKeys) for what modifyOtherKeys asks for. Level 3 spells out every key, `m` 1 for
-/// none; level 2 every modified key but Shift with text; level 1 only Ctrl with a key that has
-/// no control character, and Enter and Tab with Ctrl or Shift: Emacs, which turns level 1 on,
-/// reads Alt's ESC and the control characters, not their spelled-out forms. Any other level
-/// spells out nothing, as in xterm.
+/// none; level 2 every modified key but Shift with text, Shift+Tab too; level 1 only Ctrl with
+/// a key that has no control character, Enter with Ctrl or Shift and Tab with Ctrl: Emacs,
+/// which turns level 1 on, reads Alt's ESC and the control characters, not their spelled-out
+/// forms. Any other level spells out nothing, as in xterm. A key is spelled out as
+/// the character it types: the host's text when that is one character, as xterm's keysym is.
 /// Under DECKPAM, unless Num Lock overrides it, the keypad's digits, operators and Enter send
 /// `SS3 [m] X` as xterm's PC keyboard does; otherwise they are their main keys, modifyOtherKeys
 /// leaving them alone. Its Begin key is a cursor key, `E`.
@@ -122,7 +123,7 @@ fn legacy(key: &Key, modes: &Modes) -> Option<Vec<u8>> {
     Some(match key.code {
         Code::Enter if enter_tab => other(13),
         Code::Enter => esc(b"\r"),
-        Code::Tab if shift && !(ctrl && enter_tab) => b"\x1b[Z".to_vec(),
+        Code::Tab if shift && !(spelled || ctrl && enter_tab) => b"\x1b[Z".to_vec(),
         Code::Tab if enter_tab => other(9),
         Code::Tab => esc(b"\t"),
         Code::Backspace if spelled => other(127),
@@ -139,8 +140,13 @@ fn legacy(key: &Key, modes: &Modes) -> Option<Vec<u8>> {
                 1 => ctrl && control.is_none(),
                 _ => false,
             };
+            let mut text = key.text.chars();
+            let typed = match (text.next(), text.next()) {
+                (Some(t), None) if !t.is_control() => t,
+                _ => shifted,
+            };
             match control {
-                _ if spelled => other(u32::from(shifted)),
+                _ if spelled => other(u32::from(typed)),
                 Some(byte) => esc(&[byte]),
                 None if ctrl || alt || key.text.is_empty() => {
                     esc(shifted.encode_utf8(&mut [0; 4]).as_bytes())
@@ -527,6 +533,7 @@ mod tests {
         assert_eq!(one(Code::Tab, CTRL), "\x1b[27;5;9~");
         assert_eq!(one(Code::Tab, CTRL | SHIFT), "\x1b[27;6;9~");
         assert_eq!(one(Code::Tab, SHIFT), "\x1b[Z");
+        assert_eq!(one(Code::Tab, ALT | SHIFT), "\x1b[Z");
         assert_eq!(one(Code::Backspace, CTRL), "\x08");
         assert_eq!(one(Code::Backspace, SHIFT), "\x7f");
         assert_eq!(one(Code::Escape, CTRL), "\x1b");
@@ -538,6 +545,8 @@ mod tests {
         assert_eq!(one(Char('a'), NONE), "a");
     }
 
+    /// ctlseqs: "When modifyOtherKeys is set to 2, all of the modifiers apply. For example,
+    /// shift-Tab sends CSI 2 7 ; 2 ; 9 ~ rather than CSI Z".
     #[test]
     fn modify_other_keys_level_2_covers_every_modified_key_but_shifted_text() {
         let two = |code, mods| send(key(code, mods), &level(2), 0).unwrap();
@@ -553,18 +562,22 @@ mod tests {
         assert_eq!(two(Code::Backspace, CTRL), "\x1b[27;5;127~");
         assert_eq!(two(Code::Escape, CTRL), "\x1b[27;5;27~");
         assert_eq!(two(Code::Tab, CTRL | SHIFT), "\x1b[27;6;9~");
-        assert_eq!(two(Code::Tab, SHIFT), "\x1b[Z");
-        assert_eq!(two(Code::Tab, ALT | SHIFT), "\x1b[Z");
+        assert_eq!(two(Code::Tab, SHIFT), "\x1b[27;2;9~");
+        assert_eq!(two(Code::Tab, ALT | SHIFT), "\x1b[27;4;9~");
         assert_eq!(two(Char('a'), SHIFT), "A");
         assert_eq!(two(Char('a'), NONE), "a");
         assert_eq!(two(Char('a'), SUPER), "a");
         assert_eq!(two(Code::Up, NONE), "\x1b[A");
+        // The character the key types, as the host says: Caps Lock's capital.
+        let capital = Key { text: "A", ..key(Char('a'), CTRL | CAPS_LOCK) };
+        assert_eq!(send(capital, &level(2), 0).unwrap(), "\x1b[27;5;65~");
     }
 
     /// xterm patch #398's level 3: "unmodified keys also are sent as escape sequences. For
-    /// example, space sends CSI 2 7 ; 1 ; 3 2 ~". Shift+Tab stays `CSI Z` and the special keys
-    /// keep their forms, as at level 2. xterm keeps a level past 3 but its encoder spells out
-    /// nothing for it, as at level 0.
+    /// example, space sends CSI 2 7 ; 1 ; 3 2 ~". Shift+Tab is spelled out as at level 2, and
+    /// the special keys keep their forms. A key is the character it types, the host's text
+    /// when there is one: xterm spells out the keysym, which Caps Lock and the layout made.
+    /// xterm keeps a level past 3 but its encoder spells out nothing for it, as at level 0.
     #[test]
     fn modify_other_keys_level_3_covers_every_key_and_higher_levels_none() {
         let three = |code, mods| send(key(code, mods), &level(3), 0).unwrap();
@@ -572,9 +585,16 @@ mod tests {
         assert_eq!(three(Char('a'), NONE), "\x1b[27;1;97~");
         assert_eq!(three(Char('a'), SHIFT), "\x1b[27;2;65~");
         assert_eq!(three(Char('a'), CTRL), "\x1b[27;5;97~");
+        let typed = |code, mods, text| send(Key { text, ..key(code, mods) }, &level(3), 0);
+        assert_eq!(typed(Char('a'), CAPS_LOCK, "A").unwrap(), "\x1b[27;1;65~");
+        assert_eq!(typed(Char('e'), NONE, "é").unwrap(), "\x1b[27;1;233~");
+        assert_eq!(typed(Char('1'), SHIFT, "!").unwrap(), "\x1b[27;2;33~");
+        assert_eq!(typed(Char('e'), NONE, "e\u{301}").unwrap(), "\x1b[27;1;101~");
+        assert_eq!(typed(Char('a'), CTRL, "\x01").unwrap(), "\x1b[27;5;97~");
         assert_eq!(three(Code::Enter, NONE), "\x1b[27;1;13~");
         assert_eq!(three(Code::Tab, NONE), "\x1b[27;1;9~");
-        assert_eq!(three(Code::Tab, SHIFT), "\x1b[Z");
+        assert_eq!(three(Code::Tab, SHIFT), "\x1b[27;2;9~");
+        assert_eq!(three(Code::Tab, ALT | SHIFT), "\x1b[27;4;9~");
         assert_eq!(three(Code::Tab, CTRL | SHIFT), "\x1b[27;6;9~");
         assert_eq!(three(Code::Backspace, NONE), "\x1b[27;1;127~");
         assert_eq!(three(Code::Escape, NONE), "\x1b[27;1;27~");
@@ -613,10 +633,12 @@ mod tests {
         assert_eq!(two(Char('a'), CTRL | SHIFT), "\x1b[65;6u");
         assert_eq!(two(Code::Escape, CTRL), "\x1b[27;5u");
         assert_eq!(two(Code::Backspace, CTRL), "\x1b[127;5u");
-        assert_eq!(two(Code::Tab, SHIFT), "\x1b[Z");
+        assert_eq!(two(Code::Tab, SHIFT), "\x1b[9;2u");
         assert_eq!(two(Char('a'), SHIFT), "A");
         assert_eq!(two(Code::Up, CTRL), "\x1b[1;5A");
         assert_eq!(send(key(Char(' '), NONE), &csi_u(3, 1), 0).unwrap(), "\x1b[32;1u");
+        let e_acute = Key { text: "é", ..key(Char('e'), NONE) };
+        assert_eq!(send(e_acute, &csi_u(3, 1), 0).unwrap(), "\x1b[233;1u");
         assert_eq!(send(key(Char('a'), CTRL), &csi_u(2, 2), 0).unwrap(), "\x1b[97;5u");
         assert_eq!(send(key(Char('a'), CTRL), &csi_u(2, 0), 0).unwrap(), "\x1b[27;5;97~");
         // The format alone changes nothing.

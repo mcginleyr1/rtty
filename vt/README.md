@@ -66,10 +66,11 @@ let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a k
     (`CSI > 4 ; n m`; xterm's level 3 spells out unmodified keys too, and
     any other level is off), as `CSI 27 ; m ; code ~` or, under
     formatOtherKeys (XTFMTKEYS `CSI > 4 ; 1 f`, asked for with XTQFMTKEYS
-    `CSI ? 4 g`), `CSI code ; m u`, else legacy xterm keys under DECCKM and
-    DECKPAM. A host gives a keypad key by kitty's number for it (`KP_0`
-    57399 to `KP_BEGIN` 57427): under DECKPAM, unless Num Lock is on, the
-    digits, operators and Enter send xterm's `SS3` forms (`SS3 p` to
+    `CSI ? 4 g`), `CSI code ; m u`, `code` the character the key types (the
+    host's text when that is one character), else legacy xterm keys under
+    DECCKM and DECKPAM. A host gives a keypad key by kitty's number for it
+    (`KP_0` 57399 to `KP_BEGIN` 57427): under DECKPAM, unless Num Lock is
+    on, the digits, operators and Enter send xterm's `SS3` forms (`SS3 p` to
     `SS3 y`, `SS3 M`, `SS3 5 M` with Ctrl); otherwise each is its main key,
     which modifyOtherKeys leaves alone. The navigation keys are the cursor
     and editing keys (Begin `CSI E`). `None` when the key sends nothing: a
