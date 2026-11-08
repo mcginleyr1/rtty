@@ -1,6 +1,7 @@
 //! Selections by absolute `(row, col)`: rows keep their indices while output scrolls them into
 //! the scrollback, so a selection stays on its text. A double click selects words, a triple click
-//! lines, and either extends by whole words or lines as the pointer drags.
+//! lines, and either extends by whole words or lines as the pointer drags; an Option+drag selects
+//! a block, the same columns on every row.
 
 use rtty_vt::Terminal;
 
@@ -20,6 +21,7 @@ pub enum Kind {
     Cells,
     Words,
     Lines,
+    Block,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,8 +43,13 @@ impl Selection {
         self.head = (at, side);
     }
 
-    /// The first and last selected cells, inclusive, in reading order; `None` when the pointer
-    /// has not covered a whole cell.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// The first and last selected cells, inclusive, in reading order, or a block's top left and
+    /// bottom right cells; `None` when the pointer has not covered a whole cell (a block, a whole
+    /// column).
     pub fn range(&self, term: &Terminal) -> Option<(Point, Point)> {
         let (start, end) = if self.anchor <= self.head {
             (self.anchor, self.head)
@@ -67,7 +74,36 @@ impl Selection {
             }
             Kind::Words => Some((word_edge(term, start.0, -1), word_edge(term, end.0, 1))),
             Kind::Lines => Some((line_edge(term, start.0.0, -1), line_edge(term, end.0.0, 1))),
+            Kind::Block => {
+                let mut cols = [(self.anchor.0.1, self.anchor.1), (self.head.0.1, self.head.1)];
+                cols.sort();
+                let first = match cols[0] {
+                    (col, Side::Right) => col + 1,
+                    (col, Side::Left) => col,
+                };
+                let last = match cols[1] {
+                    (0, Side::Left) => return None,
+                    (col, Side::Left) => col - 1,
+                    (col, Side::Right) => col,
+                };
+                (first <= last).then_some(((start.0.0, first), (end.0.0, last)))
+            }
         }
+    }
+
+    /// The selected text, as it is copied: a block's columns of each of its rows, trailing blanks
+    /// trimmed, joined by newlines. A wide character is in a block when its first cell is, as it
+    /// is drawn: whole at the block's right edge, left out at its left.
+    pub fn text(&self, term: &Terminal) -> Option<String> {
+        let (start, end) = self.range(term)?;
+        if self.kind != Kind::Block {
+            return Some(term.text(start, end));
+        }
+        let rows = (start.0..=end.0).map(|row| {
+            let text = term.text((row, start.1), (row, end.1));
+            text.trim_end_matches(' ').to_owned()
+        });
+        Some(rows.collect::<Vec<_>>().join("\n"))
     }
 }
 
@@ -133,7 +169,13 @@ mod tests {
     }
 
     fn selected(term: &Terminal, selection: Selection) -> Option<String> {
-        selection.range(term).map(|(start, end)| term.text(start, end))
+        selection.text(term)
+    }
+
+    fn block(from: (Point, Side), to: (Point, Side)) -> Selection {
+        let mut block = Selection::new(Kind::Block, from.0, from.1);
+        block.extend(to.0, to.1);
+        block
     }
 
     #[test]
@@ -187,6 +229,40 @@ mod tests {
         assert_eq!(line(0).as_deref(), Some("first"));
         assert_eq!(line(2).as_deref(), Some("0123456789wrapped"));
         assert_eq!(line(1).as_deref(), Some("0123456789wrapped"));
+    }
+
+    #[test]
+    fn a_block_takes_the_same_columns_of_every_row_whichever_way_it_is_dragged() {
+        let term = term(b"abcdef\r\nghijkl\r\nmn");
+        let (left, right) = (((0, 1), Side::Left), ((2, 3), Side::Right));
+        let down = block(left, right);
+        assert_eq!(down.range(&term), Some(((0, 1), (2, 3))));
+        assert_eq!(selected(&term, down).as_deref(), Some("bcd\nhij\nn"));
+        assert_eq!(selected(&term, block(right, left)).as_deref(), Some("bcd\nhij\nn"));
+        // From the top right to the bottom left, halves count as for cells: from the left half of
+        // "d" to the right half of "n" leaves out the columns of both.
+        let across = block(((0, 3), Side::Left), ((2, 1), Side::Right));
+        assert_eq!(selected(&term, across).as_deref(), Some("c\ni\n"));
+        // A click covers no whole column.
+        assert_eq!(block(left, left).range(&term), None);
+        assert_eq!(block(((1, 0), Side::Left), ((2, 0), Side::Left)).range(&term), None);
+    }
+
+    #[test]
+    fn a_wide_character_is_in_a_block_when_its_first_cell_is() {
+        // 日 covers columns 1–2 and 本 3–4: columns 2–3 cut both.
+        let term = term("a日本c\r\nxyzwvu".as_bytes());
+        let cut = block(((0, 2), Side::Left), ((1, 3), Side::Right));
+        assert_eq!(selected(&term, cut).as_deref(), Some("本\nzw"));
+    }
+
+    #[test]
+    fn a_block_reads_past_a_short_scrollback_row_as_blanks() {
+        let mut term = Terminal::new(2, 10, 100);
+        term.advance(b"ab\r\nabcdefgh\r\nx\r\ny");
+        assert_eq!(term.row(0).unwrap().cells().len(), 2, "a short row in the scrollback");
+        let wide = block(((0, 1), Side::Left), ((1, 5), Side::Right));
+        assert_eq!(selected(&term, wide).as_deref(), Some("b\nbcdef"));
     }
 
     #[test]

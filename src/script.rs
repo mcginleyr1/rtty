@@ -19,8 +19,9 @@
 //!                        event's device-dependent flags as the keyboard sets them: right:alt-e
 //! type TEXT              the rest of the line, one keystroke per character
 //! click ROW COL [left|middle|right] [CLICKS] [cmd]
-//! drag ROW COL ROW COL [MS]  with the left button, held at the end for MS before the release;
-//!                        the end may be past the panes (negative rows are above them)
+//! drag ROW COL ROW COL [MS] [alt] [shift]  with the left button, held at the end for MS before
+//!                        the release, Option or Shift held throughout; the end may be past the
+//!                        panes (negative rows are above them)
 //! move ROW COL [cmd]     with no button; `cmd` holds Cmd, as over a link
 //! wheel ROW COL LINES    positive scrolls up
 //! drop ROW COL "PATH"... files dropped from Finder onto the pane there, each path a JSON string
@@ -90,6 +91,7 @@ pub enum Step {
         from: (i32, i32),
         to: (i32, i32),
         hold: Duration,
+        modifiers: Modifiers,
     },
     Move {
         row: u16,
@@ -161,6 +163,15 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
         if cmd {
             args.pop();
         }
+        let mut held = Modifiers::default();
+        while let Some(&word) = args.last().filter(|_| command == "drag") {
+            match word {
+                "alt" => held.alt = true,
+                "shift" => held.shift = true,
+                _ => break,
+            }
+            args.pop();
+        }
         let error = |what: &str| format!("script line {number}: {what}: {line:?}");
         let numbers = |count: usize| -> Result<Vec<u16>, String> {
             let numbers: Option<Vec<u16>> =
@@ -221,8 +232,9 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
                         from: (from_row, from_col),
                         to: (to_row, to_col),
                         hold: Duration::from_millis(hold),
+                        modifiers: held,
                     },
-                    _ => return Err(error("ROW COL ROW COL [MS] expected")),
+                    _ => return Err(error("ROW COL ROW COL [MS] [alt] [shift] expected")),
                 }
             }
             "move" => {
@@ -421,9 +433,9 @@ async fn perform(
                 dispatch(Mouse::Up(up), cx)?;
             }
         }
-        Step::Drag { from, to, hold } => {
+        Step::Drag { from, to, hold, modifiers } => {
             let (start, end) = (center(from.0, from.1, cx)?, center(to.0, to.1, cx)?);
-            let (button, modifiers, click_count) = (MouseButton::Left, none, 1);
+            let (button, modifiers, click_count) = (MouseButton::Left, *modifiers, 1);
             let position = start;
             let down =
                 MouseDownEvent { button, position, modifiers, click_count, first_mouse: false };
@@ -703,13 +715,19 @@ mod tests {
         assert!(parse("wiggle 1 2").unwrap_err().starts_with("script line 1: unknown step"));
         assert!(parse("quit\nclick 1").unwrap_err().starts_with("script line 2: numbers expected"));
         assert!(parse("keys a-b").unwrap_err().contains("unknown keystroke"));
-        let drags = parse("drag 1 2 -3 4 500\ndrag 5 6 7 8").unwrap();
+        let drags = parse("drag 1 2 -3 4 500\ndrag 5 6 7 8 alt\ndrag 5 6 7 8 0 shift alt").unwrap();
         let held = Duration::from_millis(500);
         assert!(
-            matches!(drags[0].1, Step::Drag { from: (1, 2), to: (-3, 4), hold } if hold == held)
+            matches!(drags[0].1, Step::Drag { from: (1, 2), to: (-3, 4), hold, modifiers } if hold == held && !modifiers.modified())
         );
-        assert!(matches!(drags[1].1, Step::Drag { to: (7, 8), hold: Duration::ZERO, .. }));
-        assert!(parse("drag 1 2 3").unwrap_err().contains("ROW COL ROW COL [MS] expected"));
+        let Step::Drag { to: (7, 8), hold: Duration::ZERO, modifiers, .. } = drags[1].1 else {
+            panic!("a drag")
+        };
+        assert!(modifiers.alt && !modifiers.shift);
+        assert!(
+            matches!(drags[2].1, Step::Drag { modifiers, .. } if modifiers.alt && modifiers.shift)
+        );
+        assert!(parse("drag 1 2 3").unwrap_err().contains("ROW COL ROW COL [MS] [alt] [shift]"));
         let drop = parse(r#"drop 2 7 "/tmp/a b.png" "/tmp/it's \"x\"" "/tmp/café""#).unwrap();
         let paths = ["/tmp/a b.png", "/tmp/it's \"x\"", "/tmp/café"].map(PathBuf::from);
         assert!(

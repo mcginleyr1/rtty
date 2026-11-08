@@ -129,6 +129,8 @@ pub struct Scene<'a> {
     pub fg: Rgb,
     pub bg: Rgb,
     pub selection: Option<(Point, Point)>,
+    /// The selection is a block, between its corners (`Selection::range`).
+    pub block: bool,
     pub cursor: Option<Cursor>,
     /// Search matches in view, and the current one.
     pub matches: Vec<Match>,
@@ -175,7 +177,8 @@ impl<'a> Scene<'a> {
             color,
         });
         let (matches, current_match, link, cols) = (Vec::new(), None, None, term.size().1);
-        Scene { palette, fg, bg, selection, cursor, matches, current_match, link, cols }
+        let block = false;
+        Scene { palette, fg, bg, selection, block, cursor, matches, current_match, link, cols }
     }
 
     fn resolve(&self, color: Color, default: Rgb) -> Rgb {
@@ -186,8 +189,11 @@ impl<'a> Scene<'a> {
         }
     }
 
-    fn selected(&self, point: Point) -> bool {
-        self.selection.is_some_and(|(start, end)| (start..=end).contains(&point))
+    fn selected(&self, (row, col): Point) -> bool {
+        self.selection.is_some_and(|(start, end)| match self.block {
+            true => (start.0..=end.0).contains(&row) && (start.1..=end.1).contains(&col),
+            false => (start..=end).contains(&(row, col)),
+        })
     }
 
     /// The colors of the search match covering `point`, if one does.
@@ -507,6 +513,22 @@ mod tests {
         assert_eq!(texts(&lines[0]), [(0, "a"), (1, "b"), (2, "日"), (4, "cd")]);
         assert_eq!(lines[0].runs[1].style.bg, rgb(MAGENTA));
         assert_eq!(lines[0].backgrounds, [Background { col: 1, cells: 3, color: rgb(MAGENTA) }]);
+    }
+
+    /// A block takes the same columns on every row, past a scrollback row's end too; a wide
+    /// character is in it when its first cell is.
+    #[test]
+    fn a_block_selection_takes_the_same_columns_on_every_row() {
+        let term = term("ab\r\nx日本\r\nabcdef\r\nend\x1b[?25l".as_bytes());
+        assert_eq!(term.row(0).unwrap().cells().len(), 2);
+        let palette = Palette::new(&term, &onedark(), 1.);
+        let mut scene = Scene::new(&term, &palette, 0, 3, Some(((0, 2), (2, 3))), true);
+        scene.block = true;
+        let color = palette.selection.unwrap().1;
+        let line = |row| scene.line(term.row(row).unwrap(), row).backgrounds;
+        assert_eq!(line(0), [Background { col: 2, cells: 2, color }]);
+        assert_eq!(line(1), [Background { col: 3, cells: 2, color }], "本 is in, 日 is not");
+        assert_eq!(line(2), [Background { col: 2, cells: 2, color }]);
     }
 
     #[test]

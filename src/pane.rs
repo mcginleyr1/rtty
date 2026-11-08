@@ -313,9 +313,7 @@ impl Pane {
 
     /// The selected text, as it is copied.
     pub fn selected_text(&self) -> Option<String> {
-        let term = self.lock();
-        let (start, end) = self.selection?.range(&term)?;
-        Some(term.text(start, end))
+        self.selection?.text(&self.lock())
     }
 }
 

@@ -328,7 +328,7 @@ struct Cache {
 struct CacheKey {
     palette: Palette,
     colors: (Rgb, Rgb),
-    selection: Option<(GridPoint, GridPoint)>,
+    selection: (Option<(GridPoint, GridPoint)>, bool),
     matches: (Vec<Match>, Option<Match>),
     link: Option<(GridPoint, GridPoint)>,
     focused: bool,
@@ -587,9 +587,10 @@ impl PaneView {
         }));
     }
 
-    /// Puts the link under the pointer, quick select's matches, and the search's matches in view
-    /// and the current one, into `scene`.
+    /// Puts whether the selection is a block, the link under the pointer, quick select's matches,
+    /// and the search's matches in view and the current one, into `scene`.
     fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
+        scene.block = self.pane.selection.is_some_and(|selection| selection.kind() == Kind::Block);
         scene.link = self.link.as_ref().map(|(link, _)| (link.start, link.end));
         if let Some(quick) = &self.quick {
             scene.matches.extend(quick.items.iter().map(|item| item.cells));
@@ -1245,8 +1246,9 @@ impl PaneView {
                 placement.z
             );
         }
-        if let Some((start, end)) = selection {
-            let _ = writeln!(out, "selected {start:?}..={end:?} {:?}", term.text(start, end));
+        if let (Some((start, end)), Some(selected)) = (selection, self.pane.selection) {
+            let (kind, text) = (selected.kind(), selected.text(&term).unwrap_or_default());
+            let _ = writeln!(out, "selected {kind:?} {start:?}..={end:?} {text:?}");
         }
         out
     }
@@ -1289,9 +1291,9 @@ impl PaneView {
     }
 
     /// A press over this pane: it takes the keyboard, and the press follows a link (Cmd), goes to
-    /// a program that asked for mouse reports, or starts a selection. A plain left click in a pane
-    /// that already had the keyboard may move the shell's cursor too, when it comes up where it
-    /// went down (`mouse_up`).
+    /// a program that asked for mouse reports, or starts a selection, a block with Option (as in
+    /// Terminal.app). A plain left click in a pane that already had the keyboard may move the
+    /// shell's cursor too, when it comes up where it went down (`mouse_up`).
     pub fn mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1318,6 +1320,7 @@ impl PaneView {
         let kind = match event.click_count {
             2 => Kind::Words,
             3 => Kind::Lines,
+            _ if event.modifiers.alt => Kind::Block,
             _ => Kind::Cells,
         };
         self.pane.selection = Some(Selection::new(kind, point, side));
@@ -1576,7 +1579,7 @@ impl PaneView {
         let key = CacheKey {
             palette: palette.clone(),
             colors: (scene.fg, scene.bg),
-            selection,
+            selection: (selection, scene.block),
             matches: (scene.matches.clone(), scene.current_match),
             link: scene.link,
             focused,

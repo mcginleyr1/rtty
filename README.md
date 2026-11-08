@@ -357,7 +357,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | none | `show-all` / `about` | show every app again / rtty's About panel |
 | none | `secure-input` | turn Secure Keyboard Entry on or off (below) |
 | `Cmd` over a link, `Cmd+click` | | underline the link (a URL, or a path such as `src/main.rs:12:5`) under the pointer; open it (below) |
-| mouse drag | | select (double click: word, triple click: line), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag when a program takes the mouse |
+| mouse drag | | select (double click: word, triple click: line; Option+drag: a block, below), within the pane; held past its top or bottom, the scrollback scrolls that way, faster the further out; Shift+drag (Shift+Option+drag for a block) when a program takes the mouse |
 | mouse buttons | | a click focuses the pane under it; reported to a program that asked (modes 9, 1000, 1002, 1003, in the default, UTF-8, SGR, urxvt or SGR-pixel encoding), at the pane's own cells; in the pane with the keyboard, a click on the command line being typed moves the shell's cursor there ([Shell integration](#shell-integration)) |
 | divider drag | | resize the panes on either side |
 | file drop | | files dragged from Finder onto a pane type their paths there, separated by spaces, with a backslash before each character a shell reads specially (`/tmp/Screen\ Shot.png`, `it\'s`), and non-ASCII as it is; a paste, bracketed when the program asked for that, so an agent such as Claude Code gets a dropped screenshot's path as pasted text. The pane takes the keyboard. A path holding a control character, which would arrive as a key (Enter, Ctrl+U), types nothing |
@@ -474,6 +474,14 @@ its foreground process and directory once a second, and at once when its program
 its shell reports a directory. A tab is titled by its focused pane, the window by its shown tab,
 and `rtty cli list` reports both. The focused pane draws the focused cursor and the others a
 hollow one; focus reports (mode 1004) go to the pane gaining and the pane losing the keyboard.
+
+**Block selection.** Option+drag selects a block, the same columns on every row it spans, as in
+Terminal.app (and WezTerm and Ghostty; iTerm2 takes Cmd+Option). Copying it gives each row's
+columns, trailing blanks trimmed, the rows joined by newlines. A wide character is in a block when
+its first cell is: one the block's right edge cuts is drawn and copied whole, one its left edge
+cuts is left out. While a program takes the mouse an Option+drag is the program's (Emacs's
+secondary selection is `M-drag-mouse-1`), so Shift+Option+drag selects a block there, as Shift+drag
+selects in a program's place.
 
 **Search.** `Cmd+F` opens a bar at the pane's top right, which takes the keyboard until `Esc`. The
 query searches every row the pane holds, scrollback and screen, as lines: a match runs on across a
@@ -762,8 +770,8 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   defaults. A Unicode placeholder's cell draws no glyph: its image does.
 - `glyphs.rs` — box drawing, block elements and the powerline separators as rectangles and paths
   on a cell's device pixels, from the Unicode charts; unit tested.
-- `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
-  `Terminal::text`.
+- `selection.rs` — selections by absolute `(row, col)`, by cells, words, lines or a block,
+  copied with `Terminal::text` (a block row by row); unit tested.
 - `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
   line, else a path with its line and column to a file that exists) with what a click does with
