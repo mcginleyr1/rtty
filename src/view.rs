@@ -25,6 +25,7 @@ use gpui::{
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSArray, NSString, NSURL};
 use regex::Regex;
+use rtty_vt::input::{self, Action, Button, Mouse};
 use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
@@ -34,7 +35,6 @@ use crate::editor;
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
 use crate::links::{self, Link, Location, Opening, Target};
-use crate::mouse::{self, Action, Button, Report};
 use crate::pane::{Notice, Pane, Trace};
 use crate::progress::{self, Progress};
 use crate::prompt;
@@ -672,8 +672,8 @@ impl PaneView {
             return cx.propagate();
         }
         let keystroke = Keystroke::parse(keystroke).expect("bound chords parse");
-        let modes = self.key_modes();
-        match self.claims_keys.then(|| keys::encode_chord(&keystroke, modes)).flatten() {
+        let bytes = self.claims_keys.then(|| keys::encode_chord(&keystroke, &self.pane.lock()));
+        match bytes.flatten() {
             Some(bytes) => {
                 self.keys_down.push(keystroke.key);
                 self.input(bytes, cx)
@@ -798,25 +798,14 @@ impl PaneView {
         cx.notify();
     }
 
-    /// How the program asked for keys.
-    fn key_modes(&self) -> keys::Modes {
-        let term = self.pane.lock();
-        let modes = term.modes();
-        keys::Modes {
-            cursor_keys: modes.cursor_keys,
-            modify_other_keys: modes.modify_other_keys,
-            kitty: term.kitty_keyboard(),
-        }
-    }
-
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if self.search.is_some() {
             return self.search_key(keystroke, cx);
         }
-        let kind = if event.is_held { keys::Event::Repeat } else { keys::Event::Press };
+        let kind = if event.is_held { input::Kind::Repeat } else { input::Kind::Press };
         // A held key repeats here: the input handler would open the accent picker instead.
-        let bytes = keys::encode(keystroke, self.key_modes(), kind).or_else(|| {
+        let bytes = keys::encode(keystroke, &self.pane.lock(), kind).or_else(|| {
             event.is_held.then(|| keystroke.key_char.clone()).flatten().map(String::into_bytes)
         });
         if bytes.is_some() || (keystroke.modifiers.control && !keystroke.modifiers.platform) {
@@ -835,8 +824,8 @@ impl PaneView {
             return;
         }
         self.keys_down.retain(|key| *key != event.keystroke.key);
-        if let Some(bytes) = keys::encode(&event.keystroke, self.key_modes(), keys::Event::Release)
-        {
+        let bytes = keys::encode(&event.keystroke, &self.pane.lock(), input::Kind::Release);
+        if let Some(bytes) = bytes {
             self.pane.write(bytes);
         }
     }
@@ -1291,21 +1280,9 @@ impl PaneView {
         if action == Action::Motion && !moved && modes.mouse_encoding != MouseEncoding::SgrPixels {
             return true;
         }
-        let offset = position - grid.origin;
-        let report = Report {
-            button,
-            action,
-            modifiers: mouse::Modifiers {
-                shift: modifiers.shift,
-                alt: modifiers.alt,
-                control: modifiers.control,
-            },
-            cell,
-            pixel: pixel_offset(offset, grid.cell, self.grid.2),
-        };
-        if mouse::wanted(modes.mouse, &report)
-            && let Some(bytes) = mouse::encode(&report, modes.mouse, modes.mouse_encoding)
-        {
+        let pixel = pixel_offset(position - grid.origin, grid.cell, self.grid.2);
+        let mouse = Mouse { button, action, mods: keys::mods(&modifiers), cell, pixel };
+        if let Some(bytes) = input::encode_mouse(&mouse, &modes) {
             self.pane.write(bytes);
         }
         true
@@ -1365,7 +1342,7 @@ impl PaneView {
             if let Some(moves) = moves {
                 let arrow = Keystroke::parse(if moves < 0 { "left" } else { "right" });
                 let arrow =
-                    keys::encode(&arrow.expect("an arrow"), self.key_modes(), keys::Event::Press);
+                    keys::encode(&arrow.expect("an arrow"), &self.pane.lock(), input::Kind::Press);
                 self.input(arrow.expect("arrows encode").repeat(moves.unsigned_abs()), cx);
             }
         }
@@ -1529,13 +1506,10 @@ impl PaneView {
                 self.report_mouse(button, Action::Press, event.position, event.modifiers);
             }
         } else if modes.alt_screen && modes.alternate_scroll {
-            let arrow = match (lines > 0, modes.cursor_keys) {
-                (true, true) => "\x1bOA",
-                (true, false) => "\x1b[A",
-                (false, true) => "\x1bOB",
-                (false, false) => "\x1b[B",
-            };
-            self.pane.write(arrow.repeat(count).into_bytes());
+            let arrow = Keystroke::parse(if lines > 0 { "up" } else { "down" });
+            let arrow =
+                keys::encode(&arrow.expect("an arrow"), &self.pane.lock(), input::Kind::Press);
+            self.pane.write(arrow.expect("arrows encode").repeat(count));
         } else {
             self.pane.scroll(lines);
             cx.notify();

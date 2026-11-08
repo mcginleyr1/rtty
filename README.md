@@ -578,18 +578,20 @@ the keyboard sets; an event without them is taken as Alt. Such a key goes straig
 the window's text input, the way GPUI hands it composing keys, and never reaches GPUI's bindings
 or rtty's key encoder.
 
-Programs that ask for more get it:
+Programs that ask for more get it (rtty-vt's encoder, the same one tutti's TUI uses):
 
 - **xterm's modifyOtherKeys** (`CSI > 4 ; n m`, which Emacs turns on at level 1). Level 1 sends
   `CSI 27 ; mod ; code ~` for Ctrl with keys that have no control character (`C-;`, `C-.`,
   `C-1`) and for Ctrl or Shift with Enter and Tab; every control character stays as it was. Level
-  2 sends it for every key with Ctrl or Alt.
+  2 sends it for every key with Ctrl or Alt, and Enter, Tab, Backspace and Esc with any modifier.
+  Without it, Ctrl leaves a key it has no control character for as it is (`C-1` types 1).
 - **The kitty keyboard protocol** (`CSI > flags u`; Neovim pushes flags 3). Disambiguate: Esc is
   `CSI 27 u`, keys with Ctrl or Alt are `CSI code ; mod u` (so `C-i` is not Tab and `S-Enter` is
-  not Enter), and the other keys use the `CSI 1 ; mod X` and `CSI n ; mod ~` forms; plain text
-  and unmodified Enter, Tab and Backspace stay as they were. Event types add repeats (`:2`) and
-  releases (`:3`) of those keys. All keys as escape codes, alternate (shifted) keys and associated
-  text are encoded too, though no program checked here uses them.
+  not Enter), and the other keys use the `CSI 1 ; mod X` and `CSI n ; mod ~` forms, never `SS3`
+  (F3 is `CSI 13 ~`); plain text and unmodified Enter, Tab and Backspace stay as they were. Event
+  types add repeats (`:2`) and releases (`:3`) of those keys. All keys as escape codes, alternate
+  (shifted) keys and associated text are encoded too, though no program checked here uses them.
+  The wheel's arrow keys on the alternate screen are the arrow keys as the program asked for them.
 
 GPUI does not report keypad keys apart from the main keys, so application keypad mode (DECKPAM)
 has nothing to change, and a shifted symbol arrives as itself (`!`, not Shift+`1`).
@@ -762,7 +764,6 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   on a cell's device pixels, from the Unicode charts; unit tested.
 - `selection.rs` — selections by absolute `(row, col)`, by cells, words or lines, copied with
   `Terminal::text`.
-- `mouse.rs` — mouse reports in every encoding, unit tested.
 - `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
   (soft wraps joined, wide characters whole), and the link on a cell (OSC 8, else a URL in its
   line, else a path with its line and column to a file that exists) with what a click does with
@@ -827,9 +828,11 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
   focused pane's password prompt (`Pane::reads_password`) change; and the global hotkey.
   `app::configure`, which `main.rs`'s `configure` runs at launch and at every reload once the
   keymap is bound, puts their config in effect: the menu bar again, the toggle, the hotkey.
-- `keys.rs` — the key encoder (GPUI keystroke → bytes: legacy xterm, modifyOtherKeys, the kitty
-  protocol, and a claimed chord's Cmd as kitty's super), paste wrapping and dropped paths
-  escaped for a shell, unit tested (the escaping against sh and zsh themselves).
+- `keys.rs` — GPUI keystrokes as rtty-vt's key events, which `rtty_vt::input` encodes (legacy
+  xterm, modifyOtherKeys, the kitty protocol; mouse reports in every encoding too), and what stays
+  rtty's: Cmd chords but a claimed one's (Cmd as kitty's super), and text, which goes through the
+  input handler; paste wrapping and dropped paths escaped for a shell, unit tested (the escaping
+  against sh and zsh themselves).
 - `script.rs` — `--script`, which drives the real window the way a person would and dumps what it
   draws; how rtty is checked against Neovim, Emacs and the rest without a screenshot.
 

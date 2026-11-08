@@ -7,7 +7,6 @@ mod glyphs;
 mod keys;
 mod layout;
 mod links;
-mod mouse;
 mod notify;
 mod pane;
 mod progress;
