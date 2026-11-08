@@ -14,6 +14,7 @@ let rows = term.take_damage();           // visible rows changed since last time
 let wire = term.redraw(&rows);           // escape bytes bringing a follower level
 let fresh = term.snapshot();             // escape bytes for a fresh terminal
 let past = term.history(from, to);       // scrollback rows, for its scrollback
+let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a key, for the pty
 ```
 
 - Rows: every row the primary screen ever showed has an absolute index;
@@ -52,6 +53,27 @@ let past = term.history(from, to);       // scrollback rows, for its scrollback
   onto, as it would the program's own output.
 - Resize reflows the primary screen (scrollback included); the alternate
   screen is cut or padded.
+- `input`: keys and the mouse as the bytes a terminal sends its program, so
+  a host only turns its own events (GPUI's, crossterm's) into rtty-vt's.
+  - `encode_key(&Key, &Modes, flags)`: a `Key` is its `Code` (a character,
+    unshifted, or a named key), kitty's modifier bits (`SHIFT`, `ALT`,
+    `CTRL`, `SUPER`, ... and the locks), press, repeat or release, and what a
+    host's own kitty terminal said of it: the text it typed, kitty's number
+    for it, its shifted and base-layout keys. Encoded as the program asked:
+    kitty's flags (`DISAMBIGUATE`, `EVENT_TYPES`, `ALTERNATE_KEYS`,
+    `ALL_KEYS`, `ASSOCIATED_TEXT`) first, else modifyOtherKeys 1 or 2, else
+    legacy xterm keys under DECCKM. `None` when the key sends nothing: a
+    release or a lone modifier nobody asked for, a key with no encoding.
+    A key that types text sends that text; a host with its own text input
+    (an IME) compares and keeps those.
+  - `encode_mouse(&Mouse, &Modes)`: a button, press, release or motion,
+    Shift, Alt and Ctrl, the cell (and the pixel, for 1016), reported as
+    the mouse mode (9, 1000, 1002, 1003) and encoding (default, 1005, 1006,
+    1015, 1016) ask, or `None` when the mode leaves the event out.
+  - Where the specs leave a choice, the tests say which and why: kitty's
+    protocol never uses `SS3`; modifyOtherKeys 1 leaves Alt's ESC and the
+    control characters (Ctrl+Shift+A, Ctrl+3, Ctrl+Backspace) as Emacs
+    reads them; the one-byte mouse encodings clamp a far cell as xterm does.
 - Unicode: `unicode-width` per character, grapheme clusters by
   `unicode-segmentation` for combining marks and emoji sequences; see the
   crate documentation for the width rules and VS16.

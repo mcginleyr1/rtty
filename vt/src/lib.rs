@@ -64,6 +64,7 @@ mod dispatch;
 mod event;
 mod graphics;
 mod grid;
+pub mod input;
 mod modes;
 mod reflow;
 mod row;
