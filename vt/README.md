@@ -62,8 +62,14 @@ let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a k
     for it, its shifted and base-layout keys. Encoded as the program asked:
     kitty's flags (`DISAMBIGUATE`, `EVENT_TYPES`, `ALTERNATE_KEYS`,
     `ALL_KEYS`, `ASSOCIATED_TEXT`) first, else modifyOtherKeys 1 or 2, else
-    legacy xterm keys under DECCKM. `None` when the key sends nothing: a
-    release or a lone modifier nobody asked for, a key with no encoding.
+    legacy xterm keys under DECCKM and DECKPAM. A host gives a keypad key
+    by kitty's number for it (`KP_0` 57399 to `KP_BEGIN` 57427): under
+    DECKPAM, unless Num Lock is on, the digits, operators and Enter send
+    xterm's `SS3` forms (`SS3 p` to `SS3 y`, `SS3 M`, `SS3 5 M` with
+    Ctrl); otherwise each is its main key, which modifyOtherKeys leaves
+    alone. The navigation keys are the cursor and editing keys (Begin
+    `CSI E`). `None` when the key sends nothing: a release or a lone
+    modifier nobody asked for, a key with no encoding.
     A key that types text sends that text; a host with its own text input
     (an IME) compares and keeps those.
   - `encode_mouse(&Mouse, &Modes)`: a button, press, release or motion,

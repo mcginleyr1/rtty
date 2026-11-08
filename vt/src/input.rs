@@ -81,7 +81,7 @@ pub struct Key<'a> {
     pub base: u32,
 }
 
-/// The bytes `key` sends to a program that asked for its keys as `modes` (DECCKM,
+/// The bytes `key` sends to a program that asked for its keys as `modes` (DECCKM, DECKPAM,
 /// modifyOtherKeys) and kitty's `flags` say, or `None` when it sends none: a release or a lone
 /// modifier the program did not ask to hear, a key with no encoding.
 pub fn encode_key(key: &Key, modes: &Modes, flags: u8) -> Option<Vec<u8>> {
@@ -96,10 +96,20 @@ pub fn encode_key(key: &Key, modes: &Modes, flags: u8) -> Option<Vec<u8>> {
 /// asks for. Level 2 spells out every modified key but Shift with text; level 1 only Ctrl with
 /// a key that has no control character, and Enter and Tab with Ctrl or Shift: Emacs, which
 /// turns level 1 on, reads Alt's ESC and the control characters, not their spelled-out forms.
+/// Under DECKPAM, unless Num Lock overrides it, the keypad's digits, operators and Enter send
+/// `SS3 [m] X` as xterm's PC keyboard does; otherwise they are their main keys, modifyOtherKeys
+/// leaving them alone. Its Begin key is a cursor key, `E`.
 fn legacy(key: &Key, modes: &Modes) -> Option<Vec<u8>> {
     let [shift, alt, ctrl] = [SHIFT, ALT, CTRL].map(|bit| key.mods & bit != 0);
     let modifier = 1 + (key.mods & (SHIFT | ALT | CTRL));
-    let level = modes.modify_other_keys;
+    let params = if modifier > 1 { modifier.to_string() } else { String::new() };
+    // Kitty's KP_0 to KP_9, KP_DECIMAL, _DIVIDE, _MULTIPLY, _SUBTRACT, _ADD, _ENTER, _EQUAL and
+    // _SEPARATOR, by their final bytes in application keypad mode.
+    let keypad = key.number.and_then(|n| b"pqrstuvwxynojmkMXl".get(n.checked_sub(57399)? as usize));
+    if let Some(&last) = keypad.filter(|_| modes.keypad && key.mods & NUM_LOCK == 0) {
+        return Some(format!("\x1bO{params}{}", char::from(last)).into_bytes());
+    }
+    let level = if keypad.is_some() { 0 } else { modes.modify_other_keys };
     let esc = |bytes: &[u8]| [if alt { &b"\x1b"[..] } else { b"" }, bytes].concat();
     let other = |code: u32| format!("\x1b[27;{modifier};{code}~").into_bytes();
     let spelled = level >= 2 && modifier > 1;
@@ -133,17 +143,20 @@ fn legacy(key: &Key, modes: &Modes) -> Option<Vec<u8>> {
             }
         }
         code => {
-            let (number, last) = csi_form(code, false)?;
-            let ss3 = matches!(last, 'P'..='S')
-                || modes.cursor_keys && matches!(last, 'A'..='D' | 'H' | 'F');
-            let params = if modifier > 1 { modifier.to_string() } else { String::new() };
+            let (number, last) = match key.number {
+                Some(57427) => (1, 'E'),
+                _ => csi_form(code, false)?,
+            };
+            let ss3 =
+                matches!(last, 'P'..='S') || modes.cursor_keys && matches!(last, 'A'..='F' | 'H');
             csi(&number.to_string(), last, &params, ss3)
         }
     })
 }
 
 /// Kitty's protocol: `CSI code[:shifted[:base]] ; modifiers[:event] [; text] u`, and
-/// `CSI 1 ; m X` and `CSI n ; m ~` for the functional keys, never `SS3`. Unless every key is to
+/// `CSI 1 ; m X` and `CSI n ; m ~` for the functional keys (the keypad's Begin, KP_BEGIN, among
+/// them as `CSI 1 ; m E`), never `SS3`; DECKPAM changes nothing. Unless every key is to
 /// be an escape code (8), a text key with no modifier but Shift types its text, an unmodified
 /// Enter, Tab or Backspace sends its legacy byte (their releases then nothing), a lone modifier
 /// nothing, and the locks are left out. The event type goes only under 2 (a repeat otherwise a
@@ -157,6 +170,7 @@ fn kitty(key: &Key, flags: u8) -> Option<Vec<u8>> {
         _ => "",
     };
     let (number, last) = match key.number {
+        Some(57427) => (1, 'E'),
         Some(number) => (number, 'u'),
         None => csi_form(key.code, true)?,
     };
@@ -689,6 +703,78 @@ mod tests {
         assert_eq!(some(play).unwrap(), "\x1b[57428u");
         assert_eq!(send(play, &Modes::default(), 0), None);
         assert_eq!(some(key(Code::Other, NONE)), None);
+    }
+
+    /// DECKPAM, as xterm's ctlseqs tabulates it ("VT220-Style Function Keys") and its PC
+    /// keyboard sends it: a modifier is the `SS3` form's one parameter, and "Use the NumLock key
+    /// to override the application mode". Otherwise every keypad key is its main key, as in
+    /// kitty's legacy encoding, but modifyOtherKeys "does not apply to special keys, i.e.,
+    /// cursor-, keypad-, function- or control-keys".
+    #[test]
+    fn application_keypad_sends_ss3_forms_unless_num_lock_overrides_it() {
+        let deckpam = Modes { keypad: true, ..Modes::default() };
+        let digits = ('0'..='9').zip(57399..).zip('p'..='y').map(|((c, n), x)| (n, Char(c), x));
+        let others = [
+            (57409, Char('.'), 'n'),
+            (57410, Char('/'), 'o'),
+            (57411, Char('*'), 'j'),
+            (57412, Char('-'), 'm'),
+            (57413, Char('+'), 'k'),
+            (57414, Code::Enter, 'M'),
+            (57415, Char('='), 'X'),
+            (57416, Char(','), 'l'),
+        ];
+        for (number, code, last) in digits.chain(others) {
+            let pad = Key { number: Some(number), ..key(code, NONE) };
+            let main = send(key(code, NONE), &Modes::default(), 0);
+            assert_eq!(send(pad, &deckpam, 0).unwrap(), format!("\x1bO{last}"), "{number}");
+            assert_eq!(send(pad, &Modes::default(), 0), main, "{number}");
+            assert_eq!(send(Key { mods: NUM_LOCK, ..pad }, &deckpam, 0), main, "{number}");
+        }
+        let pad = |number, code, mods| Key { number: Some(number), ..key(code, mods) };
+        let app = |key, modes: &Modes| send(key, &Modes { keypad: true, ..modes.clone() }, 0);
+        assert_eq!(app(pad(57414, Code::Enter, CTRL), &level(2)).unwrap(), "\x1bO5M");
+        assert_eq!(app(pad(57413, Char('+'), SHIFT), &deckpam).unwrap(), "\x1bO2k");
+        assert_eq!(app(pad(57399, Char('0'), ALT), &deckpam).unwrap(), "\x1bO3p");
+        assert_eq!(app(pad(57410, Char('/'), SHIFT | ALT | CTRL), &deckpam).unwrap(), "\x1bO8o");
+        assert_eq!(app(pad(57414, Code::Enter, SUPER), &deckpam).unwrap(), "\x1bOM");
+        let decckm = Modes { cursor_keys: true, ..Modes::default() };
+        assert_eq!(app(pad(57414, Code::Enter, NONE), &decckm).unwrap(), "\x1bOM");
+        // Numeric: the main key, modifyOtherKeys or not.
+        assert_eq!(send(pad(57400, Char('1'), ALT), &level(2), 0).unwrap(), "\x1b1");
+        assert_eq!(send(pad(57400, Char('1'), CTRL), &level(2), 0).unwrap(), "1");
+        assert_eq!(send(pad(57414, Code::Enter, CTRL), &level(1), 0).unwrap(), "\r");
+        assert_eq!(send(pad(57414, Code::Enter, NONE), &decckm, 0).unwrap(), "\r");
+        // The navigation keys are the cursor and editing keys, DECKPAM or not, as xterm makes
+        // them; Begin is `E` among the cursor keys.
+        assert_eq!(app(pad(57424, Code::End, NONE), &deckpam).unwrap(), "\x1b[F");
+        assert_eq!(app(pad(57424, Code::End, NONE), &decckm).unwrap(), "\x1bOF");
+        assert_eq!(app(pad(57425, Code::Insert, CTRL), &deckpam).unwrap(), "\x1b[2;5~");
+        let begin = |mods| pad(57427, Code::Other, mods);
+        assert_eq!(app(begin(NONE), &deckpam).unwrap(), "\x1b[E");
+        assert_eq!(send(begin(NONE), &decckm, 0).unwrap(), "\x1bOE");
+        assert_eq!(send(begin(CTRL), &decckm, 0).unwrap(), "\x1b[1;5E");
+    }
+
+    /// Kitty's flags leave DECKPAM out: a keypad key with text types it, the others are their
+    /// numbers ("all non text keypad keys will be reported as separate keys with CSI u
+    /// encoding"), but KP_BEGIN, which kitty's table gives as `1 E`.
+    #[test]
+    fn kitty_keypad_keys_ignore_deckpam() {
+        let deckpam = Modes { keypad: true, ..Modes::default() };
+        let press = |number, code, mods, text, flags| {
+            send(Key { number: Some(number), text, ..key(code, mods) }, &deckpam, flags)
+        };
+        assert_eq!(press(57414, Code::Enter, NONE, "", DISAMBIGUATE).unwrap(), "\x1b[57414u");
+        assert_eq!(press(57414, Code::Enter, CTRL, "", DISAMBIGUATE).unwrap(), "\x1b[57414;5u");
+        assert_eq!(press(57399, Char('0'), NONE, "0", DISAMBIGUATE).unwrap(), "0");
+        assert_eq!(press(57413, Char('+'), CTRL, "", DISAMBIGUATE).unwrap(), "\x1b[57413;5u");
+        assert_eq!(press(57399, Char('0'), NUM_LOCK, "0", ALL_KEYS).unwrap(), "\x1b[57399;129u");
+        assert_eq!(press(57424, Code::End, NONE, "", DISAMBIGUATE).unwrap(), "\x1b[57424u");
+        assert_eq!(press(57427, Code::Other, NONE, "", DISAMBIGUATE).unwrap(), "\x1b[E");
+        assert_eq!(press(57427, Code::Other, CTRL, "", DISAMBIGUATE).unwrap(), "\x1b[1;5E");
+        let release = Key { kind: Kind::Release, number: Some(57427), ..key(Code::Other, NONE) };
+        assert_eq!(send(release, &deckpam, DISAMBIGUATE | EVENT_TYPES).unwrap(), "\x1b[1;1:3E");
     }
 
     fn mouse(button: Button, action: Action, row: u16, col: u16) -> Mouse {
