@@ -11,7 +11,7 @@ use crate::row::Row;
 /// numbered on from the primary's screen top.
 pub(crate) struct Grid {
     pub(crate) primary: VecDeque<Row>,
-    /// None until the first switch to the alternate screen: most terminals
+    /// Empty until the first switch to the alternate screen: most terminals
     /// never make one.
     pub(crate) alt: VecDeque<Row>,
     pub(crate) oldest: u64,
