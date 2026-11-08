@@ -1112,6 +1112,10 @@ impl Terminal {
         if !on && mode == 1047 {
             self.clear_alt();
         }
+        if on && self.grid.alt.is_empty() {
+            let (rows, cols) = self.size();
+            self.grid.alt = (0..rows).map(|_| Row::new(cols, Color::Default)).collect();
+        }
         self.grid.alt_active = on;
         if on && mode == 1049 {
             self.clear_alt();
@@ -1134,17 +1138,18 @@ impl Terminal {
         }
     }
 
-    /// RIS: everything back to power-on, scrollback included. The absolute
-    /// numbering carries on past it.
+    /// RIS: everything back to power-on, scrollback included, the alternate
+    /// screen's rows let go. The absolute numbering carries on past it.
     pub(crate) fn full_reset(&mut self) {
         if self.grid.alt_active {
             self.grid.alt_active = false;
             self.mode_changed(ModeChange::AltScreen(false));
         }
         self.grid.clear_history();
-        for row in self.grid.primary.iter_mut().chain(self.grid.alt.iter_mut()) {
+        for row in self.grid.primary.iter_mut() {
             row.reset(self.grid.cols, Color::Default);
         }
+        self.grid.alt = Default::default();
         self.grid.damage_all();
         let old = std::mem::take(&mut self.modes);
         self.announce_mode_resets(&old);

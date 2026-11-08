@@ -220,6 +220,13 @@ fn the_alternate_screen() {
     assert_eq!(screen(&term)[0], " one", "the cursor is shared");
     term.advance(b"\x1b[?1047l\x1b[?47h");
     assert_eq!(screen(&term)[0], "");
+    // Its rows come with the first switch, at the size then; a reset lets them go.
+    let mut term = fed(3, 10, "");
+    term.resize(4, 12);
+    term.advance(b"\x1b[?47h\x1b[4;12Hz");
+    assert_eq!(screen(&term)[3], "           z");
+    term.advance(b"\x1bc\x1b[?47h");
+    assert_eq!(screen(&term), ["", "", "", ""]);
 }
 
 #[test]

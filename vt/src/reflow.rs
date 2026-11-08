@@ -156,6 +156,10 @@ impl Terminal {
     }
 
     fn resize_alt(&mut self, rows: u16, cols: u16) {
+        // Not switched to yet, it takes the size of its first switch.
+        if self.grid.alt.is_empty() {
+            return;
+        }
         let (old_rows, rows) = (self.grid.alt.len(), usize::from(rows));
         if rows < old_rows {
             // Keep the cursor in view: rows above it go before rows below.

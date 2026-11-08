@@ -5,7 +5,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use rtty_vt::Terminal;
+use rtty_vt::{Cell, Terminal};
 
 struct Counting;
 
@@ -94,6 +94,8 @@ fn bytes_held_after_a_session() {
         ("empty lines", 200, b"\r\n".repeat(LINES)),
         ("a few prompts", 80, prompts()),
         ("a few prompts", 200, prompts()),
+        ("alt + prompts", 80, [b"\x1b[?1049h\x1b[?1049l".to_vec(), prompts()].concat()),
+        ("alt + prompts", 200, [b"\x1b[?1049h\x1b[?1049l".to_vec(), prompts()].concat()),
     ];
     println!("{:<14} {:>5} {:>7} {:>12} {:>9}", "session", "cols", "rows", "bytes", "per row");
     for (name, cols, stream) in &sessions {
@@ -102,5 +104,8 @@ fn bytes_held_after_a_session() {
         println!("{name:<14} {cols:>5} {rows:>7} {bytes:>12} {per_row:>9}");
         // A scrollback row holds what it shows, whatever the terminal's width.
         assert!(*name != "seq" || per_row < 256, "{name} at {cols} columns: {per_row} a row");
+        // A terminal that never switched screens holds one screen's cells, not two.
+        let screen = usize::from(ROWS) * usize::from(*cols) * size_of::<Cell>();
+        assert!(*name != "a few prompts" || bytes < 2 * screen, "{name} at {cols}: {bytes}");
     }
 }

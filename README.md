@@ -852,10 +852,11 @@ rtty-vt) the same parse took 99–105 ms and `cat` of the file 207 ms.
 
 Memory (`cargo test --release --test memory -- --ignored --nocapture` in `vt/`, heap bytes asked
 for, 24 rows and 10k rows of scrollback): `seq`'s lines filling the scrollback hold 2.1 MB at 80
-columns and 2.2 MB at 200; full-width rows held 14 and 34 MB, until rows began to shrink to their
-text as they scroll into the scrollback. Empty lines hold 1.4 MB (the rows themselves, 143 bytes
-each); dense full-width colour, every cell written, still 14 and 34 MB. A terminal at a prompt
-with no scrollback holds 69 KB at 80 columns, 162 KB at 200, both screens included. Shrinking
+or 200 columns; full-width rows held 14 and 34 MB, until rows began to shrink to their text as
+they scroll into the scrollback. Empty lines hold 1.4 MB (the rows themselves, 140 bytes each);
+dense full-width colour, every cell written, still 14 and 34 MB. A terminal at a prompt with no
+scrollback holds 36 KB at 80 columns and 82 KB at 200 until a program first switches to the
+alternate screen, whose rows come then (69 and 162 KB with both screens). Shrinking
 costs one small allocation per row scrolled off, ~6 ns: `seq`'s parse went from ~70 ms to ~81 ms
 (`cargo bench` in `vt/`: 245 to 207 MB/s, alacritty_terminal 200–210); the dense and Unicode
 parses are 2–5% slower, inside the noise of repeat runs, and the pipelines unchanged.

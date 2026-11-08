@@ -11,6 +11,8 @@ use crate::row::Row;
 /// numbered on from the primary's screen top.
 pub(crate) struct Grid {
     pub(crate) primary: VecDeque<Row>,
+    /// None until the first switch to the alternate screen: most terminals
+    /// never make one.
     pub(crate) alt: VecDeque<Row>,
     pub(crate) oldest: u64,
     pub(crate) history_limit: usize,
@@ -23,10 +25,9 @@ pub(crate) struct Grid {
 
 impl Grid {
     pub(crate) fn new(rows: u16, cols: u16, history_limit: usize) -> Grid {
-        let screen = || (0..rows).map(|_| Row::new(cols, Color::Default)).collect();
         Grid {
-            primary: screen(),
-            alt: screen(),
+            primary: (0..rows).map(|_| Row::new(cols, Color::Default)).collect(),
+            alt: VecDeque::new(),
             oldest: 0,
             history_limit,
             rows,

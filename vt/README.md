@@ -27,8 +27,12 @@ let past = term.history(from, to);       // scrollback rows, for its scrollback
   columns past them are blank (`Cell::default()`), and `cluster`,
   `hyperlink`, `underline_color` and `push_grapheme` read them so. A row
   back on the screen (a taller resize) is its width again. A full 10k-row
-  scrollback of `seq`'s lines holds 2.1 MB at 80 columns and 2.2 MB at
-  200, where full-width rows held 14 and 34 MB (`tests/memory.rs`).
+  scrollback of `seq`'s lines holds 2.1 MB at 80 or 200 columns, where
+  full-width rows held 14 and 34 MB (`tests/memory.rs`).
+- The alternate screen's rows come with the first switch to it, at the size
+  then, and go at a reset (RIS). A terminal at a prompt that never switched
+  holds 36 KB at 80×24 and 82 KB at 200×24, against 69 and 162 KB with
+  both screens.
 - `set_command_end_reset(true)`: at a shell's mark of a command's end
   (OSC 133;D, the first of a run), the reports and key encodings a killed
   program left on go off, there in the stream (mouse, 1004, 2031,
