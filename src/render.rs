@@ -137,6 +137,8 @@ pub struct Scene<'a> {
     pub current_match: Option<Match>,
     /// The link under the pointer while Cmd is held, underlined.
     pub link: Option<(Point, Point)>,
+    /// Copy mode's cursor, its cell's colors swapped (a wide character's two cells).
+    pub copy_cursor: Option<Point>,
     /// The terminal's width: a scrollback row's cells past those it holds are blank.
     cols: u16,
 }
@@ -176,9 +178,19 @@ impl<'a> Scene<'a> {
             shape,
             color,
         });
-        let (matches, current_match, link, cols) = (Vec::new(), None, None, term.size().1);
-        let block = false;
-        Scene { palette, fg, bg, selection, block, cursor, matches, current_match, link, cols }
+        Scene {
+            palette,
+            fg,
+            bg,
+            selection,
+            block: false,
+            cursor,
+            matches: Vec::new(),
+            current_match: None,
+            link: None,
+            copy_cursor: None,
+            cols: term.size().1,
+        }
     }
 
     fn resolve(&self, color: Color, default: Rgb) -> Rgb {
@@ -242,6 +254,9 @@ impl<'a> Scene<'a> {
             }
             if self.selected((index, owner)) {
                 (fg, bg) = self.palette.selection.unwrap_or((bg, fg));
+            }
+            if self.copy_cursor == Some((index, owner)) {
+                mem::swap(&mut fg, &mut bg);
             }
             if attrs.contains(Attrs::HIDDEN) {
                 fg = bg;
@@ -529,6 +544,29 @@ mod tests {
         assert_eq!(line(0), [Background { col: 2, cells: 2, color }]);
         assert_eq!(line(1), [Background { col: 3, cells: 2, color }], "本 is in, 日 is not");
         assert_eq!(line(2), [Background { col: 2, cells: 2, color }]);
+    }
+
+    /// Copy mode's cursor swaps its cell's colors: a wide character's two cells, a selected
+    /// cell's selection colors.
+    #[test]
+    fn copy_modes_cursor_swaps_its_cells_colors() {
+        let term = term("ab日\x1b[?25l".as_bytes());
+        let palette = Palette::new(&term, &onedark(), 1.);
+        let mut scene = Scene::new(&term, &palette, 0, 3, Some(((0, 0), (0, 1))), true);
+        let (fg, selected) = (rgb(FG), palette.selection.unwrap());
+        scene.copy_cursor = Some((0, 2));
+        let line = scene.line(term.row(0).unwrap(), 0);
+        let on_wide = Background { col: 2, cells: 2, color: fg };
+        assert_eq!(line.backgrounds, [Background { col: 0, cells: 2, color: selected.1 }, on_wide]);
+        assert_eq!(texts(&line), [(0, "ab"), (2, "日")]);
+        assert_eq!(line.runs[1].style.fg, rgb(BG));
+        scene.copy_cursor = Some((0, 1));
+        let line = scene.line(term.row(0).unwrap(), 0);
+        let on_selection = Background { col: 1, cells: 1, color: selected.0 };
+        assert_eq!(
+            line.backgrounds,
+            [Background { col: 0, cells: 1, color: selected.1 }, on_selection]
+        );
     }
 
     #[test]

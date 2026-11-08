@@ -3,6 +3,8 @@
 //! lines, and either extends by whole words or lines as the pointer drags; an Option+drag selects
 //! a block, the same columns on every row.
 
+use std::mem;
+
 use rtty_vt::Terminal;
 
 /// A cell by absolute row (`Terminal::row`) and column.
@@ -45,6 +47,28 @@ impl Selection {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    pub fn set_kind(&mut self, kind: Kind) {
+        self.kind = kind;
+    }
+
+    /// Extends the selection over the whole cell `at` from its anchor's, as copy mode's cursor
+    /// moves it: whichever way it goes, both cells are in.
+    pub fn extend_over(&mut self, at: Point) {
+        let anchor = self.anchor.0;
+        let ahead = match self.kind {
+            Kind::Block => at.1 >= anchor.1,
+            _ => at >= anchor,
+        };
+        let sides = if ahead { (Side::Left, Side::Right) } else { (Side::Right, Side::Left) };
+        (self.anchor, self.head) = ((anchor, sides.0), (at, sides.1));
+    }
+
+    /// Swaps the selection's ends, so the other one moves; where that one is.
+    pub fn swap(&mut self) -> Point {
+        mem::swap(&mut self.anchor, &mut self.head);
+        self.head.0
     }
 
     /// The first and last selected cells, inclusive, in reading order, or a block's top left and
@@ -107,34 +131,46 @@ impl Selection {
     }
 }
 
-/// Whether the cell is part of a word; a wide character's right half counts as its left. A
+/// The character a cell shows: a wide character's right half shows its left half's, and a
 /// scrollback row's cells past those it holds are blank.
-fn in_word(term: &Terminal, (row, col): Point) -> bool {
-    let Some(row) = term.row(row) else { return false };
+pub fn char_at(term: &Terminal, (row, col): Point) -> char {
+    let Some(row) = term.row(row) else { return ' ' };
     let cell = |col: usize| row.cells().get(col).copied().unwrap_or_default();
     let col = usize::from(col);
     let cell = if cell(col).is_spacer() && col > 0 { cell(col - 1) } else { cell(col) };
-    !cell.ch().is_whitespace() && !SEPARATORS.contains(cell.ch())
+    cell.ch()
 }
 
-/// The cell next to `at` in reading order (`step` −1 or 1), across a soft wrap but not a hard
-/// line end.
-fn neighbour(term: &Terminal, (row, col): Point, step: i8) -> Option<Point> {
+/// Whether a character is part of a word: neither whitespace nor a separator.
+pub fn in_word(c: char) -> bool {
+    !c.is_whitespace() && !SEPARATORS.contains(c)
+}
+
+/// The cell next to `at` in reading order (`step` −1 or 1), and whether a hard line end lies
+/// between them; across a soft wrap none does.
+pub fn neighbour(term: &Terminal, (row, col): Point, step: i8) -> Option<(Point, bool)> {
     let last_col = term.size().1 - 1;
-    let wraps_into = |row: u64| term.row(row).is_some_and(|row| row.wrapped());
+    let ends = |row: u64| term.row(row).map(|row| !row.wrapped());
     match step {
-        -1 if col > 0 => Some((row, col - 1)),
-        -1 => (row > 0 && wraps_into(row - 1)).then(|| (row - 1, last_col)),
-        _ if col < last_col => Some((row, col + 1)),
-        _ => (wraps_into(row) && term.row(row + 1).is_some()).then_some((row + 1, 0)),
+        -1 if col > 0 => Some(((row, col - 1), false)),
+        -1 => {
+            let above = row.checked_sub(1)?;
+            Some(((above, last_col), ends(above)?))
+        }
+        _ if col < last_col => Some(((row, col + 1), false)),
+        _ => term.row(row + 1).is_some().then_some(((row + 1, 0), ends(row)?)),
     }
 }
 
-/// The far end of the word at `at` going `step`; a cell outside any word is its own word.
+/// The far end of the word at `at` going `step`, within its line; a cell outside any word is
+/// its own word.
 fn word_edge(term: &Terminal, at: Point, step: i8) -> Point {
+    let in_word = |at: Point| in_word(char_at(term, at));
     let mut edge = at;
-    if in_word(term, at) {
-        while let Some(next) = neighbour(term, edge, step).filter(|&next| in_word(term, next)) {
+    if in_word(at) {
+        let next =
+            |edge| neighbour(term, edge, step).filter(|&(next, hard)| !hard && in_word(next));
+        while let Some((next, _)) = next(edge) {
             edge = next;
         }
     }

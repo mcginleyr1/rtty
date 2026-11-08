@@ -31,6 +31,7 @@ use rtty_vt::{
 };
 
 use crate::config::{Action as Bound, Bell, ClipboardRead, OptionAsAlt, Overrides, Theme};
+use crate::copy::{self, Effect};
 use crate::editor;
 use crate::glyphs::{self, Seg, Shape};
 use crate::keys;
@@ -57,7 +58,8 @@ actions!(
         NextPrompt,
         ClearScrollback,
         QuickSelect,
-        QuickOpen
+        QuickOpen,
+        CopyMode
     ]
 );
 
@@ -203,6 +205,8 @@ pub struct PaneView {
     search: Option<Search>,
     /// Quick select's labels, while they show.
     quick: Option<Quick>,
+    /// Copy mode, while it is on: a key no binding takes is its, never the program's.
+    copy: Option<copy::Mode>,
     /// Every key goes to `quick_key` first, ahead of the bindings and the program.
     _keys: Subscription,
     /// Where the pointer last was over the pane.
@@ -241,6 +245,9 @@ struct Search {
     error: Option<String>,
     /// The look again that output asked for, a moment after it.
     refresh: Option<Task<()>>,
+    /// Copy mode took the query (Enter): the bar stays, its matches for `n` and `N`, and keys go
+    /// to copy mode.
+    accepted: bool,
 }
 
 /// Quick select or quick open, labels on screen: what each picks, the letters typed so far, and
@@ -445,6 +452,7 @@ impl PaneView {
             blink_wake: None,
             search: None,
             quick: None,
+            copy: None,
             _keys: keys,
             pointer: None,
             link: None,
@@ -490,14 +498,15 @@ impl PaneView {
         let grid = (rows, cols, device_pixels(cell, scale));
         if mem::replace(&mut self.grid, grid) != grid {
             self.pane.resize(rows, cols, grid.2);
-            // Reflow renumbers the rows matches were found on.
+            // Reflow renumbers the rows matches were found on, and copy mode's cursor's.
+            self.leave_copy();
             self.research(false);
         }
     }
 
     /// Cmd+F: opens the search bar, which takes the keyboard until Esc.
     fn find(&mut self, _: &Find, _: &mut Window, cx: &mut Context<Self>) {
-        self.search.get_or_insert_with(Search::default);
+        self.search.get_or_insert_with(Search::default).accepted = false;
         cx.notify();
     }
 
@@ -538,12 +547,22 @@ impl PaneView {
     /// A key while the search bar is open is the bar's, never the program's: Esc closes it, Enter
     /// and Shift+Enter go to the next match down or up (round the ends), Backspace takes a
     /// character back, Ctrl+R switches between text and regex. Text goes on to the input
-    /// handler, which types it into the query (`replace_text_in_range`).
+    /// handler, which types it into the query (`replace_text_in_range`). In copy mode Enter
+    /// hands the query to it, its cursor to the current match.
     fn search_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
         let mods = keystroke.modifiers;
         let Some(search) = self.search.as_mut() else { return };
         match keystroke.key.as_str() {
             "escape" => self.search = None,
+            "enter" if self.copy.is_some() => {
+                search.accepted = true;
+                let current = search.current.and_then(|index| search.matches.get(index));
+                if let (Some(copy), Some(&(start, _))) = (self.copy.as_mut(), current) {
+                    let mut selection = self.pane.selection;
+                    copy.go(start, &self.pane.lock(), &mut selection);
+                    self.pane.selection = selection;
+                }
+            }
             "enter" => {
                 let count = search.matches.len();
                 if count > 0 {
@@ -587,10 +606,14 @@ impl PaneView {
         }));
     }
 
-    /// Puts whether the selection is a block, the link under the pointer, quick select's matches,
-    /// and the search's matches in view and the current one, into `scene`.
+    /// Puts whether the selection is a block, copy mode's cursor in place of the terminal's, the
+    /// link under the pointer, quick select's matches, and the search's matches in view and the
+    /// current one, into `scene`.
     fn highlight(&self, scene: &mut Scene, top: u64, rows: u16) {
         scene.block = self.pane.selection.is_some_and(|selection| selection.kind() == Kind::Block);
+        if let Some(copy) = &self.copy {
+            (scene.cursor, scene.copy_cursor) = (None, Some(copy.cursor));
+        }
         scene.link = self.link.as_ref().map(|(link, _)| (link.start, link.end));
         if let Some(quick) = &self.quick {
             scene.matches.extend(quick.items.iter().map(|item| item.cells));
@@ -666,14 +689,15 @@ impl PaneView {
     }
 
     /// A chord bound to focus, resize, close or last pane: the program's when it claimed them and
-    /// its encoding can say the chord (`keys::encode_chord`), else the window's to act on. A menu
-    /// item whose action has no chord carries none, and is the window's.
+    /// its encoding can say the chord (`keys::encode_chord`), else, as in copy mode, the window's
+    /// to act on. A menu item whose action has no chord carries none, and is the window's.
     fn claimed_chord(&mut self, keystroke: &str, cx: &mut Context<Self>) {
         if keystroke.is_empty() {
             return cx.propagate();
         }
         let keystroke = Keystroke::parse(keystroke).expect("bound chords parse");
-        let bytes = self.claims_keys.then(|| keys::encode_chord(&keystroke, &self.pane.lock()));
+        let claimed = self.claims_keys && self.copy.is_none();
+        let bytes = claimed.then(|| keys::encode_chord(&keystroke, &self.pane.lock()));
         match bytes.flatten() {
             Some(bytes) => {
                 self.keys_down.push(keystroke.key);
@@ -801,8 +825,11 @@ impl PaneView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        if self.search.is_some() {
+        if self.search.as_ref().is_some_and(|search| !search.accepted) {
             return self.search_key(keystroke, cx);
+        }
+        if self.copy.is_some() {
+            return self.copy_key(keystroke, cx);
         }
         let kind = if event.is_held { input::Kind::Repeat } else { input::Kind::Press };
         // A held key repeats here: the input handler would open the accent picker instead.
@@ -943,6 +970,67 @@ impl PaneView {
         }
     }
 
+    /// `copy-mode`, on or off: a cursor at the terminal's, or on the bottom row of a view scrolled
+    /// back from it, that keys move through the screen and the scrollback, selecting
+    /// (`copy_key`). A selection made before goes.
+    fn copy_mode(&mut self, cx: &mut Context<Self>) {
+        if self.copy.is_some() {
+            self.leave_copy();
+            return cx.notify();
+        }
+        let term = self.pane.lock();
+        let (row, col) = term.cursor_position();
+        let cursor = term.screen_top() + u64::from(row);
+        let bottom = (self.pane.top(&term) + u64::from(self.grid.0)).saturating_sub(1);
+        drop(term);
+        self.pane.selection = None;
+        let at = if cursor <= bottom { (cursor, col) } else { (bottom, 0) };
+        self.copy = Some(copy::Mode::new(at));
+        cx.notify();
+    }
+
+    /// A key in copy mode is copy mode's, never the program's (`copy::Mode::key`): the view
+    /// scrolls as it says, the search's current match is the one the cursor lands on, and `y`
+    /// copies (under `--script`, only into the dump).
+    fn copy_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        cx.notify();
+        let Some(copy) = self.copy.as_mut() else { return };
+        let mut selection = self.pane.selection;
+        let term = self.pane.lock();
+        let before = self.pane.top(&term);
+        let mut top = before;
+        let matches = self.search.as_ref().map_or(&[][..], |search| &search.matches);
+        let effect = copy.key(keystroke, &term, &mut top, self.grid.0, &mut selection, matches);
+        let cursor = copy.cursor;
+        drop(term);
+        self.pane.selection = selection;
+        self.pane.scroll((before as i64 - top as i64) as i32);
+        if let Some(search) = self.search.as_mut()
+            && let Some(index) = search.matches.iter().position(|&(start, _)| start == cursor)
+        {
+            search.current = Some(index);
+        }
+        match effect {
+            Effect::Stay => {}
+            Effect::Search => self.search = Some(Search::default()),
+            Effect::Yank(text) => {
+                self.copy_text(text, cx);
+                self.say("copied", cx);
+                self.leave_copy();
+            }
+            Effect::Leave => self.leave_copy(),
+        }
+    }
+
+    /// Leaves copy mode: its selection goes, and a search it took the query of.
+    fn leave_copy(&mut self) {
+        (self.copy, self.pane.selection) = (None, None);
+        if self.search.as_ref().is_some_and(|search| search.accepted) {
+            self.search = None;
+        }
+    }
+
     /// Answers the program's OSC 52 read with the clipboard's text (`Launch::clipboard`).
     pub fn answer_clipboard(&self, selection: &str, terminator: &str, cx: &App) {
         let text = match cx.global::<Settings>().launch.clipboard {
@@ -958,13 +1046,17 @@ impl PaneView {
         }
     }
 
-    /// Text pasted or dropped: its first line into the query while the search bar is open, else
-    /// to the program, bracketed when it asked for bracketed paste.
+    /// Text pasted or dropped: its first line into the query while the search bar takes the
+    /// keyboard, nowhere in copy mode, else to the program, bracketed when it asked for
+    /// bracketed paste.
     fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if let Some(search) = self.search.as_mut() {
+        if let Some(search) = self.search.as_mut().filter(|search| !search.accepted) {
             search.query.text.push_str(text.lines().next().unwrap_or_default());
             self.research(true);
             return cx.notify();
+        }
+        if self.copy.is_some() {
+            return;
         }
         let bracketed = self.pane.lock().modes().bracketed_paste;
         self.input(keys::paste(text, bracketed), cx);
@@ -1105,6 +1197,11 @@ impl PaneView {
             });
             let items: Vec<String> = items.collect();
             let _ = writeln!(out, "quick typed {:?}: {}", quick.typed, items.join(", "));
+        }
+        if let Some(copy) = &self.copy {
+            let (row, col) = copy.cursor;
+            let row = row as i64 - top as i64;
+            let _ = writeln!(out, "copy mode at {row},{col} pending {:?}", copy.pending());
         }
         if let Some(search) = &self.search {
             let current = search.current.and_then(|index| search.matches.get(index));
@@ -1292,8 +1389,8 @@ impl PaneView {
 
     /// A press over this pane: it takes the keyboard, and the press follows a link (Cmd), goes to
     /// a program that asked for mouse reports, or starts a selection, a block with Option (as in
-    /// Terminal.app). A plain left click in a pane that already had the keyboard may move the
-    /// shell's cursor too, when it comes up where it went down (`mouse_up`).
+    /// Terminal.app). A plain left click in a pane that already had the keyboard, out of copy
+    /// mode, may move the shell's cursor too, when it comes up where it went down (`mouse_up`).
     pub fn mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1325,7 +1422,7 @@ impl PaneView {
         };
         self.pane.selection = Some(Selection::new(kind, point, side));
         self.selecting = Some(event.position);
-        let plain = event.click_count == 1 && !event.modifiers.modified();
+        let plain = event.click_count == 1 && !event.modifiers.modified() && self.copy.is_none();
         let moves = had_keyboard && plain && cx.global::<Settings>().click_to_move;
         self.click = moves.then_some(point);
         cx.notify();
@@ -1592,7 +1689,7 @@ impl PaneView {
             cache.rows.clear();
             cache.key = Some(key);
         }
-        let cursor = scene.cursor.map(|cursor| cursor.row);
+        let cursor = scene.cursor.map(|cursor| cursor.row).or(scene.copy_cursor.map(|at| at.0));
         let damaged = term.take_damage().into_iter().map(|row| screen_top + u64::from(row));
         for row in damaged.chain(cache.cursor_row).chain(cursor) {
             cache.rows.remove(&row);
@@ -2246,6 +2343,7 @@ impl Render for PaneView {
             .on_action(cx.listener(Self::clear_scrollback))
             .on_action(cx.listener(|view, _: &QuickSelect, _, cx| view.quick(false, cx)))
             .on_action(cx.listener(|view, _: &QuickOpen, _, cx| view.quick(true, cx)))
+            .on_action(cx.listener(|view, _: &CopyMode, _, cx| view.copy_mode(cx)))
             .on_action(cx.listener(|view, _: &PreviousPrompt, _, cx| {
                 view.pane.jump_to_prompt(true);
                 cx.notify();
@@ -2299,6 +2397,7 @@ impl Render for PaneView {
             .children(self.search_bar(cx))
             .children(self.link_target(cx))
             .children(self.status_label(cx))
+            .children(self.copy_label(cx))
             .children(self.quick_labels(cx))
     }
 }
@@ -2351,6 +2450,16 @@ impl PaneView {
             Some(label)
         };
         quick.items.iter().filter_map(label).collect()
+    }
+
+    /// That copy mode is on, bottom right: what it selects, and what has been typed toward a
+    /// motion.
+    fn copy_label(&self, cx: &App) -> Option<Div> {
+        let copy = self.copy.as_ref()?;
+        let kind = self.pane.selection.map(|selection| format!(": {:?}", selection.kind()));
+        let text =
+            format!("copy mode{}  {}", kind.unwrap_or_default().to_lowercase(), copy.pending());
+        Some(self.label(text.trim_end().into(), cx).bottom(px(0.)).right(px(0.)))
     }
 
     /// What a key just did, bottom right, for a moment.
@@ -2422,12 +2531,14 @@ impl EntityInputHandler for PaneView {
         cx: &mut Context<Self>,
     ) {
         self.marked_text = None;
-        if let Some(search) = self.search.as_mut() {
+        if let Some(search) = self.search.as_mut().filter(|search| !search.accepted) {
             search.query.text.push_str(text);
             self.research(true);
             return cx.notify();
         }
-        self.input(text.as_bytes().to_vec(), cx);
+        if self.copy.is_none() {
+            self.input(text.as_bytes().to_vec(), cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(

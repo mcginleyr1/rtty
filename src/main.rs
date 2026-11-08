@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod config;
 mod control;
+mod copy;
 mod editor;
 mod glyphs;
 mod keys;
@@ -52,8 +53,8 @@ use control::Response;
 use futures::StreamExt;
 use pane::{Pane, SCROLLBACK, START_SIZE, Trace, shell_command};
 use view::{
-    ClearScrollback, Copy, CopyLastOutput, Find, Launch, NextPrompt, Paste, PreviousPrompt,
-    QuickOpen, QuickSelect, Settings,
+    ClearScrollback, Copy, CopyLastOutput, CopyMode, Find, Launch, NextPrompt, Paste,
+    PreviousPrompt, QuickOpen, QuickSelect, Settings,
 };
 use window::{
     ClosePane, CloseWindow, LastPane, Minimize, MoveFocus, NewTab, NewWindow, NextTab, OpenConfig,
@@ -250,6 +251,7 @@ pub fn gpui_action(action: Action, chord: &str) -> (Box<dyn gpui::Action>, Optio
         Action::ClearScrollback => (Box::new(ClearScrollback), pane),
         Action::QuickSelect => (Box::new(QuickSelect), pane),
         Action::QuickOpen => (Box::new(QuickOpen), pane),
+        Action::CopyMode => (Box::new(CopyMode), pane),
         Action::FontBigger => (Box::new(IncreaseFontSize), None),
         Action::FontSmaller => (Box::new(DecreaseFontSize), None),
         Action::FontReset => (Box::new(ResetFontSize), None),

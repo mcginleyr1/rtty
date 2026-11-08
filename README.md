@@ -344,6 +344,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+F` | `find` | search the pane's scrollback and screen (below) |
 | `Cmd+Shift+Space` | `quick-select` | label what is worth copying on the pane's screen; typing a label copies it, in uppercase pastes it too (below) |
 | `Cmd+Shift+O` | `quick-open` | label the links on the pane's screen; typing a label opens it as `Cmd+click` would (below) |
+| `Cmd+Shift+C` | `copy-mode` | copy mode, or out of it: move a cursor through the screen and the scrollback with vi's keys, select characters, lines or a block, copy (below) |
 | `Cmd+Up` / `Cmd+Down` | `prompt-prev` / `prompt-next` | the view to the shell's previous / next prompt (OSC 133;A); past the last, back to the output |
 | `Cmd+K` | `clear-scrollback` | clear the pane's scrollback and screen, then send the program Ctrl+L so a shell draws its prompt again at the top, as Terminal.app does; under a full-screen program (the alternate screen: Neovim, less) only the scrollback goes, and the program is sent nothing |
 | `Cmd+=` / `Cmd+-` | `font-bigger` / `font-smaller` | font size up / down, in every pane of every window |
@@ -368,7 +369,7 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 **The menu bar.** rtty's menus hold the actions above: About, Settings… (`open-config`), Reload
 Configuration, Secure Keyboard Entry, Hide, Hide Others, Show All and Quit; in Shell, New Window,
 New Tab, the splits, Close Pane, Close Window and Undo Close; in Edit, Copy, Paste, Find, Quick
-Select, Quick Open, Copy Last Output and Clear Scrollback; in View, Bigger, Smaller, Actual Size
+Select, Quick Open, Copy Mode, Copy Last Output and Clear Scrollback; in View, Bigger, Smaller, Actual Size
 and Zoom Pane; in Window, Minimize, Zoom, Next Tab and Previous Tab. An item runs its action as
 the action's chord does, and shows the chord `[bind]` gives that action, as of the last reload: a
 rebound action shows its new chord, an unbound one none. In a pane that claims the keys
@@ -481,7 +482,7 @@ columns, trailing blanks trimmed, the rows joined by newlines. A wide character 
 its first cell is: one the block's right edge cuts is drawn and copied whole, one its left edge
 cuts is left out. While a program takes the mouse an Option+drag is the program's (Emacs's
 secondary selection is `M-drag-mouse-1`), so Shift+Option+drag selects a block there, as Shift+drag
-selects in a program's place.
+selects in a program's place. Copy mode (below) selects blocks from the keyboard.
 
 **Search.** `Cmd+F` opens a bar at the pane's top right, which takes the keyboard until `Esc`. The
 query searches every row the pane holds, scrollback and screen, as lines: a match runs on across a
@@ -546,6 +547,36 @@ for that. Esc puts the labels away, as does any other key, which goes nowhere el
 no program. `Cmd+Shift+O` (`quick-open`) labels only what a `Cmd+click` would follow: URLs and
 paths to files that exist (not OSC 8 links); typing a label follows it as the click would have
 when the labels appeared, whatever output has moved under them since.
+
+**Copy mode.** `Cmd+Shift+C` (`copy-mode`, iTerm2's chord; alacritty's vi mode and WezTerm's copy
+mode are the other ideas) puts a cursor on the pane where the terminal's is, or on the bottom row
+of a view scrolled back from it, drawn as its cell with the colors swapped in place of the
+terminal's cursor; `copy mode` at the pane's bottom right says it is on, with what it selects and
+a count being typed. A selection made before goes. Until copy mode ends, a key no binding takes
+is copy mode's, never the program's, and a paste or a dropped file goes nowhere; output keeps
+arriving, and the cursor and the selection stay on their text as it scrolls up.
+
+| Key | Moves the cursor, or does |
+| --- | --- |
+| `h` `j` `k` `l`, arrows | a cell left, down, up, right |
+| `w` `b` `e` | to the next word's start, this or the last word's start, this or the next word's end: a word is a run of what a double click selects, or of the separators between (`,` `:` `\|` quotes, brackets); a soft wrap runs a word on, a line end is a blank |
+| `W` `B` `E` | the same, with words told apart by blanks alone |
+| `0` `^` `$` | the row's first column, first character, last character |
+| `H` `M` `L` | the view's top, middle, bottom row, at its first character |
+| `gg` `G` | the first row held (the oldest of the scrollback), the screen's last |
+| `Ctrl+U` `Ctrl+D`, `Ctrl+B` `Ctrl+F` | half a view up, down; a whole view up, down: the view moves as far |
+| `[` `]` | the shell's previous, next prompt (OSC 133;A, [Shell integration](#shell-integration)) |
+| `/` `?` | search, in the search bar (above); `Enter` puts the cursor on the current match and leaves the bar up, its matches for `n` and `N`; `Esc` closes the bar |
+| `n` `N` | the next, previous match after `/` (after `?`, the previous, next), round the ends |
+| a count first | `5j`, `3w`: the motion that many times |
+| `v` `V` `Ctrl+V` | select characters, lines, a block, from the cursor's cell to wherever it goes; the same key again ends the selection, another changes its kind |
+| `o` | the cursor to the selection's other end, which then moves |
+| `y` | copy the selection, or with none the cursor's line, say so and leave |
+| `Esc`, `q`, `Cmd+Shift+C` | `Esc` ends the selection, else leaves; `q` and `Cmd+Shift+C` leave |
+
+The view stays where copy mode left it until something is typed. A resize ends copy mode, as
+it ends a selection: reflow renumbers the rows. Bindings still work in copy mode (`Cmd+C` copies
+its selection); `Ctrl+h/j/k/l` with `keys = "tutti"` stay the panes'.
 
 **The clipboard.** A program copies with OSC 52 (`ESC ] 52 ; c ; base64 BEL`), as Neovim and
 tmux can, and rtty puts the text on the clipboard. A program's read (`ESC ] 52 ; c ; ?
@@ -784,6 +815,10 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 - `quick.rs` — what quick select finds on screen, as cells, and its labels, nearest the cursor
   first and none a prefix of another; unit tested. The view takes every key while they show
   (a keystroke interceptor, ahead of the bindings).
+- `copy.rs` — copy mode: its cursor by absolute row, vi's motions over the rows held (words by
+  the selection's rules, prompts by `prompt.rs`'s marks, matches by the search's), and what each
+  key asks of the view (search, copy, leave); independent of GPUI but for keystrokes, and unit
+  tested. The view takes the keys no binding takes, after the search bar's.
 - `shell.rs` and `shell/` — the shell integration scripts, written into rtty's directory at
   startup, and how a login shell is started to load them (`Pane::spawn`); unit tested, and with
   real zsh and bash through a pty.
@@ -958,7 +993,13 @@ template with its line and column, or with no template the `$EDITOR` a `.zshrc` 
 path is found from a hand-printed OSC 7 while the shell sits elsewhere; a Neovim with the plugin in
 the pane beside opens the file at its line and column and takes the keyboard; quick select labels,
 copies, pastes with Shift (through AppKit's key path too) and cancels on Esc or any other key, and
-quick open follows a URL and a path.
+quick open follows a URL and a path. Block selection and copy mode are checked with `--script` in
+a scratch home: an Option+drag selects a block that leaves out a wide character its left edge
+cuts; where `cat` takes the mouse an Option+drag reaches it as an Alt drag and a Shift+Option+drag
+selects; copy mode moves by cells, words, the view's rows, half pages, `gg` into the scrollback
+and `[` to a prompt, selects a block and lines (through AppKit's key path too, with nothing
+reaching the shell), searches with `/`, and copies what it selected with `y`. Its cursor is
+checked in the dump's drawn colors; its label, which the dump does not show, not yet by eye.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when

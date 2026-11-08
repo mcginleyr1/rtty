@@ -125,6 +125,7 @@ const MENUS: &[(&str, &[Item])] = &[
             ("Find", Some(Action::Find)),
             ("Quick Select", Some(Action::QuickSelect)),
             ("Quick Open", Some(Action::QuickOpen)),
+            ("Copy Mode", Some(Action::CopyMode)),
             LINE,
             ("Copy Last Output", Some(Action::CopyLastOutput)),
             ("Clear Scrollback", Some(Action::ClearScrollback)),
