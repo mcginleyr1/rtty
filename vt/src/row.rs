@@ -92,6 +92,33 @@ impl Row {
         self.occupied = self.occupied.max(end);
     }
 
+    /// Shrink a row leaving the screen for the scrollback to what it shows:
+    /// its cells up to the last written one, in a buffer their size. The
+    /// cells it gives up come back blank, for a row coming onto the screen.
+    /// A row that soft-wraps keeps them all: its line runs on through its
+    /// trailing blanks.
+    pub(crate) fn shrink(&mut self) -> Option<Vec<Cell>> {
+        self.extras.shrink_to_fit();
+        self.marks.shrink_to_fit();
+        self.images.shrink_to_fit();
+        let occupied = self.occupied.min(self.cells.len());
+        let used = self.cells[..occupied].iter().rposition(|cell| !cell.is_default());
+        let used = used.map_or(0, |col| col + 1);
+        if self.wrapped || used == self.cells.len() {
+            self.cells.shrink_to_fit();
+            return None;
+        }
+        self.occupied = used;
+        let kept = self.cells[..used].to_vec();
+        let mut cells = std::mem::replace(&mut self.cells, kept);
+        cells[..occupied].fill(Cell::default());
+        Some(cells)
+    }
+
+    /// The row's cells. A row in the scrollback that does not soft-wrap
+    /// holds them only up to its last one that is not `Cell::default()`:
+    /// the columns past them are blank, and the methods taking a column
+    /// read them so.
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -104,21 +131,22 @@ impl Row {
     /// The whole grapheme cluster at `col` when it is more than the cell's
     /// first character (a combining mark, a ZWJ emoji sequence, a flag).
     pub fn cluster(&self, col: usize) -> Option<&str> {
-        self.extra(&self.cells[col])?.cluster.as_deref()
+        self.extra(self.cells.get(col)?)?.cluster.as_deref()
     }
 
     pub fn underline_color(&self, col: usize) -> Color {
-        self.extra(&self.cells[col]).map_or(Color::Default, |extra| extra.underline)
+        let extra = self.cells.get(col).and_then(|cell| self.extra(cell));
+        extra.map_or(Color::Default, |extra| extra.underline)
     }
 
     pub fn hyperlink(&self, col: usize) -> Option<&Arc<Hyperlink>> {
-        self.extra(&self.cells[col])?.link.as_ref()
+        self.extra(self.cells.get(col)?)?.link.as_ref()
     }
 
     /// Append the text of the cell at `col`: its cluster, or nothing for a
     /// spacer.
     pub fn push_grapheme(&self, col: usize, out: &mut String) {
-        let cell = &self.cells[col];
+        let cell = self.cells.get(col).copied().unwrap_or_default();
         match self.cluster(col) {
             _ if cell.is_spacer() => {}
             Some(cluster) => out.push_str(cluster),

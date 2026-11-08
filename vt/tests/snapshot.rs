@@ -62,19 +62,19 @@ fn unreachable_cursor(term: &Terminal) -> bool {
     term.modes().origin && !(top..=bottom).contains(&row)
 }
 
-/// A row's cells and soft wrap, but for what a snapshot leaves out: the wrap
-/// and pad of a bottom row on a `tiny` screen, and of a row with a pending
-/// wrap.
-fn seen_row(row: &Row, bottom: bool, pending_here: bool) -> (Vec<Seen>, bool) {
-    let last = row.cells().len() - 1;
-    let cells = (0..row.cells().len())
+/// A row's `cols` cells (a scrollback row's blank past those it holds) and
+/// soft wrap, but for what a snapshot leaves out: the wrap and pad of a
+/// bottom row on a `tiny` screen, and of a row with a pending wrap.
+fn seen_row(row: &Row, cols: u16, bottom: bool, pending_here: bool) -> (Vec<Seen>, bool) {
+    let last = usize::from(cols) - 1;
+    let cells = (0..usize::from(cols))
         .map(|col| {
             let mut text = String::new();
             row.push_grapheme(col, &mut text);
             let mut seen = Seen {
                 underline: row.underline_color(col),
                 link: row.hyperlink(col).map(|link| (**link).clone()),
-                ..seen(&row.cells()[col], text)
+                ..seen(&row.cells().get(col).copied().unwrap_or_default(), text)
             };
             seen.layout.1 &= !bottom && !(pending_here && col == last);
             seen
@@ -84,14 +84,14 @@ fn seen_row(row: &Row, bottom: bool, pending_here: bool) -> (Vec<Seen>, bool) {
 }
 
 fn visible(term: &Terminal) -> Visible {
-    let (rows, _) = term.size();
+    let (rows, cols) = term.size();
     Visible {
         rows: (0..rows)
             .map(|r| {
                 // A pending wrap is made by reprinting the cursor's cell,
                 // which ends its row's soft wrap and pad.
                 let pending_here = term.wrap_pending() && term.cursor_position().0 == r;
-                seen_row(term.screen_row(r), r + 1 == rows && tiny(term), pending_here)
+                seen_row(term.screen_row(r), cols, r + 1 == rows && tiny(term), pending_here)
             })
             .collect(),
         cursor: term.cursor_position(),
@@ -239,8 +239,9 @@ fn scrolled_difference(term: &Terminal, offset: u64) -> Option<String> {
     }
     (0..rows).find_map(|r| {
         let bottom = r + 1 == rows && tiny(term);
-        let want = seen_row(term.row(first + u64::from(r)).expect("a held row"), bottom, false);
-        let got = seen_row(copy.screen_row(r), bottom, false);
+        let want = term.row(first + u64::from(r)).expect("a held row");
+        let want = seen_row(want, cols, bottom, false);
+        let got = seen_row(copy.screen_row(r), cols, bottom, false);
         (want != got).then(|| {
             format!(
                 "offset {offset}, row {r}:\n want {want:?}\n got  {got:?}\nsnapshot {:?}",

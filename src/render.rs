@@ -2,9 +2,9 @@
 //! and text runs with their colors and decorations, and the cursor. The view shapes the runs and
 //! paints them; everything about which cell gets which color is decided here.
 
-use std::mem;
+use std::{iter, mem};
 
-use rtty_vt::{Attrs, BACKGROUND, CURSOR, Color, CursorShape as Shape, FOREGROUND, Rgb, Row};
+use rtty_vt::{Attrs, BACKGROUND, CURSOR, Cell, Color, CursorShape as Shape, FOREGROUND, Rgb, Row};
 use rtty_vt::{PLACEHOLDER, Terminal, Underline};
 
 use crate::glyphs;
@@ -135,6 +135,8 @@ pub struct Scene<'a> {
     pub current_match: Option<Match>,
     /// The link under the pointer while Cmd is held, underlined.
     pub link: Option<(Point, Point)>,
+    /// The terminal's width: a scrollback row's cells past those it holds are blank.
+    cols: u16,
 }
 
 impl<'a> Scene<'a> {
@@ -172,8 +174,8 @@ impl<'a> Scene<'a> {
             shape,
             color,
         });
-        let (matches, current_match, link) = (Vec::new(), None, None);
-        Scene { palette, fg, bg, selection, cursor, matches, current_match, link }
+        let (matches, current_match, link, cols) = (Vec::new(), None, None, term.size().1);
+        Scene { palette, fg, bg, selection, cursor, matches, current_match, link, cols }
     }
 
     fn resolve(&self, color: Color, default: Rgb) -> Rgb {
@@ -210,7 +212,9 @@ impl<'a> Scene<'a> {
             |col: u16| cursor.is_some_and(|cursor| col == cursor.col || col == cursor.col + 1);
         let mut line = Line::default();
         let mut text = String::new();
-        for (col, cell) in row.cells().iter().enumerate() {
+        let blank = Cell::default();
+        let cells = row.cells().iter().chain(iter::repeat(&blank));
+        for (col, cell) in cells.take(usize::from(self.cols)).enumerate() {
             let col = col as u16;
             let attrs = cell.attrs();
             let mut fg = self.resolve(cell.fg(), self.fg);
@@ -301,13 +305,15 @@ impl<'a> Scene<'a> {
             run.text.truncate(kept);
         }
         line.runs.retain(|run| !run.text.trim().is_empty() || run.style.decorated());
-        let blank = |col: usize| {
-            let cell = row.cells().get(col);
-            cell.is_some_and(|cell| cell.ch() == ' ' && !cell.is_spacer())
+        let blank_at = |col: usize| {
+            let cell = row.cells().get(col).unwrap_or(&blank);
+            col < usize::from(self.cols)
+                && cell.ch() == ' '
+                && !cell.is_spacer()
                 && row.cluster(col).is_none()
         };
         for run in &mut line.runs {
-            run.blank_after = blank(usize::from(run.col + run.cells));
+            run.blank_after = blank_at(usize::from(run.col + run.cells));
         }
         line
     }
@@ -586,6 +592,19 @@ mod tests {
         assert_eq!(cursor, None);
         let (_, cursor) = frame(&term, &palette, 2, 3, None, true);
         assert_eq!(cursor.map(|cursor| (cursor.row, cursor.col)), Some((4, 4)));
+    }
+
+    /// A scrollback row holds its cells only up to its text: past it a selection still reaches
+    /// the last column, and an icon at its end still has a blank to draw across.
+    #[test]
+    fn a_scrollback_row_draws_blanks_past_its_text() {
+        let term = term("one \u{f015}\r\ntwo\r\nthree\r\nfour\x1b[?25l".as_bytes());
+        assert_eq!(term.row(0).unwrap().cells().len(), 5);
+        let palette = Palette::new(&term, &onedark(), 1.);
+        let (lines, _) = frame(&term, &palette, 0, 3, Some(((0, 2), (1, 0))), true);
+        let selected = Background { col: 2, cells: 10, color: palette.selection.unwrap().1 };
+        assert_eq!(lines[0].backgrounds, [selected]);
+        assert!(lines[0].runs.last().unwrap().blank_after);
     }
 
     #[test]

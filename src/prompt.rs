@@ -3,8 +3,8 @@
 //! is from the shell's cursor. A prompt that marks itself as well as rtty's integration does marks
 //! each thing twice, one right after the other on one row; such a run counts as its first.
 
-use std::mem;
 use std::ops::Range;
+use std::{iter, mem};
 
 use rtty_vt::{Cell, Mark, MarkKind, Terminal};
 
@@ -76,9 +76,13 @@ pub fn cursor_moves(term: &Terminal, at: (u64, u16)) -> Option<isize> {
     while term.row(last_row).is_some_and(|row| row.wrapped()) {
         last_row += 1;
     }
-    let cells: Vec<Cell> =
-        term.rows(input.row, last_row + 1).flat_map(|(_, row)| row.cells().to_vec()).collect();
     let cols = usize::from(term.size().1);
+    // A scrollback row's cells past those it holds are blank.
+    let blanks = iter::repeat(Cell::default());
+    let cells: Vec<Cell> = term
+        .rows(input.row, last_row + 1)
+        .flat_map(|(_, row)| row.cells().iter().copied().chain(blanks.clone()).take(cols))
+        .collect();
     let index = |(row, col): (u64, u16)| {
         let row = usize::try_from(row.checked_sub(input.row)?).ok()?;
         Some(row * cols + usize::from(col)).filter(|&index| index <= cells.len())

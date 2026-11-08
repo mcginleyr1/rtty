@@ -89,7 +89,7 @@ impl Grid {
 
     /// Scroll rows `top..=bottom` up by `n`, blank rows of `bg` coming in at
     /// the bottom. On the primary screen a region starting at its top row
-    /// pushes what leaves it into the scrollback.
+    /// pushes what leaves it into the scrollback, shrunk (`Row::shrink`).
     pub(crate) fn scroll_up(&mut self, top: u16, bottom: u16, n: u16, bg: Color) {
         let n = n.min(bottom - top + 1);
         self.damage_rows(top, bottom);
@@ -104,14 +104,19 @@ impl Grid {
             return;
         }
         for _ in 0..n {
-            let row = if self.primary.len() > self.history_limit + usize::from(self.rows) - 1 {
+            // The row coming in takes the cells the one leaving gives up.
+            let leaving = self.history_len();
+            let cells = if self.history_limit > 0 { self.primary[leaving].shrink() } else { None };
+            let mut row = if self.primary.len() > self.history_limit + usize::from(self.rows) - 1 {
                 self.oldest += 1;
-                let mut row = self.primary.pop_front().expect("the screen is never empty");
-                row.reset(self.cols, bg);
-                row
+                self.primary.pop_front().expect("the screen is never empty")
             } else {
-                Row::new(self.cols, bg)
+                Row::new(0, bg)
             };
+            if let Some(cells) = cells {
+                (row.cells, row.occupied) = (cells, 0);
+            }
+            row.reset(self.cols, bg);
             if bottom + 1 == self.rows {
                 self.primary.push_back(row);
             } else {

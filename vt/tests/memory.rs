@@ -100,5 +100,7 @@ fn bytes_held_after_a_session() {
         let (bytes, rows) = held(*cols, stream);
         let per_row = bytes as u64 / rows;
         println!("{name:<14} {cols:>5} {rows:>7} {bytes:>12} {per_row:>9}");
+        // A scrollback row holds what it shows, whatever the terminal's width.
+        assert!(*name != "seq" || per_row < 256, "{name} at {cols} columns: {per_row} a row");
     }
 }

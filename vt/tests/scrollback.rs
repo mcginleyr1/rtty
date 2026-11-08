@@ -180,6 +180,26 @@ fn marks_follow_their_characters_through_a_reflow() {
 }
 
 #[test]
+fn a_scrollback_row_holds_its_cells_only_up_to_its_text() {
+    let mut term = Terminal::new(3, 10, 100);
+    // A prompt marked past its text, a blank row, a soft-wrapped line with blanks in it.
+    term.advance(b"$ \x1b]133;B\x07\r\n\r\nabcdefgh  ij\r\n\r\n\r\n");
+    let held: Vec<usize> = term.rows(0, 4).map(|(_, row)| row.cells().len()).collect();
+    assert_eq!(held, [1, 0, 10, 2]);
+    let prompt = term.row(0).unwrap();
+    let mut text = String::new();
+    prompt.push_grapheme(5, &mut text);
+    assert_eq!((text.as_str(), prompt.cluster(5), prompt.hyperlink(5)), (" ", None, None));
+    assert_eq!(term.text((2, 0), (3, 9)), "abcdefgh  ij");
+    // A reflow keeps the mark's column; rows back on a taller screen are its width again.
+    term.resize(3, 20);
+    assert_eq!(term.marks(0, 100)[0].col, 2);
+    term.resize(9, 20);
+    assert!((0..9).all(|r| term.screen_row(r).cells().len() == 20));
+    assert_eq!(term.screen_row(0).text(), "$");
+}
+
+#[test]
 fn the_alternate_screen_is_cut_not_reflowed() {
     let mut term = Terminal::new(3, 10, 100);
     term.advance(b"0123456789abc\x1b[?1049h\x1b[Hxxxxxxxxxyyy\x1b[2;3H");

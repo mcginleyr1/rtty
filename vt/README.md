@@ -21,6 +21,14 @@ let past = term.history(from, to);       // scrollback rows, for its scrollback
   scrollback and screen; OSC 133 marks travel with their rows. A mark sits
   where the next character goes: one past the last column (`col` is the
   width) when a character filled it and a wrap is pending.
+- Scrollback rows hold what they show: a row leaving the screen keeps its
+  cells up to its last written one (all of them when it soft-wraps), so a
+  scrollback row's `cells()` can be shorter than the terminal is wide. The
+  columns past them are blank (`Cell::default()`), and `cluster`,
+  `hyperlink`, `underline_color` and `push_grapheme` read them so. A row
+  back on the screen (a taller resize) is its width again. A full 10k-row
+  scrollback of `seq`'s lines holds 2.1 MB at 80 columns and 2.2 MB at
+  200, where full-width rows held 14 and 34 MB (`tests/memory.rs`).
 - `set_command_end_reset(true)`: at a shell's mark of a command's end
   (OSC 133;D, the first of a run), the reports and key encodings a killed
   program left on go off, there in the stream (mouse, 1004, 2031,
@@ -96,7 +104,8 @@ lines and numbering, and that no input panics, graphics commands with graphics
 on included; and an answer to every query
 the recorded programs sent. The long campaigns run with
 `cargo test --release -- --ignored`; throughput against alacritty_terminal and
-vt100 with `cargo bench`.
+vt100 with `cargo bench`; the heap bytes a terminal holds after a session with
+`cargo test --release --test memory -- --ignored --nocapture`.
 
 The fixture tests read `fixtures/`, or the directories `RTTY_VT_FIXTURES`
 lists (a path list, as `PATH` is):

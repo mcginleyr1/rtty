@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::cell::{Attrs, Color, Underline};
+use crate::cell::{Attrs, Cell, Color, Underline};
 use crate::modes::{MouseEncoding, MouseMode};
 use crate::row::Row;
 use crate::term::{
@@ -138,7 +138,8 @@ impl Encoder {
             // stand-in.
             let dangling = pad && {
                 let next = line(r + 1);
-                !next.cells[0].is_wide() || pen_of(next, 0) != pen_of(row, len - 1)
+                !next.cells.first().is_some_and(Cell::is_wide)
+                    || pen_of(next, 0) != pen_of(row, len - 1)
             };
             let end = if flows {
                 len - usize::from(pad)
@@ -158,7 +159,7 @@ impl Encoder {
             }
             let mut col = 0;
             while col < end {
-                let cell = row.cells[col];
+                let cell = row.cells.get(col).copied().unwrap_or_default();
                 if !cell.is_spacer() {
                     if joins(&last, cell.ch) {
                         // Any sequence in between keeps them apart; an SGR
@@ -260,7 +261,7 @@ impl Encoder {
 }
 
 fn pen_of(row: &Row, col: usize) -> Pen {
-    let cell = row.cells[col];
+    let cell = row.cells.get(col).copied().unwrap_or_default();
     Pen {
         fg: cell.fg,
         bg: cell.bg,

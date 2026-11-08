@@ -75,6 +75,11 @@ impl Terminal {
         let (mut ring, mapped) = if cols == self.grid.cols {
             (old, points)
         } else {
+            // Rewrapped at their full width, a line's points and marks past
+            // its text keep their columns.
+            for line in &mut old {
+                line.cells.resize(usize::from(self.grid.cols), Cell::default());
+            }
             // Placements go where the cells they start on go.
             let anchors: Vec<(Point, Anchor)> = old
                 .iter_mut()
@@ -120,6 +125,15 @@ impl Terminal {
         }
         let dropped = start.saturating_sub(self.grid.history_limit);
         ring.drain(..dropped);
+        // The scrollback's rows shrink as scrolling leaves them; the
+        // screen's, back from it too, are its width.
+        for (i, line) in ring.iter_mut().enumerate() {
+            if i < start - dropped {
+                line.shrink();
+            } else {
+                line.cells.resize(usize::from(cols), Cell::default());
+            }
+        }
         let screen_top = old_top + start.saturating_sub(history) as u64;
         self.grid.oldest = screen_top - (start - dropped) as u64;
         self.grid.primary = ring;

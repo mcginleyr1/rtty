@@ -71,15 +71,13 @@ impl Selection {
     }
 }
 
-/// Whether the cell is part of a word; a wide character's right half counts as its left.
+/// Whether the cell is part of a word; a wide character's right half counts as its left. A
+/// scrollback row's cells past those it holds are blank.
 fn in_word(term: &Terminal, (row, col): Point) -> bool {
     let Some(row) = term.row(row) else { return false };
-    let cells = row.cells();
-    let cell = if cells[usize::from(col)].is_spacer() && col > 0 {
-        cells[usize::from(col) - 1]
-    } else {
-        cells[usize::from(col)]
-    };
+    let cell = |col: usize| row.cells().get(col).copied().unwrap_or_default();
+    let col = usize::from(col);
+    let cell = if cell(col).is_spacer() && col > 0 { cell(col - 1) } else { cell(col) };
     !cell.ch().is_whitespace() && !SEPARATORS.contains(cell.ch())
 }
 
@@ -199,5 +197,8 @@ mod tests {
         term.advance(b"1\r\n2\r\n3\r\n4\r\n5\r\n");
         assert!(term.screen_top() > 0);
         assert_eq!(selected(&term, selection).as_deref(), Some("keep me"));
+        // In the scrollback the row holds "keep me" alone; past it are blanks.
+        let word = |col| selected(&term, Selection::new(Kind::Words, (0, col), Side::Left));
+        assert_eq!((word(1).as_deref(), word(9).as_deref()), (Some("keep"), Some("")));
     }
 }
