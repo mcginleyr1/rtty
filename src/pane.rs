@@ -146,8 +146,6 @@ impl Pane {
         // SAFETY: only looks a token up.
         unsafe { notify_is_valid_token(0) };
         let mut child = pty.slave.spawn_command(command).map_err(io::Error::other)?;
-        // The child holds the only other end, so reads end when it and its children are gone.
-        drop(pty.slave);
         let shell = child.process_id().filter(|_| login_shell).and_then(|pid| pid.try_into().ok());
         let killer = child.clone_killer();
         let output = pty.master.try_clone_reader().map_err(io::Error::other)?;
@@ -174,6 +172,11 @@ impl Pane {
             let (notices, pending) = (notices.clone(), output_pending.clone());
             move || read(output, &term, &replies, &notices, &pending, trace)
         })?;
+        // The child holds the only other end, so reads end when it and its children are gone.
+        // Closed only now that the reader runs: the last close of a pty's slave, which this is
+        // when the program is already gone, waits some 0.6 s for the master to be read and then
+        // discards what the program printed.
+        drop(pty.slave);
         let waiter = thread::Builder::new().name("child waiter".into()).spawn(move || {
             let status = child.wait();
             let told = status.as_ref().map_or_else(ToString::to_string, ToString::to_string);
