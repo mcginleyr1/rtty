@@ -329,7 +329,13 @@ impl Session {
         let (frames, outgoing) = mpsc::channel::<Frame>();
         let mut writer = stream.try_clone()?;
         thread::Builder::new().name("tutti session writer".into()).spawn(move || {
-            for frame in outgoing {
+            // Every frame of the connection is encoded here, and what is typed into a pane goes in
+            // as many frames as its length takes: a longer frame, tutti's encoder panics on.
+            let framed = |frame| match frame {
+                Frame::Input { pane, bytes } => Frame::inputs(pane, bytes),
+                frame => vec![frame],
+            };
+            for frame in outgoing.into_iter().flat_map(framed) {
                 if writer.write_all(&frame.encode()).is_err() {
                     break;
                 }
@@ -790,7 +796,7 @@ mod tests {
     use crate::scheme::{find, load};
     use rtty_vt::input;
     use serde_json::json;
-    use tutti_wire::{WIRE_FLOOR, WIRE_REV};
+    use tutti_wire::{MAX_FRAME_LEN, WIRE_FLOOR, WIRE_REV};
 
     /// A session as tutti's daemon writes its answer to an attach, at wire revision `rev` and, from
     /// a daemon that names one, with floor `floor`: one workspace, 5, its tab 1 the session's
@@ -1199,6 +1205,29 @@ mod tests {
         pane.write(b"ls\r".to_vec());
         let typed = Frame::Input { pane: PaneId(3), bytes: b"ls\r".to_vec() };
         assert_eq!(daemon.heard(), Some(typed));
+    }
+
+    /// A paste longer than the wire's longest frame, which tutti's encoder panics on, goes in
+    /// several frames (`Frame::inputs`), whole and in order, and what is typed next after it. A
+    /// frame ends wherever its length does, mid-character or mid-paste: the daemon writes them to
+    /// the pane's pty one after another, so the program reads what one write would have brought.
+    #[test]
+    fn a_paste_longer_than_a_frame_goes_in_several_whole_and_in_order() {
+        let (pane, _notices, mut daemon) = attached();
+        let pasted: Vec<u8> = (0..MAX_FRAME_LEN + 3).map(|at| (at % 251) as u8).collect();
+        pane.write(pasted.clone());
+        pane.write(b"\r".to_vec());
+        let typed = |daemon: &mut Daemon| match daemon.heard() {
+            Some(Frame::Input { pane: PaneId(3), bytes }) => bytes,
+            frame => panic!("{frame:?}"),
+        };
+        let (mut heard, mut frames) = (Vec::new(), 0);
+        while heard.len() < pasted.len() {
+            heard.extend(typed(&mut daemon));
+            frames += 1;
+        }
+        assert!(frames > 1 && heard == pasted, "the paste in {frames} frames, whole and in order");
+        assert_eq!(typed(&mut daemon), b"\r");
     }
 
     /// A resize moves the pane's vote, and the terminal takes the size of the snapshot that
