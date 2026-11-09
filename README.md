@@ -1113,6 +1113,12 @@ Xcode 26 ships the offline `metal` compiler as a separate download
 (`xcodebuild -downloadComponent MetalToolchain`), so without the feature the build fails on a
 machine that has not fetched it. The cost is a shader compile at startup.
 
+Two of GPUI's dependencies, `block` 0.1.6 and `proc-macro-error2` 2.0.1, each have a line Rust
+warns will become an error (a static of an uninhabited type; a re-exported private extern crate),
+and neither has a release that fixes it. `[patch.crates-io]` builds copies of them from
+[`patches/`](patches/README.md) with that line changed (and, in `block`, its `extern` blocks given
+their `"C"`), so a build prints no future-incompatibility warning.
+
 Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT, global-hotkey is Apache-2.0 or
 MIT; the image crates (`png` and `miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or
 Apache-2.0. rtty takes nothing from Zed's GPL `terminal` / `terminal_view` crates, and nothing
