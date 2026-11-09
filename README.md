@@ -11,8 +11,9 @@ agents: a TUI you run in any terminal, whose daemon keeps sessions alive across 
 - **tutti** stays an app. Inside rtty it finds rtty and uses what rtty offers.
 - **rtty is also a tutti client.** It shows a pane of a tutti session as a pane of its own:
   tutti's daemon keeps the program, the session and the agent's state, and rtty draws, so rtty's
-  scrollback, search, selection and links work on it ([tutti panes](#tutti-panes)). For now one
-  pane at a time, placed in rtty's layout; tutti's TUI in an rtty pane works as before.
+  scrollback, search, selection and links work on it ([tutti panes](#tutti-panes)). A window can be
+  a whole session, tutti's tabs and splits its own, or show one tutti pane in rtty's layout;
+  tutti's TUI in an rtty pane works as before, beside either.
 - **Both run the same engine.** rtty-vt is shared by rtty, tutti's daemon and tutti's TUI, so a
   program behaves the same in either.
 
@@ -27,6 +28,7 @@ cargo run --release                     # your login shell
 cargo run --release -- --font "SF Mono" --size 13
 cargo run --release -- --font "FiraCode Nerd Font Mono" --ligatures off
 cargo run --release -- -e htop          # a program instead of the shell
+cargo run --release -- --tutti work     # a window that is tutti session `work`
 cargo run --release -- --tutti work:3   # pane 3 of tutti session `work` instead of the shell
 cargo run --release -- --smoke          # headless pipeline check, exits 0 or 1
 cargo run --release -- --bench          # headless pipeline throughput
@@ -41,7 +43,7 @@ rtty cli list                           # from inside a pane: the windows, tabs 
 | `--size PT` | font size in points (default 14) |
 | `--ligatures on\|off` | the font's programming ligatures: on enables `calt` and `liga`, off disables `calt`, `liga` and `dlig`, over the config's `ligatures` and `font_features`; default on |
 | `-e PROGRAM [ARGS...]` | run the program in the first pane instead of the login shell; its pane closes when it exits (new panes run the shell) |
-| `--tutti SESSION:PANE` | show pane PANE of tutti session SESSION in the first pane instead of the login shell ([tutti panes](#tutti-panes)); no saved layout is restored. Not with `-e` |
+| `--tutti SESSION[:PANE]` | make the first window tutti session SESSION, its tabs and splits the session's; with `:PANE`, show only that pane of it in the first pane instead of the login shell ([tutti panes](#tutti-panes)); no saved layout is restored. Not with `-e` |
 | `--stats` | once a second while a pane draws frames, print its frames, layout and paint ms/frame (a line per pane that drew) |
 | `--trace FILE` | write every read from a pty (`<`) and write to it (`>`), escaped, one line each with the milliseconds since start and the pane's number: what a program asks and what it was told; for a tutti pane, each snapshot and read its stream brings, and what goes to the pane |
 | `--script FILE` | drive the window from a script instead of a person: wait for text, keys and typed text (through GPUI's keystroke dispatch, so Cmd chords split and switch panes, or with `nskey` as AppKit key events handed to NSApplication in process, `alt-h->˙` giving the character Option types, which take macOS's own path: event monitors, key equivalent, text input context, key down), clicks, drags, the wheel and dropped files at window cells (to the pane under them), clicks and hovers on the tab bar's pills, close buttons and `+`, the answer to a question closing, quitting or a clipboard read asked (which a scripted window keeps in its dump instead of showing a sheet; a scripted read is answered with a stand-in, never the clipboard), AppKit's `terminate:` as the dock's Quit sends it, another window's close button, a menu bar item's action, rtty becoming the active app (with any of its windows the key one) and not, a press of the global hotkey, focus in and out, an appearance flip, a resize, and `dump`, which writes the window's tabs, bar and layout and what the next frame draws in each shown pane (runs, their glyphs, colors, underlines, the cursor, the font with its features, the cell and the rows each drawn character fills) and the modes it is drawn from, with the shell's marks, a running command and what `copy-last-output` copied (never to the clipboard under `--script`); the step list is in `src/script.rs`. A scripted window does not take the keyboard from whatever app has it |
@@ -191,7 +193,11 @@ directory (as its shell last reported it with OSC 7, else its foreground process
 quits, and once a second when any of that changed since it last wrote it; a write that fails is
 tried again each second, its error logged once. At launch it opens those windows, each pane a new
 login shell in its directory (the home directory, when that is gone). It never starts the programs
-that ran there and never keeps what a pane showed. A missing or corrupt file starts fresh, and the
+that ran there and never keeps what a pane showed. [tutti panes](#tutti-panes) are the exception,
+since tutti's daemon kept them running: a pane that showed one shows it again, by the session's
+socket and the pane's id, and one tutti no longer has says so (`[tutti pane 2: no pane 2]`) rather
+than becoming a shell; a window that was a tutti session is that session again, as its daemon has
+it now. A missing or corrupt file starts fresh, and the
 log says why: corrupt is also a pane in two tabs, a focus on no pane, a ratio past 1, or a frame
 under 100 points across or down. Closing the last window quits with no window to restore, so the
 next launch opens one fresh window.
@@ -336,8 +342,8 @@ action names are `[bind]`'s ([Configuration](#configuration)).
 | `Cmd+1`–`9` | `tab-1`–`tab-9` | show that tab |
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `prev-tab` / `next-tab` | previous / next tab, round the ends |
 | `Cmd+D` / `Cmd+Shift+D` | `split-right` / `split-down` | split the pane right / down |
-| `Cmd+W` | `close-pane` | close the pane, asking first while it runs a program (below); the last pane closes its tab, the last tab its window, the last window quits. A [tutti pane](#tutti-panes) is only detached: it runs on in tutti |
-| none | `kill-pane` | end the focused pane's program now, without asking: hang up on it, or have tutti's daemon kill a tutti pane; its exit closes the pane |
+| `Cmd+W` | `close-pane` | close the pane, asking first while it runs a program (below); the last pane closes its tab, the last tab its window, the last window quits. A [tutti pane](#tutti-panes) is only detached: it runs on in tutti. In a window that is a tutti session it closes nothing and says so: closing the window detaches |
+| none | `kill-pane` | end the focused pane's program now, without asking: hang up on it, or have tutti's daemon kill a tutti pane; its exit closes the pane (in a window that is a tutti session, tutti takes it out of the layout) |
 | `Cmd+Z` | `undo-close` | bring back the pane, tab or window closed last, within `undo_timeout` seconds (below) |
 | `Cmd+Opt+arrows` | `focus-left`, `-right`, `-up`, `-down` | focus the nearest pane that way |
 | `Cmd+Ctrl+arrows` | `resize-left`, `-right`, `-up`, `-down` | move the pane's nearest divider that way, 5% of its split a press (tutti's step) |
@@ -764,8 +770,9 @@ way:
 | `rtty cli pane focus <pane>` | shows the pane's tab and gives it the keyboard |
 | `rtty cli pane split <pane> <right\|down\|left\|up>` | opens a pane there in its working directory and prints its id |
 | `rtty cli pane zoom [<pane>]` | zooms the pane, or back |
-| `rtty cli list` | every window, tab and pane as one line of JSON: ids, focus, zoom, titles, working directories, sizes, and which panes claim the keys |
-| `rtty cli tutti attach <pane> [-s <session>] [--split <right\|down\|left\|up> \| --tab] [--from <pane>]` | shows pane `<pane>` of a tutti session as an rtty pane ([tutti panes](#tutti-panes)), in a new tab unless `--split` says which way from `--from`, and prints the new rtty pane's id; the session is `-s`, else `$TUTTI_SESSION`, else `tutti`, as tutti's own commands take it, and its socket is found in the asking shell's environment (`$XDG_RUNTIME_DIR`), as tutti finds it |
+| `rtty cli list` | every window, tab and pane as one line of JSON: ids, focus, zoom, titles, working directories, sizes, which panes claim the keys, and the tutti session and pane a tutti pane shows (`"tutti":["work",3]`) |
+| `rtty cli tutti attach <pane> [-s <session>] [--split <right\|down\|left\|up> \| --tab] [--from <pane>]` | shows pane `<pane>` of a tutti session as an rtty pane ([tutti panes](#tutti-panes)), in a new tab unless `--split` says which way from `--from`, and prints the new rtty pane's id at once: the pane shows once the session answers, or says why it cannot. The session is `-s`, else `$TUTTI_SESSION`, else `tutti`, as tutti's own commands take it, and its socket is found in the asking shell's environment (`$XDG_RUNTIME_DIR`), as tutti finds it. Not in a window that is a tutti session |
+| `rtty cli tutti open [-s <session>]` | opens a window that is the whole tutti session ([tutti panes](#tutti-panes)); the session as `tutti attach` finds it. It returns at once; the window fills in when the session answers |
 
 `--from` is `$RTTY_PANE` by default, else the focused pane of the active window. An error says
 `error: …` and exits 1; a malformed command prints the usage and exits 2.
@@ -797,19 +804,34 @@ tutti (`TUTTI_PANE`), where tutti's own plugins own navigation.
 
 ## tutti panes
 
-rtty can show a pane of a tutti session as a pane of its own: `rtty --tutti <session>:<pane>` in the first window, or `rtty cli tutti attach <pane>` from
-a pane ([rtty cli](#rtty-cli-and-editors)). tutti's daemon keeps the program, the session and the
-agent's state; rtty draws. Unlike tutti's TUI in an rtty pane, which redraws a grid, the pane's
-output reaches rtty's own terminal engine, so rtty's scrollback, search, selection, copy mode,
-links, quick select and prompt jumps work on it as on any pane.
+rtty can show the panes of a tutti session as panes of its own, two ways:
 
-- **The stream.** One connection a pane, to the session's daemon on its Unix socket
-  (`$XDG_RUNTIME_DIR/tutti/<session>.sock`, else `/tmp/tutti-<uid>/<session>.sock`). rtty watches
-  the session first: the daemon must speak tutti's wire revision 18, or rtty says which side to
-  update, and must hold the pane. Then it reports its colours and attaches: up to 10 000 rows of
-  the pane's scrollback go into rtty's, a snapshot draws the screen, and every read of the pane's
-  pty follows as it was written. A stream that falls behind skips to a fresh snapshot after the
-  rows that scrolled off meanwhile, which go into the scrollback, nothing missed and nothing twice.
+- **A window that is the session**: `rtty --tutti <session>`, or `rtty cli tutti open [-s
+  <session>]` from a pane ([rtty cli](#rtty-cli-and-editors)). tutti's tabs, of every workspace in
+  turn, are the window's tabs, and each tab's split tree, with its ratios, is the tab's layout.
+- **One tutti pane in rtty's layout**: `rtty --tutti <session>:<pane>` in the first window, or
+  `rtty cli tutti attach <pane>` from a pane, in a split or a tab of its own.
+
+tutti's daemon keeps the programs, the session and the agents' states; rtty draws. Unlike tutti's
+TUI in an rtty pane, which redraws a grid, a pane's output reaches rtty's own terminal engine, so
+rtty's scrollback, search, selection, copy mode, links, quick select and prompt jumps work on it as
+on any pane. tutti's TUI can stay attached beside rtty: rtty never moves its focus.
+
+- **The session's connection.** A window keeps one connection to each session whose panes it
+  shows, to the daemon on its Unix socket (`$XDG_RUNTIME_DIR/tutti/<session>.sock`, else
+  `/tmp/tutti-<uid>/<session>.sock`). It attaches as a view that hands moves past tutti's edges on
+  (`Attach` with `view` and `handoff`), and watches: the daemon must speak tutti's wire revision
+  18, or rtty says which side to update. The connection opens off the main thread, and the daemon
+  has 3 s to answer: meanwhile the window goes on, the panes waiting for it blank; should it not
+  answer, they say why (`[cannot show tutti session work: tutti's daemon did not answer within 3
+  s]`, the pane's title too). As an attached client, rtty is sent every pane's frames as the TUI
+  is, and passes over them.
+- **The stream.** Each pane shown has a connection of its own, which reports the window's colours
+  and attaches: up to 10 000 rows of the pane's scrollback go into rtty's, a snapshot draws the
+  screen, and every read of the pane's pty follows as it was written. A stream that falls behind
+  skips to a fresh snapshot after the rows that scrolled off meanwhile, which go into the
+  scrollback, nothing missed and nothing twice. A pane the session no longer has says so and
+  stays.
 - **Queries are answered once.** The daemon answers the terminal queries it can (DA1, cursor
   reports, colours, mode 2031's light/dark) and keeps them from the stream; what rtty's engine
   answers goes back to the pane, and answers only what the daemon left. A flip between light and
@@ -822,18 +844,42 @@ links, quick select and prompt jumps work on it as on any pane.
   client shows the pane smaller, rtty draws it smaller than its cells.
 - **Title and agent.** tutti's name for the pane titles it, after its program's own title; a
   `pane rename` shows at once. The agent working shows on the tab's pill, paused while it is
-  blocked or holds a permission request; the end of its turn is a notification. A program's
-  `TUTTI_KEYS=pane` claims the keys as `RTTY_KEYS=pane` does. The keyboard coming to the pane makes
-  it the session's active one (a finished agent's pane is then seen).
-- **Closing detaches.** `Cmd+W` closes the rtty pane, and the tutti pane and its program run on;
-  `kill-pane` ends the program, and its exit, however it comes (`tutti pane kill` too), closes the
-  rtty pane.
+  blocked or holds a permission request. An agent blocked or done is a notification, from tutti's
+  notes (one each; a bell's or a program's own notification comes raw in its stream). A program's
+  `TUTTI_KEYS=pane` claims the keys as `RTTY_KEYS=pane` does.
+- **Focus.** The pane a window shows focused, active or not, is what rtty's view of the session
+  shows focused: it moves no pane of the session's, so an attached TUI stays where it is, and it
+  marks no finished agent's pane seen (the TUI, or `tutti pane focus`, still does). A focus from
+  outside any attached client (`tutti pane focus 3`, a notch app's click) shows that pane.
+- **Editors across tutti and rtty.** A move or resize an editor in a tutti pane asks tutti for
+  (`tutti pane focus --direction`, `pane resize`), past the edge of tutti's tab, comes back to rtty,
+  which moves on in its own layout: from one tutti pane in rtty's layout to the rtty pane beside
+  it, top and bottom edges too.
+- **Closing detaches.** `Cmd+W` closes an rtty pane showing a tutti pane, and the tutti pane and
+  its program run on; `kill-pane` ends the program, and its exit, however it comes (`tutti pane
+  kill` too), closes the rtty pane.
 
-Not yet: a whole session in a window (tutti's tabs and splits as rtty's), sessions on other
-machines (`tutti --host`), restoring a tutti pane in a saved layout (it comes back as a login
-shell), the keyboard protocols, prompt marks in the scrollback a pane had before rtty attached,
-and editor navigation: an editor's `tutti pane focus` walks tutti's layout, not rtty's. tutti's
-daemon must be running; rtty never starts one.
+**A window that is a session** keeps the daemon the source of truth: what would change its layout
+asks tutti, and the window follows what tutti then tells of the session's tabs.
+
+| rtty | asks tutti |
+| --- | --- |
+| split right, split down (`Cmd+D`, `Cmd+Shift+D`, `rtty cli pane split`) | `PaneSplit`, a login shell in the new half; the new pane takes the keyboard once tutti has it. tutti splits right or down only: left and up say so |
+| new tab (`Cmd+T`, the `+`) | `TabNew` in the shown tab's workspace, then a run of your shell in it |
+| resize (`Cmd+Ctrl+arrows`, `rtty cli pane resize`), a divider dragged | `PaneResizeToward`, `PaneSplitRatio` |
+| a tab shown | `TabSelect`: where tutti's own runs land follows the window; an attached TUI's tab does not |
+| `kill-pane` | `PaneKill`; a pane whose program exited stays, its last screen showing, as tutti keeps it, until killed |
+
+Focus moves, zoom and the last pane are the window's own, as tutti's are its TUI's. `Cmd+W` and a
+tab's close button close nothing and say so (tutti's panes run on; `kill-pane` ends one); closing
+the window detaches from the session. A pane of rtty's own has no place there: an editor a
+Cmd+click would open beside a pane, `open-config`, and `rtty cli tutti attach` say so; swap is not
+tutti's. The session's daemon going closes the window, as a last pane closing does.
+
+Not yet: sessions on other machines (`tutti --host`), the keyboard protocols, prompt marks in the
+scrollback a pane had before rtty attached, and tutti's chrome (the sidebar, approvals, notes, the
+changes panel): the TUI stays the place for those. tutti's daemon must be running; rtty never
+starts one.
 
 ## How it works
 
@@ -848,13 +894,17 @@ daemon must be running; rtty never starts one.
   on its text while output arrives) and the selection. `Pane::attach` makes the same pane of a
   tutti pane instead: its reader and writer take frames from and to the daemon's connection,
   resizing votes, and dropping it closes the connection and ends nothing; nothing above the pane
-  knows the difference but for its title and its size.
+  knows the difference but for its title and its size. `Pane::held` is a pane that only says why
+  it shows no tutti pane.
 - `tutti.rs` — tutti's daemon's wire as rtty speaks it, rtty's own types written from tutti's
-  transport document (frames, and the requests, responses and events a pane stream needs), the
-  opening of a pane's stream with its revision checks, and the stream's reader, ported from tutti's
-  `pane attach --inline`: scrollback rows before each snapshot, snapshots less what the daemon
-  keeps, raw reads with the engine's replies sent back, and the session's snapshots as the pane's
-  title, pill and notifications. Unit tested against a stand-in daemon over a socket pair.
+  protocol (frames, and the requests, responses and events rtty needs: the session's tabs and
+  split trees among them); `Session`, a window's connection to a session, opened off the main
+  thread with its revision checks, whose reader hands the session's snapshots and notes to the
+  panes shown (their titles, pills, key claims and notifications) and its layout, focus, edges and
+  refusals to the window (`Told`); and a pane stream's reader, ported from tutti's `pane attach
+  --inline`: scrollback rows before each snapshot, snapshots less what the daemon keeps, raw
+  reads with the engine's replies sent back. Unit tested against a stand-in daemon over socket
+  pairs.
 - `title.rs` — what a pane is called: its program's title, else the command line of the process
   in its foreground (`Pane::foreground`), else its shell's directory; unit tested.
 - `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
@@ -905,9 +955,11 @@ daemon must be running; rtty never starts one.
   and unit tested: where each pane and divider goes in an area (a divider is one cell; no pane
   gets fewer than two across a split), split and close with the cascade to tab and window, a
   closed pane or tab put back where it was, a divider dragged to a cell or moved by a resize, focus by direction and back to the last pane, a
-  swap with the pane that way, zoom.
+  swap with the pane that way, zoom; and a tab mirroring tutti's split tree (`Layout::mirror`),
+  keeping its own focus and zoom.
 - `session.rs` — the windows' layout as the next launch restores it (the layout's own split trees,
-  serialized), read back checked and written whole; unit tested.
+  serialized, and the tutti panes and sessions shown), read back checked and written whole; unit
+  tested.
 - `tabbar.rs` — the bar in the titlebar as rectangles: the pills, their close buttons and the `+`
   for a window's width and tabs, and what a point is over; no GPUI in it, unit tested.
 - `window.rs` — `TerminalWindow`: one window's tabs, the bar (drawn where `tabbar` puts it, in a
@@ -918,7 +970,10 @@ daemon must be running; rtty never starts one.
   by direction: the keys, `rtty cli` and so the editors all go through it. `answer` handles
   `rtty cli`'s requests on the main thread. `confirm` is the one way a close asks first (its
   wording, `question`, unit tested), and the last close waits in an app-wide slot, its panes'
-  views alive and a closed window ordered out, until `undo-close` or its timer.
+  views alive and a closed window ordered out, until `undo-close` or its timer. A window keeps its
+  connections to tutti sessions (`attach_tutti`, `opened`, `told`); a window that is a session
+  (`Mirror`) lays out its tabs from tutti's (`mirror_layout`) and asks tutti where it would change
+  its own layout.
 - `control.rs` and `cli.rs` — the socket (one JSON line each way, served on a thread of its own
   and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
 - `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to
@@ -1068,7 +1123,15 @@ scrollback and `Cmd+F` finds them; what is typed reaches the pane, and a resize 
 (both read back with `tutti pane read`); a DA1 asked in raw mode gets one reply and a flip to light
 one `997;2n`; `rtty cli tutti attach` opens a pane in a split and in a tab; `Cmd+W` leaves the pane
 running in `tutti pane list`; `tutti pane kill` and `kill-pane` close the rtty pane; `tutti pane
-rename` and a program's `TUTTI_KEYS` reach `rtty cli list`.
+rename` and a program's `TUTTI_KEYS` reach `rtty cli list`. A window that is a session opens on its
+two tabs and their splits; a split right and down, a new tab, a resize and `kill-pane` made in rtty
+show in `tutti pane list`, `tutti tab list` and `tutti watch`, and a split made with `tutti pane
+split` shows in rtty; tutti's TUI, attached in another rtty's pane, keeps its focused pane while
+rtty's moves (`tutti watch`); a program's OSC 7501 working then done makes one notification; a
+focus from `tutti pane focus` shows that pane; tutti's focus move and resize past its tab's edge
+move rtty's focus and divider; a daemon that accepts and never answers (`nc -lU`) leaves the
+window typing while it waits, and its window says why after 3 s; a restored window reattaches its
+tutti panes, a killed one saying so, and a restored session window is the session again.
 
 The cursor takes the shape a program sets with DECSCUSR (block, bar or underline; Neovim's
 insert mode is a bar), and a hollow block while the window or pane is not focused. It blinks when
@@ -1126,8 +1189,8 @@ from kitty's GPL source: the graphics protocol is implemented from its documenta
 
 ## Roadmap
 
-The one item this held, tutti knowing rtty, has shipped (Status, above), and rtty showing a
-tutti pane natively has begun. What is left:
+The one item this held, tutti knowing rtty, has shipped (Status, above), and so has rtty showing
+tutti panes natively, a pane or a whole session in a window. What is left:
 
 1. **A look on screen** at what scripts check only in the dump: IME with a real input method,
    a dead key on the Option that is not Alt (é from Option+E, E: the text input inserts the
@@ -1140,10 +1203,10 @@ tutti pane natively has begun. What is left:
    check mark, a real press of the global hotkey, a clipboard read's sheet, kitty images and
    their placeholders, the config reload's banner, and a restored window landing on its own
    display.
-2. **A tutti session in a window** ([tutti panes](#tutti-panes)): tutti's tabs and splits as
-   rtty's, kept by the daemon, with rtty's split, resize and tab actions asking it; focus moves
-   handed on at tutti's edges; a restored layout reattaching its tutti panes. Then sessions on
-   other machines, through `tutti proxy` over ssh.
+2. **tutti sessions on other machines** ([tutti panes](#tutti-panes)), through `tutti proxy` over
+   ssh. And from tutti: an attach that sends no pane frames, several pane streams on one
+   connection, keyboard protocols passed on to a stream, and a view's focus that marks a finished
+   agent's pane seen.
 
 Cmd+D and Cmd+F, which once quit rtty and did nothing in a launch where its window was key,
 split and search in the installed app since a reinstall (seen on screen; the cause was never
