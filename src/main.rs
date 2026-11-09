@@ -22,6 +22,7 @@ mod session;
 mod shell;
 mod tabbar;
 mod title;
+mod tutti;
 mod view;
 mod window;
 
