@@ -504,7 +504,7 @@ impl Node {
     /// tutti's `tree`, its panes named by `id`.
     fn mirror(tree: &Tree, id: &mut impl FnMut(u64) -> PaneId) -> Node {
         match tree {
-            Tree::Leaf(pane) => Node::Pane(id(*pane)),
+            Tree::Leaf(pane) => Node::Pane(id(pane.0)),
             Tree::Split { direction, ratio, first, second } => Node::Split {
                 orientation: match direction {
                     Axis::Horizontal => Orientation::SideBySide,
@@ -745,11 +745,12 @@ impl Tabs {
                     let known = panes.get(&pane).copied();
                     *named.entry(pane).or_insert_with(|| known.unwrap_or_else(&mut next))
                 };
-                layouts.push(Layout::mirror(was(tab.id), tree, tab.active_pane, &mut id));
+                let active = tab.active_pane.map(|pane| pane.0);
+                layouts.push(Layout::mirror(was(tab.id.0), tree, active, &mut id));
                 if tab.active {
                     current = Some(tabs.len());
                 }
-                tabs.push((workspace.id, tab.id));
+                tabs.push((workspace.id.0, tab.id.0));
             }
         }
         if layouts.is_empty() {
@@ -1233,9 +1234,14 @@ mod tests {
         assert!(!layout.zoomed());
     }
 
+    /// tutti's tree of its one pane `pane`.
+    fn leaf(pane: u64) -> Box<Tree> {
+        Box::new(Tree::Leaf(crate::tutti::PaneId(pane)))
+    }
+
     /// tutti's tree for 1 | (2 / 3), its panes numbered `base` and on.
     fn tutti_three(base: u64) -> Tree {
-        let leaf = |pane: u64| Box::new(Tree::Leaf(base + pane));
+        let leaf = |pane: u64| leaf(base + pane);
         let column =
             Tree::Split { direction: Axis::Vertical, ratio: 0.5, first: leaf(2), second: leaf(3) };
         Tree::Split {
@@ -1269,14 +1275,14 @@ mod tests {
         let two = Tree::Split {
             direction: Axis::Horizontal,
             ratio: 0.5,
-            first: Box::new(Tree::Leaf(11)),
-            second: Box::new(Tree::Leaf(12)),
+            first: leaf(11),
+            second: leaf(12),
         };
         let mut after = Layout::mirror(Some(&kept), &two, Some(11), &mut named);
         assert_eq!((after.panes(), after.focus(), after.zoomed()), (vec![1, 2], 1, false));
         assert_eq!(after.focus_previous(), Some(2));
         // tutti's focus not among them: the first pane.
-        let lone = Layout::mirror(Some(&after), &Tree::Leaf(14), Some(19), &mut named);
+        let lone = Layout::mirror(Some(&after), &leaf(14), Some(19), &mut named);
         assert_eq!((lone.panes(), lone.focus()), (vec![4], 4));
         let tabs = Tabs::of(vec![lone, after], 5);
         assert_eq!(tabs.index(), 1);
@@ -1287,18 +1293,36 @@ mod tests {
     /// next id, a tab with no pane is left out, and a session with none gives no tabs.
     #[test]
     fn tabs_mirror_tuttis_by_tab_id_whatever_their_order() {
-        use crate::tutti::Tab;
-        let tab = |id, layout, active| Tab { id, active, layout, active_pane: None };
+        use crate::tutti::{TabId, WorkspaceId};
+        let tab = |id, layout, active| tutti_wire::TabView {
+            id: TabId(id),
+            name: String::new(),
+            active,
+            layout,
+            active_pane: None,
+            panes: Vec::new(),
+        };
+        let workspace = |tabs| Workspace {
+            id: WorkspaceId(5),
+            name: String::new(),
+            dir: "/w".into(),
+            branch: None,
+            changes: None,
+            changed_files: Vec::new(),
+            stale: false,
+            parent: None,
+            tabs,
+        };
         let column = Tree::Split {
             direction: Axis::Vertical,
             ratio: 0.5,
-            first: Box::new(Tree::Leaf(21)),
-            second: Box::new(Tree::Leaf(22)),
+            first: leaf(21),
+            second: leaf(22),
         };
-        let first = [Workspace {
-            id: 5,
-            tabs: vec![tab(10, Some(tutti_three(10)), true), tab(20, Some(Tree::Leaf(21)), false)],
-        }];
+        let first = [workspace(vec![
+            tab(10, Some(tutti_three(10)), true),
+            tab(20, Some(*leaf(21)), false),
+        ])];
         let mut next = 100..;
         let mirrored = Tabs::new(1).mirror(&[], &first, &HashMap::new(), || next.next().unwrap());
         let (mut tabs, ids, panes) = mirrored.unwrap();
@@ -1309,14 +1333,11 @@ mod tests {
         );
         tabs.active_mut().toggle_zoom();
         tabs.select(1);
-        let reordered = [Workspace {
-            id: 5,
-            tabs: vec![
-                tab(20, Some(column), false),
-                tab(10, Some(tutti_three(10)), true),
-                tab(30, None, false),
-            ],
-        }];
+        let reordered = [workspace(vec![
+            tab(20, Some(column), false),
+            tab(10, Some(tutti_three(10)), true),
+            tab(30, None, false),
+        ])];
         let mirrored = tabs.mirror(&ids, &reordered, &panes, || next.next().unwrap());
         let (again, ids, panes) = mirrored.unwrap();
         assert_eq!(ids, [(5, 20), (5, 10)]);
@@ -1327,7 +1348,7 @@ mod tests {
         );
         assert!(!again.all()[0].zoomed() && again.all()[1].zoomed(), "zoom stays with tab 10");
         assert_eq!(panes.len(), 5);
-        let none = [Workspace { id: 5, tabs: vec![tab(30, None, true)] }];
+        let none = [workspace(vec![tab(30, None, true)])];
         assert!(again.mirror(&ids, &none, &panes, || 0).is_none());
     }
 

@@ -1,8 +1,8 @@
 //! A tutti session's daemon as rtty shows it: the daemon keeps the ptys, the session and the
-//! agents' states, and rtty draws the session's panes as rtty panes (`Pane::attach`). Here is the
-//! daemon's wire as rtty speaks it, written from tutti's `docs/transport-decision.md` and its
-//! protocol, and the window's connection to a session, whose pane streams' reader is ported from
-//! tutti's `pane attach --inline`.
+//! agents' states, and rtty draws the session's panes as rtty panes (`Pane::attach`). The daemon's
+//! wire is tutti's own crate, `tutti-wire`: where it listens, its frames, requests, responses and
+//! events, and whether its revision and rtty's work together. Here is the window's connection to
+//! a session, whose pane streams' reader is ported from tutti's `pane attach --inline`.
 //!
 //! A window that shows a session's panes keeps one connection to its daemon (`Session`), and all
 //! of it goes over that one: an attached view, whose focus is its own and which hands moves past
@@ -30,92 +30,75 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use rtty_vt::{BACKGROUND, CURSOR, Event, FOREGROUND, Rgb, Terminal};
-use serde::de::IgnoredAny;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use tutti_wire::{
+    AgentState, Event as Tells, HostColors, Note, NoteKind, PaneData, PaneDims, Response, Tagged,
+    Toward, WIRE, attached_wire,
+};
+/// tutti's types that rtty has a name of its own for: a split's axis and a tab's split tree, where
+/// rtty's `Direction` is a way to go and its `Layout` a tab, and the session's workspaces and
+/// panes as its views and snapshots give them.
+pub use tutti_wire::{
+    Direction as Axis, Layout as Tree, WatchPane as Watched, WorkspaceView as Workspace,
+};
+pub use tutti_wire::{Frame, PaneId, Request, TabId, WorkspaceId, socket_path};
 
 use crate::layout::Direction;
 use crate::pane::{Notice, SCROLLBACK, Trace};
 use crate::scheme::Scheme;
 
-/// The revision of the daemon's requests, responses and events this rtty speaks, which the
-/// daemon's answer to an attach names (tutti's `WIRE_REV`).
-pub const WIRE_REV: u32 = 19;
-
-/// The revision of the host frames a `tutti proxy` speaks, which its hello names (`HOST_REV`).
+/// The revision of the host frames a `tutti proxy` speaks, which its hello names: tutti's
+/// `HOST_REV`, which is its client's and no part of `tutti-wire`.
 pub const HOST_REV: u32 = 2;
 
 /// What rtty attaches as: its bundle's identifier, which tutti tells its watchers so that one (a
 /// notch app) can bring rtty forward.
 const TERMINAL: &str = "local.rtty";
 
-/// The longest frame either side sends.
-const MAX_FRAME: usize = 16 << 20;
-
-/// One frame: `[u32 len][u8 kind][payload]`, little-endian, `len` counting the kind byte and the
-/// payload. A pane frame's payload starts with the pane's id, a `u64`. Kind 3, what changed of a
-/// pane's screen, goes to attached clients that are not quiet: never to rtty, which reads one as
-/// an error.
-#[derive(Debug, PartialEq)]
-pub enum Frame {
-    /// One JSON object: a request, a response or an event, tagged by its `type` (kind 1).
-    Control(Vec<u8>),
-    /// The pane's screen as it stands, at its size: rtty-vt's `snapshot()` (kind 2, after the
-    /// rows, the columns and a `u32` sequence number).
-    Snapshot { pane: u64, rows: u16, cols: u16, bytes: Vec<u8> },
-    /// Typed into the pane (kind 4).
-    Input { pane: u64, bytes: Vec<u8> },
-    /// One pty read of the pane, but for the terminal queries the daemon answered (kind 5).
-    Raw { pane: u64, bytes: Vec<u8> },
-    /// Between a client and the `tutti proxy` it runs, never the daemon's: the proxy's hello
-    /// first (kind 6).
-    Host(Vec<u8>),
+impl From<Toward> for Direction {
+    fn from(toward: Toward) -> Direction {
+        match toward {
+            Toward::Left => Direction::Left,
+            Toward::Right => Direction::Right,
+            Toward::Up => Direction::Up,
+            Toward::Down => Direction::Down,
+        }
+    }
 }
 
-impl Frame {
-    pub fn encode(&self) -> Vec<u8> {
-        let (kind, head, bytes): (u8, Vec<u8>, &[u8]) = match self {
-            Frame::Control(json) => (1, Vec::new(), json),
-            Frame::Snapshot { pane, rows, cols, bytes } => {
-                let head = [&pane.to_le_bytes()[..], &rows.to_le_bytes(), &cols.to_le_bytes()];
-                (2, [&head.concat()[..], &0u32.to_le_bytes()].concat(), bytes)
-            }
-            Frame::Input { pane, bytes } => (4, pane.to_le_bytes().to_vec(), bytes),
-            Frame::Raw { pane, bytes } => (5, pane.to_le_bytes().to_vec(), bytes),
-            Frame::Host(json) => (6, Vec::new(), json),
-        };
-        let len = u32::try_from(1 + head.len() + bytes.len()).expect("a frame under 4 GiB");
-        [&len.to_le_bytes()[..], &[kind], &head, bytes].concat()
-    }
-
-    /// The frame at the front of `buf` and how many bytes it took; `None` until all of it is there.
-    pub fn decode(buf: &[u8]) -> io::Result<Option<(Frame, usize)>> {
-        let Some(&len) = buf.first_chunk::<4>() else { return Ok(None) };
-        let len = u32::from_le_bytes(len) as usize;
-        if len == 0 || len > MAX_FRAME {
-            return Err(io::Error::other(format!("tutti sent a frame {len} bytes long")));
+impl From<Direction> for Toward {
+    fn from(direction: Direction) -> Toward {
+        match direction {
+            Direction::Left => Toward::Left,
+            Direction::Right => Toward::Right,
+            Direction::Up => Toward::Up,
+            Direction::Down => Toward::Down,
         }
-        let Some(body) = buf.get(4..4 + len) else { return Ok(None) };
-        let (kind, payload) = (body[0], &body[1..]);
-        let short = || io::Error::other(format!("tutti sent a frame of kind {kind} cut short"));
-        let pane = payload.first_chunk::<8>().map(|&id| u64::from_le_bytes(id));
-        let frame = match kind {
-            1 => Frame::Control(payload.to_vec()),
-            2 => {
-                let size = payload.get(8..12).ok_or_else(short)?;
-                let (rows, cols) = (
-                    u16::from_le_bytes([size[0], size[1]]),
-                    u16::from_le_bytes([size[2], size[3]]),
-                );
-                let bytes = payload.get(16..).ok_or_else(short)?.to_vec();
-                Frame::Snapshot { pane: pane.ok_or_else(short)?, rows, cols, bytes }
-            }
-            4 => Frame::Input { pane: pane.ok_or_else(short)?, bytes: payload[8..].to_vec() },
-            5 => Frame::Raw { pane: pane.ok_or_else(short)?, bytes: payload[8..].to_vec() },
-            6 => Frame::Host(payload.to_vec()),
-            _ => return Err(io::Error::other(format!("tutti sent a frame of kind {kind}"))),
-        };
-        Ok(Some((frame, 4 + len)))
     }
+}
+
+/// A request as the control frame that carries it, under `req` when the daemon is to echo one on
+/// its answer.
+fn control(req: Option<u64>, request: &Request) -> Frame {
+    let tagged = Tagged { req, body: request };
+    Frame::Control(serde_json::to_vec(&tagged).expect("a request serializes"))
+}
+
+/// What the daemon says in a control frame: an event (what it `Tells`, an `Event` here being a
+/// terminal's), or its answer to a request, with the request's `req` if it had one.
+enum Said {
+    Event(Tells),
+    Answer(Option<u64>, Response),
+}
+
+/// What the control frame `json` says; nothing when it reads as neither, which is a newer
+/// daemon's and passed over, as tutti's rule for its wire has an older client do.
+fn said(json: &[u8]) -> Option<Said> {
+    if let Ok(event) = serde_json::from_slice(json) {
+        return Some(Said::Event(event));
+    }
+    let Tagged { req, body } = serde_json::from_slice(json).ok()?;
+    Some(Said::Answer(req, body))
 }
 
 /// The next whole frame from `input`, read on into `buf` until it is there; `None` once the other
@@ -124,7 +107,9 @@ impl Frame {
 /// those.
 fn next(input: &mut impl Read, buf: &mut VecDeque<u8>) -> io::Result<Option<Frame>> {
     loop {
-        if let Some((frame, used)) = Frame::decode(buf.make_contiguous())? {
+        let frame = Frame::decode(buf.make_contiguous());
+        let unread = |err| io::Error::other(format!("tutti sent what is no frame: {err}"));
+        if let Some((frame, used)) = frame.map_err(unread)? {
             buf.drain(..used);
             return Ok(Some(frame));
         }
@@ -138,136 +123,6 @@ fn next(input: &mut impl Read, buf: &mut VecDeque<u8>) -> io::Result<Option<Fram
     }
 }
 
-/// What rtty asks of the daemon.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Request {
-    /// Join the session's attached clients: as a `view`, whose focus is its own (it moves no pane
-    /// of the session's, and marks one seen only when it says someone looks) and on which no
-    /// permission request waits, that hands moves past tutti's edges on (`handoff`) to the
-    /// terminal `terminal` names, and, `quiet`, is sent no pane frames but its streams'.
-    Attach { terminal: Option<String>, handoff: bool, view: bool, quiet: bool },
-    /// Subscribe to the session's snapshots (`Message::Snapshot`): one at once, then one on every
-    /// change. Read-only: it moves no size, focus or seen state.
-    Watch,
-    /// The session's tabs as they are now (`Message::View`).
-    View,
-    /// The colours of the terminal the panes are shown on, which the daemon answers their colour
-    /// queries with, and whose light or dark it tells the programs that asked (mode 2031).
-    HostColors(HostColors),
-    /// Stream `pane` to this connection, beside any other it streams, each frame naming its pane:
-    /// `history` rows of its scrollback, a snapshot, then every pty read raw, and its exit.
-    /// `rows`×`cols` is this connection's vote in the pane's size, until the stream is detached;
-    /// `inline` numbers each snapshot's rows (`Message::PaneRows`) and hands on, before a resync's
-    /// snapshot, the rows that scrolled off while the stream was behind; `keys` keeps the keyboard
-    /// protocols the program sets in the reads. The daemon streams a pane once a connection until
-    /// then, and echoes `req`, the request's own number, on its refusal.
-    PaneAttach { pane: u64, rows: u16, cols: u16, history: u32, inline: bool, keys: bool, req: u64 },
-    /// Ends this connection's stream of `pane`, its vote with it: nothing of it follows the answer,
-    /// which echoes `req`, and the pane may be streamed again.
-    PaneDetach { pane: u64, req: u64 },
-    /// Moves this connection's vote in each pane's size.
-    ViewSizes { panes: Vec<Dims> },
-    /// `pane` has the keyboard: from a view, only what the view shows, which tutti hands moves at
-    /// its edges back by, and, `seen`, what someone looks at: a pane whose agent is done turns
-    /// idle and its notes are read, though the session's active pane stays.
-    PaneFocus { pane: u64, seen: bool },
-    /// Ends `pane`'s program.
-    PaneKill { pane: u64 },
-    /// Splits `pane`'s cell, a login shell in the new half, right of it (`Horizontal`) or below.
-    PaneSplit { pane: u64, direction: Axis },
-    /// Moves the border of the nearest split around `from` on `toward`'s axis that way, by `delta`
-    /// of the split; with no such split, `Message::ResizeEdge` hands it on.
-    PaneResizeToward { from: Option<u64>, toward: Direction, delta: f32 },
-    /// Sets the ratio of the split between `a`, in its first half, and `b`, in its second.
-    PaneSplitRatio { a: u64, b: u64, ratio: f32 },
-    /// A new tab in `workspace`, which becomes the session's current tab.
-    TabNew { workspace: Option<u64> },
-    /// Makes tab `id` the session's current tab.
-    TabSelect { id: u64 },
-    /// Runs `cmd` in a new pane of `tab`, else of the current tab.
-    PaneRun { tab: Option<u64>, cmd: Vec<String> },
-}
-
-/// One pane's vote in its size (`Request::ViewSizes`).
-#[derive(Debug, Serialize)]
-pub struct Dims {
-    pub pane: u64,
-    pub rows: u16,
-    pub cols: u16,
-}
-
-/// A terminal's colours, 16 bits a channel as xterm reports them.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct HostColors {
-    pub fg: Rgb16,
-    pub bg: Rgb16,
-    pub cursor: Option<Rgb16>,
-    pub dark: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct Rgb16 {
-    pub r: u16,
-    pub g: u16,
-    pub b: u16,
-}
-
-/// A request as the control frame that carries it.
-pub fn control(request: &Request) -> Frame {
-    Frame::Control(serde_json::to_vec(request).expect("a request serializes"))
-}
-
-/// What the daemon says that rtty acts on: a response or an event, tagged as tutti's are; anything
-/// else is `Other`.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Message {
-    /// An answer, with the `req` of the request answered, if it had one.
-    Ok {
-        #[serde(default)]
-        req: Option<u64>,
-    },
-    /// A refusal, with the `req` of the request refused, if it had one.
-    Error {
-        message: String,
-        #[serde(default)]
-        req: Option<u64>,
-    },
-    /// Before each snapshot of a stream: the scrollback rows up to its screen come between this
-    /// and it, as logical lines, after `skipped` rows the stream leaves out.
-    PaneRows { pane: u64, skipped: u64 },
-    /// The pane's program exited: the last of its stream, after its last output, or from the
-    /// session, of a pane the connection does not stream.
-    PaneExited { pane: u64, code: i32 },
-    /// The whole session as a watcher sees it.
-    Snapshot { panes: Vec<Watched> },
-    /// The answer to an attach: the session's workspaces, and the wire the daemon speaks (0 from
-    /// one older than the field).
-    Attached {
-        #[serde(default)]
-        wire_rev: u32,
-        workspaces: Vec<Workspace>,
-    },
-    /// The session's tabs or panes changed: all of them, as they are now.
-    LayoutChanged { workspaces: Vec<Workspace> },
-    /// The answer to `View`: the session's workspaces.
-    View { workspaces: Vec<Workspace> },
-    /// The answer to a split or a run: the pane it made.
-    PaneCreated { id: u64 },
-    /// Someone other than an attached client focused `pane`: a script, a notch app's click.
-    PaneFocused { pane: u64 },
-    /// A focus move from `pane`, which this view shows focused, found no pane `toward` in tutti's
-    /// tab.
-    FocusEdge { pane: u64, toward: Direction },
-    /// A resize from `pane` found no split of tutti's on `toward`'s axis.
-    ResizeEdge { pane: u64, toward: Direction },
-    /// A note landed in the session's notification history.
-    Noted { note: Note },
-    #[serde(other)]
-    Other,
-}
-
 /// A host frame rtty reads: a `tutti proxy`'s hello.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -277,80 +132,6 @@ enum HostFrame {
     },
     #[serde(other)]
     Other,
-}
-
-/// One pane of a watched session's snapshot, as much of it as rtty reads.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct Watched {
-    pub id: u64,
-    /// What tutti calls the pane: the command it was run with, or the name it was given.
-    pub title: String,
-    /// Its agent's state: `unknown`, `working`, `blocked`, `done` or `idle`.
-    pub state: String,
-    /// The directory the daemon last saw the pane's program in.
-    #[serde(default)]
-    pub cwd: Option<PathBuf>,
-    /// A permission request its agent holds for an answer.
-    #[serde(default)]
-    pub approval: Option<IgnoredAny>,
-    /// The program's OSC 1337 user vars.
-    #[serde(default)]
-    pub user_vars: BTreeMap<String, String>,
-}
-
-/// A workspace of the session, as much of it as rtty reads: its tabs.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct Workspace {
-    pub id: u64,
-    pub tabs: Vec<Tab>,
-}
-
-/// A tab: whether it is the session's current one, its split tree (`None` until its first pane
-/// exists), and the pane tutti last focused in it.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct Tab {
-    pub id: u64,
-    pub active: bool,
-    pub layout: Option<Tree>,
-    pub active_pane: Option<u64>,
-}
-
-/// A tab's split tree, as tutti writes its `Layout`: the first child left of the second or above
-/// it, `ratio` the first's share.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub enum Tree {
-    Leaf(u64),
-    Split { direction: Axis, ratio: f32, first: Box<Tree>, second: Box<Tree> },
-}
-
-/// A split's axis: side by side (`Horizontal`), or one above the other.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
-
-/// A note of the session's notification history, as much of it as rtty reads: the pane, what it
-/// was called then, what kind of note (`bell`, `notify`, `blocked`, `done`), and what came with it.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct Note {
-    pub pane: u64,
-    pub pane_title: String,
-    pub kind: String,
-    pub title: Option<String>,
-    pub body: Option<String>,
-}
-
-/// Where the daemon of tutti session `session` listens: `$XDG_RUNTIME_DIR/tutti/<session>.sock`,
-/// else `/tmp/tutti-<uid>/<session>.sock`, as tutti finds it.
-pub fn socket_path(session: &str) -> PathBuf {
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("tutti"),
-        // SAFETY: getuid has no preconditions and cannot fail.
-        _ => PathBuf::from(format!("/tmp/tutti-{}", unsafe { libc::getuid() })),
-    };
-    dir.join(format!("{session}.sock"))
 }
 
 /// The session whose daemon listens on `socket`, by name.
@@ -450,7 +231,7 @@ enum Asked {
 /// at most one in flight while `pending`), and the trace of what it reads.
 pub struct Shows {
     pub term: Arc<Mutex<Terminal>>,
-    pub watched: Arc<Mutex<Watched>>,
+    pub watched: Arc<Mutex<Option<Watched>>>,
     pub notices: UnboundedSender<Notice>,
     pub pending: Arc<AtomicBool>,
     pub trace: Option<Trace>,
@@ -471,10 +252,10 @@ struct Stream {
 impl Session {
     /// Opens the session whose daemon `stream` reaches, listening on `socket` (or a `tutti
     /// proxy`'s, whose hello comes first and must speak `HOST_REV`): attached as a quiet view that
-    /// hands moves on, and watching. The daemon's answer must speak `WIRE_REV`, and gives the
-    /// session's tabs; its first snapshot names the panes. The daemon has `OPENING` to answer,
-    /// however it trickles, so this runs off the main thread. The session, its tabs, and what it
-    /// tells the window from then on.
+    /// hands moves on, and watching. The daemon's answer names its wire's revision and floor, which
+    /// must work with rtty's (`Wire::accepts`), and gives the session's tabs; its first snapshot
+    /// names the panes. The daemon has `OPENING` to answer, however it trickles, so this runs off
+    /// the main thread. The session, its tabs, and what it tells the window from then on.
     pub fn open(
         mut stream: UnixStream,
         socket: PathBuf,
@@ -482,8 +263,8 @@ impl Session {
         let deadline = Instant::now() + OPENING;
         let terminal = Some(TERMINAL.into());
         let attach = Request::Attach { terminal, handoff: true, view: true, quiet: true };
-        stream
-            .write_all(&[control(&attach).encode(), control(&Request::Watch).encode()].concat())?;
+        let watch = control(None, &Request::Watch);
+        stream.write_all(&[control(None, &attach).encode(), watch.encode()].concat())?;
         let (mut buf, mut tabs, mut first) = (VecDeque::new(), None, None);
         // A change told before the answer may be older than the answer's layout or newer: the
         // daemon registers the client, takes the layout, then queues its answer, and tells every
@@ -515,33 +296,31 @@ impl Session {
                 Frame::Control(json) => json,
                 _ => return Err(io::Error::other("tutti sent a pane frame to a quiet attach")),
             };
-            match serde_json::from_slice(&json) {
-                Ok(Message::Attached { wire_rev, .. }) if wire_rev != WIRE_REV => {
-                    let update = match wire_rev < WIRE_REV {
-                        true => "update tutti and restart its daemon (`tutti server stop`)",
-                        false => "update rtty",
-                    };
-                    return Err(io::Error::other(format!(
-                        "tutti's daemon speaks wire revision {wire_rev}, rtty {WIRE_REV}: {update}"
-                    )));
-                }
-                Ok(Message::Attached { workspaces, .. }) => {
+            // The answer's revision and floor, read on their own: a daemon too new for the rest
+            // of its answer to read here is refused as one, not waited out.
+            if let Some((rev, floor)) = attached_wire(&json) {
+                WIRE.accepts("rtty", rev, floor).map_err(io::Error::other)?;
+            }
+            match said(&json) {
+                Some(Said::Answer(_, Response::Attached { workspaces, .. })) => {
                     tabs = Some(workspaces);
                     if early {
-                        stream.write_all(&control(&Request::View).encode())?;
+                        stream.write_all(&control(None, &Request::View).encode())?;
                         asked = true;
                     }
                 }
-                Ok(Message::View { workspaces }) if asked => {
+                Some(Said::Answer(_, Response::View { workspaces })) if asked => {
                     (tabs, asked) = (Some(workspaces), false)
                 }
                 // One after the answer is newer than it.
-                Ok(Message::LayoutChanged { workspaces }) => match tabs {
+                Some(Said::Event(Tells::LayoutChanged { workspaces })) => match tabs {
                     None => early = true,
                     Some(_) => tabs = Some(workspaces),
                 },
-                Ok(Message::Snapshot { panes }) => first = Some(panes),
-                Ok(Message::Error { message, .. }) => return Err(io::Error::other(message)),
+                Some(Said::Event(Tells::Snapshot { panes, .. })) => first = Some(panes),
+                Some(Said::Answer(_, Response::Error { message })) => {
+                    return Err(io::Error::other(message));
+                }
                 _ => {}
             }
         }
@@ -573,7 +352,7 @@ impl Session {
     /// Asks the daemon, behind what was asked before; its answer, when it is one rtty acts on,
     /// comes as `Told`.
     pub fn ask(&self, request: &Request) {
-        self.send(control(request));
+        self.send(control(None, request));
     }
 
     fn shown(&self) -> std::sync::MutexGuard<'_, Shown> {
@@ -591,9 +370,8 @@ impl Session {
         if shown.streams.contains_key(&pane) {
             return Err(io::Error::other("it shows in this window already"));
         }
-        let now = shown.latest.iter().find(|watched| watched.id == pane).cloned();
-        let now = now.unwrap_or_else(|| Watched { id: pane, ..Watched::default() });
-        tell_of(&shows.notices, &Watched::default(), &now);
+        let now = shown.latest.iter().find(|watched| watched.id.0 == pane).cloned();
+        tell_of(&shows.notices, None, now.as_ref());
         *shows.watched.lock().expect("a pane panicked") = now;
         let size = (rows, cols);
         let stream = Stream { shows, size, rows: None, started: false, ended: false };
@@ -626,7 +404,7 @@ impl Session {
         shown.asked.retain(|_, asked| *asked != Asked::Attach(pane));
         if !shown.detaching(pane) {
             let req = shown.asking(Asked::Detach(pane));
-            self.ask(&Request::PaneDetach { pane, req });
+            self.send(control(Some(req), &Request::PaneDetach { pane: PaneId(pane) }));
         }
         self.ask(&shown.sizes());
     }
@@ -659,68 +437,70 @@ fn listen(
     let ended = loop {
         let json = match next(&mut input, &mut buf) {
             Ok(Some(Frame::Control(json))) => json,
-            Ok(Some(Frame::Raw { pane, mut bytes })) => {
-                while let Ok(Some((Frame::Raw { pane: same, bytes: more }, used))) =
+            Ok(Some(Frame::PaneRaw { pane, mut bytes })) => {
+                while let Ok(Some((Frame::PaneRaw { pane: same, bytes: more }, used))) =
                     Frame::decode(buf.make_contiguous())
                     && same == pane
                 {
                     bytes.extend(more);
                     buf.drain(..used);
                 }
-                shown().raw(pane, &bytes, replies);
+                shown().raw(pane.0, &bytes, replies);
                 continue;
             }
-            Ok(Some(Frame::Snapshot { pane, rows, cols, bytes })) => {
-                shown().screen(pane, rows, cols, &bytes);
+            Ok(Some(Frame::PaneSnapshot(PaneData { pane, rows, cols, bytes, .. }))) => {
+                shown().screen(pane.0, rows, cols, &bytes);
                 continue;
             }
+            // What changed of a pane's screen goes to attached clients that are not quiet.
+            Ok(Some(Frame::PaneDelta(_))) => break "tutti sent a quiet attach a delta".to_owned(),
             Ok(Some(Frame::Input { .. } | Frame::Host(_))) => continue,
             Ok(None) => break CLOSED.to_owned(),
             Err(err) => break format!("tutti's connection broke: {err}"),
         };
-        let told = match serde_json::from_slice(&json) {
-            Ok(Message::PaneRows { pane, skipped }) => {
-                if let Some(stream) = shown().streamed(pane) {
-                    stream.rows = Some(left_out(pane, skipped));
+        let told = match said(&json) {
+            Some(Said::Event(Tells::PaneRows { pane, skipped, .. })) => {
+                if let Some(stream) = shown().streamed(pane.0) {
+                    stream.rows = Some(left_out(pane.0, skipped));
                 }
                 continue;
             }
             // One before the stream's first snapshot is the session's, of an exit before the
             // stream began, which tells it itself after that snapshot.
-            Ok(Message::PaneExited { pane, code }) => {
+            Some(Said::Event(Tells::PaneExited { pane, code })) => {
                 let mut shown = shown();
-                if shown.streams.get(&pane).is_some_and(|stream| stream.started) {
-                    shown.end(pane, &format!("Exited with code {code}"));
+                if shown.streams.get(&pane.0).is_some_and(|stream| stream.started) {
+                    shown.end(pane.0, &format!("Exited with code {code}"));
                 }
                 continue;
             }
-            Ok(Message::Ok { req: Some(req) }) => {
+            Some(Said::Answer(Some(req), Response::Ok)) => {
                 shown().answered(req, None, replies);
                 continue;
             }
-            Ok(Message::Error { message, req: Some(req) }) => {
+            Some(Said::Answer(Some(req), Response::Error { message })) => {
                 shown().answered(req, Some(&message), replies);
                 continue;
             }
-            Ok(Message::Snapshot { panes }) => {
+            Some(Said::Event(Tells::Snapshot { panes, .. })) => {
                 shown().snapshot(panes);
                 continue;
             }
-            Ok(Message::Noted { note }) => {
+            Some(Said::Event(Tells::Noted { note })) => {
                 shown().noted(note);
                 continue;
             }
-            Ok(Message::LayoutChanged { workspaces }) => Told::Layout(workspaces),
-            Ok(Message::PaneFocused { pane }) => Told::Focused(pane),
-            Ok(Message::FocusEdge { pane, toward }) => Told::FocusEdge(pane, toward),
-            Ok(Message::ResizeEdge { pane, toward }) => Told::ResizeEdge(pane, toward),
-            Ok(Message::PaneCreated { id }) => Told::Created(id),
-            Ok(Message::Error { message, .. }) => Told::Refused(message),
-            Ok(_) => continue,
-            Err(err) => {
-                crate::note(&format!("tutti said what rtty cannot read: {err}"));
-                continue;
+            Some(Said::Event(Tells::LayoutChanged { workspaces })) => Told::Layout(workspaces),
+            Some(Said::Event(Tells::PaneFocused { pane })) => Told::Focused(pane.0),
+            Some(Said::Event(Tells::FocusEdge { pane, toward })) => {
+                Told::FocusEdge(pane.0, toward.into())
             }
+            Some(Said::Event(Tells::ResizeEdge { pane, toward })) => {
+                Told::ResizeEdge(pane.0, toward.into())
+            }
+            Some(Said::Answer(_, Response::PaneCreated { id })) => Told::Created(id.0),
+            Some(Said::Answer(_, Response::Error { message })) => Told::Refused(message),
+            _ => continue,
         };
         let _ = tell.unbounded_send(told);
     };
@@ -764,9 +544,16 @@ impl Shown {
     fn attach(&mut self, pane: u64, out: &mpsc::Sender<Frame>) {
         let Some(&Stream { size: (rows, cols), .. }) = self.streams.get(&pane) else { return };
         let (req, history) = (self.asking(Asked::Attach(pane)), SCROLLBACK as u32);
-        let attach =
-            Request::PaneAttach { pane, rows, cols, history, inline: true, keys: true, req };
-        let _ = out.send(control(&attach));
+        let attach = Request::PaneAttach {
+            pane: PaneId(pane),
+            rows,
+            cols,
+            history,
+            inline: true,
+            since: None,
+            keys: true,
+        };
+        let _ = out.send(control(Some(req), &attach));
     }
 
     /// The daemon answered request `req`, refusing it as `why` says if it did. A detach's answer is
@@ -784,7 +571,7 @@ impl Shown {
     fn sizes(&self) -> Request {
         let dims = |(&pane, stream): (&u64, &Stream)| {
             let (rows, cols) = stream.size;
-            Dims { pane, rows, cols }
+            PaneDims { pane: PaneId(pane), rows, cols }
         };
         Request::ViewSizes { panes: self.streams.iter().map(dims).collect() }
     }
@@ -828,10 +615,10 @@ impl Shown {
     /// The session's snapshot: each pane streamed hears what changed of it.
     fn snapshot(&mut self, panes: Vec<Watched>) {
         for (id, stream) in &self.streams {
-            let Some(now) = panes.iter().find(|pane| pane.id == *id) else { continue };
+            let Some(now) = panes.iter().find(|pane| pane.id.0 == *id) else { continue };
             let mut watched = stream.shows.watched.lock().expect("a pane panicked");
-            let was = mem::replace(&mut *watched, now.clone());
-            tell_of(&stream.shows.notices, &was, now);
+            let was = watched.replace(now.clone());
+            tell_of(&stream.shows.notices, was.as_ref(), Some(now));
         }
         self.latest = panes;
     }
@@ -839,12 +626,14 @@ impl Shown {
     /// A note: an agent blocked or done is a notification, from the pane that shows it. A bell's
     /// and a program's own notification came raw in its stream.
     fn noted(&self, note: Note) {
-        let said = match note.kind.as_str() {
-            "blocked" | "done" => note.kind.clone(),
-            _ => return,
+        let said = match note.kind {
+            NoteKind::Blocked => "blocked",
+            NoteKind::Done => "done",
+            NoteKind::Bell | NoteKind::Notify => return,
         };
-        let Some(stream) = self.streams.get(&note.pane) else { return };
-        let (title, body) = (note.title.unwrap_or(note.pane_title), note.body.unwrap_or(said));
+        let Some(stream) = self.streams.get(&note.pane.0) else { return };
+        let title = note.title.unwrap_or(note.pane_title);
+        let body = note.body.unwrap_or_else(|| said.to_owned());
         let event = Event::Notification { title: Some(title), body: Some(body) };
         let _ = stream.shows.notices.unbounded_send(Notice::Event(event));
     }
@@ -874,7 +663,7 @@ impl Stream {
                     if let Some(trace) = trace {
                         trace.log('>', &bytes);
                     }
-                    let _ = replies.send(Frame::Input { pane, bytes });
+                    let _ = replies.send(Frame::Input { pane: PaneId(pane), bytes });
                 }
                 (Event::Reply(_), None) => {}
                 (event, _) => {
@@ -888,38 +677,42 @@ impl Stream {
     }
 }
 
-/// The session's snapshot said `was` of a pane and now says `now`, which its notices hear. A new
-/// title or directory renames it; its agent working shows on the tab's pill, going on, or paused
-/// while blocked or holding a permission request; and the program's claim on the keys
-/// (`TUTTI_KEYS`, which tutti's editor plugins set) is the window's to honour as `RTTY_KEYS` is.
-/// The pane's own OSC 9, 777, 9;4 and 7501 come raw, and its agent's turn ending as a note: none of
-/// them is told again here.
-fn tell_of(notices: &UnboundedSender<Notice>, was: &Watched, now: &Watched) {
+/// The session's snapshot said `was` of a pane and now says `now` (nothing, of a pane it has not
+/// named), which its notices hear. A new title or directory renames it; its agent working shows on
+/// the tab's pill, going on, or paused while blocked or holding a permission request; and the
+/// program's claim on the keys (`TUTTI_KEYS`, which tutti's editor plugins set) is the window's to
+/// honour as `RTTY_KEYS` is. The pane's own OSC 9, 777, 9;4 and 7501 come raw, and its agent's turn
+/// ending as a note: none of them is told again here.
+fn tell_of(notices: &UnboundedSender<Notice>, was: Option<&Watched>, now: Option<&Watched>) {
+    fn named(watched: Option<&Watched>) -> (&str, Option<&str>) {
+        watched.map(|pane| (pane.title.as_str(), pane.cwd.as_deref())).unwrap_or_default()
+    }
+    fn keys(watched: Option<&Watched>) -> Option<&String> {
+        watched.and_then(|pane| pane.user_vars.get("TUTTI_KEYS"))
+    }
     let tell = |event| {
         let _ = notices.unbounded_send(Notice::Event(event));
     };
-    if (&was.title, &was.cwd) != (&now.title, &now.cwd) {
-        tell(Event::Title(now.title.clone()));
+    if named(was) != named(now) {
+        tell(Event::Title(named(now).0.to_owned()));
     }
-    let pill = |watched: &Watched| match watched.state.as_str() {
-        _ if watched.approval.is_some() => 4,
-        "blocked" => 4,
-        "working" => 3,
+    let pill = |watched: Option<&Watched>| match watched {
+        Some(pane) if pane.approval.is_some() || pane.state == AgentState::Blocked => 4,
+        Some(pane) if pane.state == AgentState::Working => 3,
         _ => 0,
     };
     if pill(was) != pill(now) {
         tell(Event::Progress { state: pill(now), percent: None });
     }
-    let keys = |watched: &Watched| watched.user_vars.get("TUTTI_KEYS").cloned();
     if keys(was) != keys(now) {
-        let value = keys(now).unwrap_or_default();
+        let value = keys(now).cloned().unwrap_or_default();
         tell(Event::UserVar { name: "TUTTI_KEYS".into(), value });
     }
 }
 
 /// A scheme's colours as tutti takes a terminal's.
 pub fn colors(scheme: &Scheme) -> HostColors {
-    let wide = |Rgb(r, g, b): Rgb| Rgb16 {
+    let wide = |Rgb(r, g, b): Rgb| tutti_wire::Rgb {
         r: u16::from(r) * 257,
         g: u16::from(g) * 257,
         b: u16::from(b) * 257,
@@ -997,68 +790,15 @@ mod tests {
     use crate::scheme::{find, load};
     use rtty_vt::input;
     use serde_json::json;
+    use tutti_wire::{WIRE_FLOOR, WIRE_REV};
 
-    #[test]
-    fn frames_round_trip_and_wait_for_their_last_byte() {
-        let frames = [
-            Frame::Control(br#"{"type":"watch"}"#.to_vec()),
-            Frame::Snapshot { pane: 7, rows: 24, cols: 80, bytes: b"\x1b[H\x1b[2Jhi".to_vec() },
-            Frame::Input { pane: 3, bytes: b"ls\r".to_vec() },
-            Frame::Raw { pane: u64::MAX, bytes: Vec::new() },
-            Frame::Host(br#"{"type":"hello","rev":2}"#.to_vec()),
-        ];
-        for frame in frames {
-            let encoded = frame.encode();
-            for cut in 0..encoded.len() {
-                assert!(
-                    Frame::decode(&encoded[..cut]).unwrap().is_none(),
-                    "{frame:?} cut at {cut}"
-                );
-            }
-            let twice = [encoded.clone(), encoded.clone()].concat();
-            let (decoded, used) = Frame::decode(&twice).unwrap().unwrap();
-            assert_eq!((decoded, used), (frame, encoded.len()));
-        }
-    }
-
-    /// The bytes tutti's own encoder writes for a snapshot: the pane, the rows, the columns, a
-    /// sequence number, then the screen. A delta, written the same way, never goes to a quiet
-    /// attach, and reads as an error.
-    #[test]
-    fn a_snapshot_reads_as_tutti_writes_it() {
-        let written = |kind: u8| {
-            let mut wire = 1u32.to_le_bytes().to_vec();
-            wire.push(kind);
-            wire.extend(9u64.to_le_bytes());
-            wire.extend(30u16.to_le_bytes());
-            wire.extend(100u16.to_le_bytes());
-            wire.extend(5u32.to_le_bytes());
-            wire.extend(b"screen");
-            let len = wire.len() as u32 - 4;
-            wire[..4].copy_from_slice(&len.to_le_bytes());
-            Frame::decode(&wire)
-        };
-        let snapshot = Frame::Snapshot { pane: 9, rows: 30, cols: 100, bytes: b"screen".to_vec() };
-        assert_eq!(written(2).unwrap().unwrap(), (snapshot, 27));
-        assert!(written(3).unwrap_err().to_string().contains("kind 3"));
-    }
-
-    #[test]
-    fn a_frame_rtty_cannot_read_is_an_error() {
-        let unknown = [&5u32.to_le_bytes()[..], &[7], &[0; 4]].concat();
-        assert!(Frame::decode(&unknown).unwrap_err().to_string().contains("kind 7"));
-        let short = [&5u32.to_le_bytes()[..], &[5], &[0; 4]].concat();
-        assert!(Frame::decode(&short).unwrap_err().to_string().contains("cut short"));
-        assert!(Frame::decode(&0u32.to_le_bytes()).is_err());
-        assert!(Frame::decode(&u32::MAX.to_le_bytes()).is_err());
-    }
-
-    /// A session as tutti's daemon writes its answer to an attach, at wire revision `rev`: one
-    /// workspace, 5, its tab 1 the session's current one, panes 2 and 3 side by side, 3 focused
-    /// there, and its tab 4 with no pane yet.
-    fn attached_json(rev: u32) -> String {
+    /// A session as tutti's daemon writes its answer to an attach, at wire revision `rev` and, from
+    /// a daemon that names one, with floor `floor`: one workspace, 5, its tab 1 the session's
+    /// current one, panes 2 and 3 side by side, 3 focused there, and its tab 4 with no pane yet.
+    fn attached_json(rev: u32, floor: Option<u32>) -> String {
+        let floor = floor.map(|floor| format!(r#""wire_floor":{floor},"#)).unwrap_or_default();
         format!(
-            r#"{{"type":"attached","session":"s","wire_rev":{rev},"restorable":null,"notes":[],
+            r#"{{"type":"attached","session":"s","wire_rev":{rev},{floor}"restorable":null,"notes":[],
               "workspaces":[{{"id":5,"name":"w","dir":"/w","branch":null,"changes":null,
                 "changed_files":[],"stale":false,"parent":null,"tabs":[
                 {{"id":1,"name":"one","active":true,"active_pane":3,"panes":[],
@@ -1069,159 +809,20 @@ mod tests {
         )
     }
 
-    /// The tabs `attached_json` writes.
-    fn attached_tabs() -> Vec<Workspace> {
-        let split = Tree::Split {
-            direction: Axis::Horizontal,
-            ratio: 0.25,
-            first: Box::new(Tree::Leaf(2)),
-            second: Box::new(Tree::Leaf(3)),
-        };
-        let one = Tab { id: 1, active: true, layout: Some(split), active_pane: Some(3) };
-        let two = Tab { id: 4, active: false, layout: None, active_pane: None };
-        vec![Workspace { id: 5, tabs: vec![one, two] }]
+    /// The answer of a daemon at rtty's own revision and floor.
+    fn answer() -> String {
+        attached_json(WIRE_REV, Some(WIRE_FLOOR))
     }
 
-    /// Requests as tutti's daemon reads them (its `protocol.rs`), responses and events as it
-    /// writes them, unknown fields and types passed over.
-    #[test]
-    fn requests_and_messages_read_as_tuttis() {
-        let json = |request| match control(&request) {
-            Frame::Control(json) => String::from_utf8(json).unwrap(),
-            frame => panic!("{frame:?}"),
-        };
-        assert_eq!(json(Request::Watch), r#"{"type":"watch"}"#);
-        assert_eq!(json(Request::View), r#"{"type":"view"}"#);
-        assert_eq!(
-            json(Request::Attach {
-                terminal: Some("local.rtty".into()),
-                handoff: true,
-                view: true,
-                quiet: true
-            }),
-            r#"{"type":"attach","terminal":"local.rtty","handoff":true,"view":true,"quiet":true}"#
-        );
-        assert_eq!(
-            json(Request::PaneAttach {
-                pane: 3,
-                rows: 24,
-                cols: 80,
-                history: 10_000,
-                inline: true,
-                keys: true,
-                req: 3
-            }),
-            r#"{"type":"pane_attach","pane":3,"rows":24,"cols":80,"history":10000,"inline":true,"keys":true,"req":3}"#
-        );
-        assert_eq!(
-            json(Request::ViewSizes { panes: vec![Dims { pane: 3, rows: 30, cols: 100 }] }),
-            r#"{"type":"view_sizes","panes":[{"pane":3,"rows":30,"cols":100}]}"#
-        );
-        let white = Rgb16 { r: 0xffff, g: 0xffff, b: 0xffff };
-        let black = Rgb16 { r: 0, g: 0, b: 0 };
-        let colors = HostColors { fg: black, bg: white, cursor: None, dark: false };
-        assert_eq!(
-            json(Request::HostColors(colors)),
-            r#"{"type":"host_colors","fg":{"r":0,"g":0,"b":0},"bg":{"r":65535,"g":65535,"b":65535},"cursor":null,"dark":false}"#
-        );
-        assert_eq!(json(Request::PaneKill { pane: 4 }), r#"{"type":"pane_kill","pane":4}"#);
-        assert_eq!(
-            json(Request::PaneDetach { pane: 4, req: 4 }),
-            r#"{"type":"pane_detach","pane":4,"req":4}"#
-        );
-        assert_eq!(
-            json(Request::PaneFocus { pane: 4, seen: true }),
-            r#"{"type":"pane_focus","pane":4,"seen":true}"#
-        );
-        assert_eq!(
-            json(Request::PaneSplit { pane: 4, direction: Axis::Vertical }),
-            r#"{"type":"pane_split","pane":4,"direction":"vertical"}"#
-        );
-        assert_eq!(
-            json(Request::PaneResizeToward { from: Some(4), toward: Direction::Left, delta: 0.05 }),
-            r#"{"type":"pane_resize_toward","from":4,"toward":"left","delta":0.05}"#
-        );
-        assert_eq!(
-            json(Request::PaneSplitRatio { a: 2, b: 3, ratio: 0.5 }),
-            r#"{"type":"pane_split_ratio","a":2,"b":3,"ratio":0.5}"#
-        );
-        assert_eq!(
-            json(Request::TabNew { workspace: Some(5) }),
-            r#"{"type":"tab_new","workspace":5}"#
-        );
-        assert_eq!(json(Request::TabSelect { id: 4 }), r#"{"type":"tab_select","id":4}"#);
-        assert_eq!(
-            json(Request::PaneRun { tab: None, cmd: vec!["/bin/zsh".into()] }),
-            r#"{"type":"pane_run","tab":null,"cmd":["/bin/zsh"]}"#
-        );
+    /// A layout with one workspace, 5, and no tab, as the event or the answer `kind`.
+    fn no_tabs(kind: &str) -> String {
+        format!(r#"{{"type":"{kind}","workspaces":[{{"id":5,"name":"w","dir":"/w","tabs":[]}}]}}"#)
+    }
 
-        let read = |json: &str| serde_json::from_str::<Message>(json).unwrap();
-        assert!(matches!(read(r#"{"req":2,"type":"ok"}"#), Message::Ok { req: Some(2) }));
-        assert!(matches!(read(r#"{"type":"ok"}"#), Message::Ok { req: None }));
-        let rows = read(r#"{"type":"pane_rows","pane":3,"epoch":7,"top":40,"skipped":2}"#);
-        assert!(matches!(rows, Message::PaneRows { pane: 3, skipped: 2 }));
-        assert!(matches!(
-            read(r#"{"type":"pane_exited","pane":3,"code":-1}"#),
-            Message::PaneExited { pane: 3, code: -1 }
-        ));
-        let refused = read(r#"{"req":3,"type":"error","message":"no pane 3"}"#);
-        assert!(matches!(refused, Message::Error { req: Some(3), .. }), "{refused:?}");
-        let refused = read(r#"{"type":"error","message":"no tab 9"}"#);
-        assert!(matches!(refused, Message::Error { req: None, .. }), "{refused:?}");
-        assert!(matches!(
-            read(r#"{"type":"state_changed","pane":3,"from":"idle","to":"working"}"#),
-            Message::Other
-        ));
-        let Message::Attached { wire_rev: 19, workspaces } = read(&attached_json(19)) else {
-            panic!()
-        };
-        assert_eq!(workspaces, attached_tabs());
-        let old = read(r#"{"type":"attached","session":"s","workspaces":[]}"#);
-        assert!(matches!(old, Message::Attached { wire_rev: 0, .. }), "{old:?}");
-        assert!(matches!(
-            read(r#"{"type":"layout_changed","workspaces":[]}"#),
-            Message::LayoutChanged { .. }
-        ));
-        let view = read(r#"{"req":3,"type":"view","workspaces":[{"id":5,"name":"w","tabs":[]}]}"#);
-        assert!(matches!(&view, Message::View { workspaces } if workspaces[0].id == 5), "{view:?}");
-        assert!(matches!(
-            read(r#"{"req":4,"type":"pane_created","id":9}"#),
-            Message::PaneCreated { id: 9 }
-        ));
-        assert!(matches!(
-            read(r#"{"type":"pane_focused","pane":9}"#),
-            Message::PaneFocused { pane: 9 }
-        ));
-        assert!(matches!(
-            read(r#"{"type":"focus_edge","pane":9,"toward":"up"}"#),
-            Message::FocusEdge { pane: 9, toward: Direction::Up }
-        ));
-        assert!(matches!(
-            read(r#"{"type":"resize_edge","pane":9,"toward":"right"}"#),
-            Message::ResizeEdge { pane: 9, toward: Direction::Right }
-        ));
-        let noted = read(
-            r#"{"type":"noted","note":{"id":4,"time":1,"pane":3,"pane_title":"claude",
-                "workspace":"w","kind":"blocked","title":null,"body":"Bash · ls","read":false}}"#,
-        );
-        let Message::Noted { note } = noted else { panic!("{noted:?}") };
-        assert_eq!((note.pane, note.kind.as_str(), note.title), (3, "blocked", None));
-        let snapshot = read(
-            r#"{"type":"snapshot","session":"s","wire_rev":19,"attached_terminal":null,"panes":[
-                {"id":3,"workspace":"w","dir":"/w","tab":"t","title":"claude","agent":"claude",
-                 "state":"blocked","source":"hook","exited":null,"focused":false,
-                 "user_vars":{"TUTTI_KEYS":"pane"},"cwd":"/w/src",
-                 "approval":{"id":1,"tool":"Bash","summary":"ls"},"issue":null}]}"#,
-        );
-        let Message::Snapshot { panes } = snapshot else { panic!("{snapshot:?}") };
-        let pane = &panes[0];
-        assert_eq!((pane.id, pane.title.as_str(), pane.state.as_str()), (3, "claude", "blocked"));
-        assert_eq!(pane.cwd.as_deref(), Some(Path::new("/w/src")));
-        assert!(pane.approval.is_some());
-        assert_eq!(pane.user_vars["TUTTI_KEYS"], "pane");
-
-        let hello = r#"{"type":"hello","rev":2,"startup":{"first_run":null,"notice":null}}"#;
-        assert!(matches!(serde_json::from_str(hello).unwrap(), HostFrame::Hello { rev: 2 }));
+    /// The session's tabs by id, workspace by workspace.
+    fn ids(workspaces: &[Workspace]) -> Vec<(u64, Vec<u64>)> {
+        let tabs = |workspace: &Workspace| workspace.tabs.iter().map(|tab| tab.id.0).collect();
+        workspaces.iter().map(|workspace| (workspace.id.0, tabs(workspace))).collect()
     }
 
     /// The daemon's end of a connection, played by a test.
@@ -1277,14 +878,20 @@ mod tests {
         }
 
         fn raw(&mut self, pane: u64, bytes: &[u8]) {
-            self.send(Frame::Raw { pane, bytes: bytes.to_vec() });
+            self.send(Frame::PaneRaw { pane: PaneId(pane), bytes: bytes.to_vec() });
+        }
+
+        /// A snapshot of `pane`'s screen at `rows`×`cols`.
+        fn snapshot(&mut self, pane: u64, rows: u16, cols: u16, bytes: Vec<u8>) {
+            let pane = PaneId(pane);
+            self.send(Frame::PaneSnapshot(PaneData { pane, rows, cols, seq: 0, bytes }));
         }
 
         /// Stream `pane` at 4×40, its screen what a terminal makes of `screen`.
         fn screen(&mut self, pane: u64, screen: &[u8]) {
             let mut shell = Terminal::new(4, 40, 100);
             shell.advance(screen);
-            self.send(Frame::Snapshot { pane, rows: 4, cols: 40, bytes: shell.snapshot() });
+            self.snapshot(pane, 4, 40, shell.snapshot());
         }
     }
 
@@ -1307,7 +914,7 @@ mod tests {
     /// A session opened as the daemon answers it, panes 2 and 3 idle, and the daemon's end.
     fn session() -> (Arc<Session>, UnboundedReceiver<Told>, Daemon) {
         let (open, mut daemon) = opening();
-        daemon.say(&attached_json(WIRE_REV));
+        daemon.say(&answer());
         daemon.watched(&[(2, "idle", ""), (3, "idle", "")]);
         let (session, _, told) = open.join().unwrap().unwrap();
         (Arc::new(session), told, daemon)
@@ -1328,7 +935,7 @@ mod tests {
         let req = asked["req"].take().as_u64().expect("a req");
         let attach = json!({
             "type": "pane_attach", "pane": pane, "rows": 4, "cols": 40, "history": 10000,
-            "inline": true, "keys": true, "req": null
+            "inline": true, "since": null, "keys": true, "req": null
         });
         assert_eq!(asked, attach);
         req
@@ -1394,21 +1001,25 @@ mod tests {
     #[test]
     fn a_session_opens_on_its_answer_and_its_first_snapshot() {
         let (open, mut daemon) = opening();
-        daemon.say(&attached_json(WIRE_REV));
+        daemon.say(&answer());
         thread::sleep(Duration::from_millis(50));
         assert!(!open.is_finished(), "the opening waits for the first snapshot");
         daemon.watched(&[(3, "working", r#""TUTTI_KEYS":"pane""#)]);
         let (session, tabs, _told) = open.join().unwrap().unwrap();
-        assert_eq!(tabs, attached_tabs());
+        assert_eq!(ids(&tabs), [(5, vec![1, 4])]);
+        let one = &tabs[0].tabs[0];
+        let split = one.layout.as_ref().map(Tree::panes);
+        assert_eq!((split, one.active_pane), (Some(vec![PaneId(2), PaneId(3)]), Some(PaneId(3))));
         assert_eq!(name(&session.socket), "s");
-        session.ask(&Request::PaneKill { pane: 9 });
+        session.ask(&Request::PaneKill { pane: PaneId(9) });
         assert_eq!(daemon.asked()["type"], "pane_kill", "no view asked: nothing came before");
         let (notices, mut heard) = unbounded();
         let shows = shows(notices);
         let watched = shows.watched.clone();
         session.stream(3, 4, 40, shows).unwrap();
         assert_eq!(daemon.asked()["type"], "pane_attach");
-        assert_eq!(watched.lock().unwrap().state, "working");
+        let state = watched.lock().unwrap().as_ref().map(|pane| pane.state);
+        assert_eq!(state, Some(AgentState::Working));
         let seen =
             received(&mut heard, |notice| matches!(notice, Notice::Event(Event::UserVar { .. })));
         assert!(
@@ -1418,11 +1029,11 @@ mod tests {
         assert!(matches!(seen[1], Notice::Event(Event::Progress { state: 3, .. })), "{seen:?}");
 
         let (open, mut daemon) = opening();
-        daemon.say(&attached_json(WIRE_REV));
-        daemon.say(r#"{"type":"layout_changed","workspaces":[{"id":5,"tabs":[]}]}"#);
+        daemon.say(&answer());
+        daemon.say(&no_tabs("layout_changed"));
         daemon.watched(&[]);
         let (_, tabs, _) = open.join().unwrap().unwrap();
-        assert_eq!(tabs, [Workspace { id: 5, tabs: Vec::new() }]);
+        assert_eq!(ids(&tabs), [(5, vec![])]);
     }
 
     /// A layout change told before the answer may be newer than the answer's layout (the daemon
@@ -1431,31 +1042,32 @@ mod tests {
     #[test]
     fn a_change_told_before_the_answer_is_settled_by_the_view() {
         let (open, mut daemon) = opening();
-        let newer = r#"{"type":"layout_changed","workspaces":[{"id":5,"tabs":[]}]}"#;
-        daemon.say(newer);
-        daemon.say(&attached_json(WIRE_REV));
+        daemon.say(&no_tabs("layout_changed"));
+        daemon.say(&answer());
         daemon.watched(&[]);
         thread::sleep(Duration::from_millis(100));
         assert!(!open.is_finished(), "the opening waits for the view");
         assert_eq!(daemon.asked(), json!({"type": "view"}));
-        daemon.say(&newer.replace("layout_changed", "view"));
+        daemon.say(&no_tabs("view"));
         let (_, tabs, _) = open.join().unwrap().unwrap();
-        assert_eq!(tabs, [Workspace { id: 5, tabs: Vec::new() }]);
+        assert_eq!(ids(&tabs), [(5, vec![])]);
     }
 
     /// What the session says after its opening: its layout, a focus from elsewhere, the edges it
     /// hands on, the pane a request made, and a refusal go to the window, in order; a frame of a
-    /// pane not streamed, and the exit of one, go nowhere; and its end says so.
+    /// pane not streamed, the exit of one, an event rtty has no use for and one of a newer daemon's
+    /// that it does not know go nowhere; and its end says so.
     #[test]
     fn a_sessions_events_go_to_the_window() {
         let (session, mut told, mut daemon) = session();
-        session.ask(&Request::PaneSplit { pane: 3, direction: Axis::Horizontal });
+        session.ask(&Request::PaneSplit { pane: PaneId(3), direction: Axis::Horizontal });
         assert_eq!(daemon.asked()["type"], "pane_split");
-        daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: b"x".to_vec() });
+        daemon.snapshot(3, 4, 40, b"x".to_vec());
         daemon.say(r#"{"type":"pane_exited","pane":3,"code":0}"#);
         daemon.say(r#"{"type":"layout_changed","workspaces":[]}"#);
         daemon.say(r#"{"req":7,"type":"pane_created","id":8}"#);
         daemon.say(r#"{"type":"state_changed","pane":3,"from":"idle","to":"working"}"#);
+        daemon.say(r#"{"type":"pane_teleported","pane":3,"to":9}"#);
         daemon.say(r#"{"type":"pane_focused","pane":2}"#);
         daemon.say(r#"{"type":"focus_edge","pane":3,"toward":"down"}"#);
         daemon.say(r#"{"type":"resize_edge","pane":3,"toward":"left"}"#);
@@ -1578,12 +1190,15 @@ mod tests {
         let (pane, _notices, mut daemon) = attached();
         daemon.rows(3);
         let asking = b"\x1b[H\x1b[2J\x1b[6n$ ".to_vec();
-        daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: asking });
+        daemon.snapshot(3, 4, 40, asking);
         daemon.raw(3, b"\x1b[c");
-        let Some(Frame::Input { pane: 3, bytes }) = daemon.heard() else { panic!("no reply") };
+        let Some(Frame::Input { pane: PaneId(3), bytes }) = daemon.heard() else {
+            panic!("no reply")
+        };
         assert!(bytes.starts_with(b"\x1b[?") && bytes.ends_with(b"c"), "{bytes:?}");
         pane.write(b"ls\r".to_vec());
-        assert_eq!(daemon.heard(), Some(Frame::Input { pane: 3, bytes: b"ls\r".to_vec() }));
+        let typed = Frame::Input { pane: PaneId(3), bytes: b"ls\r".to_vec() };
+        assert_eq!(daemon.heard(), Some(typed));
     }
 
     /// A resize moves the pane's vote, and the terminal takes the size of the snapshot that
@@ -1594,7 +1209,7 @@ mod tests {
         let mut shell = Terminal::new(4, 40, 100);
         shell.advance(b"$ ls\r\nfile\r\n$ ");
         daemon.rows(3);
-        daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: shell.snapshot() });
+        daemon.snapshot(3, 4, 40, shell.snapshot());
         wait_until(&pane.term, "showed the screen", |term| term.contents().contains("file"));
         pane.resize(6, 30, (8, 16));
         let vote = json!({"type": "view_sizes", "panes": [{"pane": 3, "rows": 6, "cols": 30}]});
@@ -1603,7 +1218,7 @@ mod tests {
         shell.resize(6, 30);
         daemon.say(r#"{"type":"ok"}"#);
         daemon.rows(3);
-        daemon.send(Frame::Snapshot { pane: 3, rows: 6, cols: 30, bytes: shell.snapshot() });
+        daemon.snapshot(3, 6, 30, shell.snapshot());
         wait_until(&pane.term, "resized", |term| term.size() == (6, 30));
         let term = pane.lock();
         assert_eq!(term.contents(), shell.contents());
@@ -1629,7 +1244,7 @@ mod tests {
             let mut shell = Terminal::new(4, 40, 100);
             shell.advance(lines(0..3).as_bytes());
             daemon.rows(3);
-            daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: shell.snapshot() });
+            daemon.snapshot(3, 4, 40, shell.snapshot());
             daemon.raw(3, stale.as_bytes());
             // The pane goes on to print what the stream skips.
             shell.advance(lines(3..printed).as_bytes());
@@ -1638,8 +1253,8 @@ mod tests {
                 r#"{{"type":"pane_rows","pane":3,"epoch":1,"top":{top},"skipped":{from}}}"#
             );
             daemon.say(&rows);
-            daemon.send(Frame::Raw { pane: 3, bytes: shell.history(from as u64, top) });
-            daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: shell.snapshot() });
+            daemon.raw(3, &shell.history(from as u64, top));
+            daemon.snapshot(3, 4, 40, shell.snapshot());
             let last = format!("L{}", printed - 1);
             wait_until(&pane.term, "resynced", |term| term.contents().contains(&last));
             let term = pane.lock();
@@ -1737,7 +1352,7 @@ mod tests {
             .say(&format!(r#"{{"type":"pane_rows","pane":3,"epoch":1,"top":{top},"skipped":0}}"#));
         daemon.raw(3, &shell.history(0, top));
         daemon.raw(2, b" cd");
-        daemon.send(Frame::Snapshot { pane: 3, rows: 4, cols: 40, bytes: shell.snapshot() });
+        daemon.snapshot(3, 4, 40, shell.snapshot());
         wait_until(&three.term, "resynced", |term| term.contents() == shell.contents());
         assert_eq!(scrollback(&three.lock()), names(0..4));
         wait_until(&two.term, "went on", |term| term.contents() == "two$ pwd cd");
@@ -1856,8 +1471,10 @@ mod tests {
         assert_eq!(escape(&term), b"\x1b");
     }
 
-    /// An opening refused: another wire revision, another proxy's host frames, the daemon's own
-    /// refusal, a pane frame where a quiet attach is sent none, or the daemon gone. Each says why.
+    /// An opening refused: a daemon older than rtty's floor, or one whose floor rtty is older than
+    /// (though the rest of its answer no longer reads here), another proxy's host frames, the
+    /// daemon's own refusal, a pane frame where a quiet attach is sent none, or the daemon gone.
+    /// Each says why.
     #[test]
     fn an_opening_says_why_it_was_refused() {
         let refused = |play: &dyn Fn(&mut Daemon)| {
@@ -1866,10 +1483,18 @@ mod tests {
             drop(daemon);
             open.join().unwrap().err().expect("refused").to_string()
         };
-        let old = refused(&|daemon| daemon.say(&attached_json(18)));
-        assert!(old.contains("wire revision 18, rtty 19: update tutti"), "{old}");
-        let newer = refused(&|daemon| daemon.say(&attached_json(20)));
-        assert!(newer.ends_with("update rtty"), "{newer}");
+        let (below, rtty) = (WIRE_FLOOR - 1, format!("rtty {WIRE_REV} (floor {WIRE_FLOOR})"));
+        let old = refused(&|daemon| daemon.say(&attached_json(below, None)));
+        let said = format!("wire revision {below} (floor {below}), {rtty}: update tutti");
+        assert!(old.contains(&said), "{old}");
+        let above = WIRE_REV + 1;
+        let newer = refused(&|daemon| daemon.say(&attached_json(above + 2, Some(above))));
+        let said = format!("wire revision {} (floor {above}), {rtty}: update rtty", above + 2);
+        assert!(newer.ends_with(&said), "{newer}");
+        let unread = format!(
+            r#"{{"type":"attached","wire_rev":{above},"wire_floor":{above},"workspaces":7}}"#
+        );
+        assert!(refused(&|daemon| daemon.say(&unread)).ends_with("update rtty"));
         let loud = refused(&|daemon| daemon.screen(2, b"$ "));
         assert_eq!(loud, "tutti sent a pane frame to a quiet attach");
         let none =
@@ -1886,9 +1511,46 @@ mod tests {
         // A proxy that speaks this revision says hello first, and the opening goes on.
         let (open, mut daemon) = opening();
         daemon.send(Frame::Host(br#"{"type":"hello","rev":2,"startup":{}}"#.into()));
-        daemon.say(&attached_json(WIRE_REV));
+        daemon.say(&answer());
         daemon.watched(&[]);
         assert!(open.join().unwrap().is_ok());
+    }
+
+    /// A daemon at another revision opens while each end is at or above the other's floor: one
+    /// from before floors at rtty's floor, whose floor is its revision, and a newer one whose
+    /// floor rtty's revision meets.
+    #[test]
+    fn a_session_opens_on_a_daemon_older_or_newer_within_the_floors() {
+        for (rev, floor) in [(WIRE_FLOOR, None), (WIRE_REV + 3, Some(WIRE_REV))] {
+            let (open, mut daemon) = opening();
+            daemon.say(&attached_json(rev, floor));
+            daemon.watched(&[]);
+            let (_, tabs, _) = open.join().unwrap().unwrap();
+            assert_eq!(ids(&tabs), [(5, vec![1, 4])], "{rev} with floor {floor:?}");
+        }
+    }
+
+    /// A frame that is none, and a delta, which goes to clients that are not quiet, end the
+    /// connection, which says so.
+    #[test]
+    fn what_is_no_frame_of_a_quiet_attachs_ends_the_connection() {
+        let ended = |sent: &[u8]| {
+            let (_session, mut told, mut daemon) = session();
+            daemon.stream.write_all(sent).unwrap();
+            match received(&mut told, |said| matches!(said, Told::Ended(_))).pop() {
+                Some(Told::Ended(why)) => why,
+                said => panic!("{said:?}"),
+            }
+        };
+        let unknown = [&5u32.to_le_bytes()[..], &[7], &[0; 4]].concat();
+        let why = ended(&unknown);
+        assert_eq!(
+            why,
+            "tutti's connection broke: tutti sent what is no frame: unknown frame kind 0x7"
+        );
+        let (pane, rows, cols) = (PaneId(3), 4, 40);
+        let delta = Frame::PaneDelta(PaneData { pane, rows, cols, seq: 1, bytes: Vec::new() });
+        assert_eq!(ended(&delta.encode()), "tutti sent a quiet attach a delta");
     }
 
     /// A daemon that answers a byte at a time and never a whole frame has 3 s in all, not 3 s a
@@ -1918,7 +1580,7 @@ mod tests {
     #[test]
     fn what_was_said_before_a_hang_up_is_read() {
         let (ours, mut theirs) = UnixStream::pair().unwrap();
-        theirs.write_all(&control(&Request::Watch).encode()).unwrap();
+        theirs.write_all(&control(None, &Request::Watch).encode()).unwrap();
         drop(theirs);
         let (mut buf, deadline) = (VecDeque::new(), Instant::now() + OPENING);
         let said = next(&mut Until(&ours, deadline), &mut buf).unwrap();

@@ -1035,10 +1035,11 @@ impl TerminalWindow {
 
     /// The session of the window that is one, and tutti's id for its pane `id`; or what to say
     /// instead.
-    fn mirrored(&self, id: PaneId) -> Result<(Arc<tutti::Session>, u64), String> {
+    fn mirrored(&self, id: PaneId) -> Result<(Arc<tutti::Session>, tutti::PaneId), String> {
         let mirror = self.mirror.as_ref().ok_or("not a tutti session's window")?;
         let session = mirror.session.clone().ok_or(UNANSWERED)?;
-        let pane = mirror.panes.iter().find(|(_, shown)| **shown == id).map(|(pane, _)| *pane);
+        let shown = mirror.panes.iter().find(|(_, shown)| **shown == id);
+        let pane = shown.map(|(pane, _)| tutti::PaneId(*pane));
         Ok((session, pane.ok_or(format!("pane {id} shows no pane of the session"))?))
     }
 
@@ -1047,7 +1048,7 @@ impl TerminalWindow {
     fn ask_tutti(
         &mut self,
         id: PaneId,
-        request: impl FnOnce(u64) -> tutti::Request,
+        request: impl FnOnce(tutti::PaneId) -> tutti::Request,
         cx: &mut Context<Self>,
     ) {
         match self.mirrored(id) {
@@ -1185,7 +1186,7 @@ impl TerminalWindow {
                 (&mirror.session, mirror.tabs.get(self.tabs.index()))
             && mirror.selected.replace(tab) != Some(tab)
         {
-            session.ask(&tutti::Request::TabSelect { id: tab });
+            session.ask(&tutti::Request::TabSelect { id: tutti::TabId(tab) });
         }
     }
 
@@ -1802,10 +1803,12 @@ impl TerminalWindow {
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(mirror) = &self.mirror {
             let Some(session) = mirror.session.clone() else { return self.say(UNANSWERED, cx) };
-            let workspace = mirror.tabs.get(self.tabs.index()).map(|(workspace, _)| *workspace);
+            let shown = mirror.tabs.get(self.tabs.index());
+            let workspace = shown.map(|(workspace, _)| tutti::WorkspaceId(*workspace));
             session.ask(&tutti::Request::TabNew { workspace });
             let cmd = vec![CommandBuilder::new_default_prog().get_shell()];
-            return session.ask(&tutti::Request::PaneRun { tab: None, cmd });
+            let run = tutti::Request::PaneRun { tab: None, cmd, ephemeral: false, sandbox: None };
+            return session.ask(&run);
         }
         let shell = Program::Command(shell(self.focused_cwd(cx)));
         if let Err(err) = self.open_tab(shell, window, cx) {
@@ -1930,7 +1933,7 @@ impl TerminalWindow {
             let delta = layout.and_then(|layout| layout.share(from, direction, amount, area));
             let toward = |pane| tutti::Request::PaneResizeToward {
                 from: Some(pane),
-                toward: direction,
+                toward: direction.into(),
                 delta: delta.unwrap_or(0.),
             };
             return self.ask_tutti(from, toward, cx);

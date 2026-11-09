@@ -103,7 +103,7 @@ enum Source {
     Tutti {
         pane: u64,
         session: Arc<tutti::Session>,
-        watched: Arc<Mutex<tutti::Watched>>,
+        watched: Arc<Mutex<Option<tutti::Watched>>>,
         trace: Option<Trace>,
     },
     /// Nothing: the terminal says why.
@@ -280,7 +280,7 @@ impl Pane {
                 if let Some(trace) = trace {
                     trace.log('>', &bytes);
                 }
-                session.send(tutti::Frame::Input { pane: *pane, bytes });
+                session.send(tutti::Frame::Input { pane: tutti::PaneId(*pane), bytes });
             }
             Source::Held => {}
         }
@@ -288,9 +288,9 @@ impl Pane {
 
     /// Asks a tutti pane's daemon what `request` makes of the pane's id, behind what was typed so
     /// far; nothing for a pane of rtty's own.
-    fn ask(&self, request: impl FnOnce(u64) -> tutti::Request) {
+    fn ask(&self, request: impl FnOnce(tutti::PaneId) -> tutti::Request) {
         if let Source::Tutti { pane, session, .. } = &self.source {
-            session.ask(&request(*pane));
+            session.ask(&request(tutti::PaneId(*pane)));
         }
     }
 
@@ -362,11 +362,13 @@ impl Pane {
         self.ask(|pane| tutti::Request::PaneFocus { pane, seen });
     }
 
-    /// What tutti calls a tutti pane, and the directory its daemon last saw the pane's program in.
+    /// What tutti calls a tutti pane, and the directory its daemon last saw the pane's program in,
+    /// once the session's snapshots name the pane.
     pub fn tutti_name(&self) -> Option<(String, Option<PathBuf>)> {
         let Source::Tutti { watched, .. } = &self.source else { return None };
         let watched = watched.lock().expect("a reader panicked");
-        Some((watched.title.clone(), watched.cwd.clone()))
+        let watched = watched.as_ref()?;
+        Some((watched.title.clone(), watched.cwd.as_ref().map(PathBuf::from)))
     }
 
     /// A tutti pane's session, by its daemon's socket, and the pane's id there.

@@ -32,6 +32,12 @@ rtty-vt = { path = "vt" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# tutti's wire, for the windows that show a tutti session: where its daemon listens, its frames,
+# requests, responses and events, and whether its revision and rtty's work together. To build
+# against a local tutti, patch it in a `.cargo/config.toml`, which git ignores:
+#   [patch."https://github.com/mcginleyr1/tutti"]
+#   tutti-wire = { path = "<a tutti checkout>/crates/tutti-wire" }
+tutti-wire = { git = "https://github.com/mcginleyr1/tutti", rev = "cc02db531bf52438462fe9e952bb4d4bd443a2ae" }
 
 # Two of gpui's dependencies at their last releases, each with a line that will become an error in
 # a future Rust: patches/README.md.
