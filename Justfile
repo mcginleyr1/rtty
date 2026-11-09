@@ -50,3 +50,22 @@ icon:
         sips -z $((size * 2)) $((size * 2)) target/icon/icon-1024.png --out target/icon/rtty.iconset/icon_${size}x${size}@2x.png >/dev/null
     done
     iconutil -c icns target/icon/rtty.iconset -o bundle/rtty.icns
+
+# The full merge gate, for both Cargo workspaces (rtty here, rtty-vt in vt/): check, test, clippy -D warnings, fmt --check
+verify:
+    cargo check --all-targets
+    cargo test
+    cargo clippy --all-targets -- -D warnings
+    cargo fmt --check
+    cargo check --manifest-path vt/Cargo.toml --all-targets
+    cargo test --manifest-path vt/Cargo.toml
+    cargo clippy --manifest-path vt/Cargo.toml --all-targets -- -D warnings
+    cargo fmt --manifest-path vt/Cargo.toml --check
+
+# rtty-vt's long campaigns, which verify leaves out: its ignored tests, in release (about a minute); vt/README.md says what they are
+campaigns:
+    cargo test --manifest-path vt/Cargo.toml --release -- --ignored
+
+# The scripted UI suite: drives the real rtty in windows, so it needs an awake display
+ui:
+    cargo test --test ui -- --ignored --test-threads=1
