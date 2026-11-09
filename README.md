@@ -34,8 +34,8 @@ pair in two ways:
 tutti's TUI is the primary front end for a tutti session. It is the complete one: the agent
 sidebar, the approvals popup and diffs are there, and new agent features land there first. rtty's
 native tutti panes, the second way above, are a plain view of a session: rtty draws the panes,
-shows an agent's state on the tab's pill, and notifies when an agent is blocked or done. No
-further agent UI is planned in rtty.
+shows on the tab's pill when an agent is working, paused while it is blocked or holds a permission
+request, and notifies when an agent is blocked or done. No further agent UI is planned in rtty.
 
 Both run the same engine, rtty-vt, so a program behaves the same in either. More in
 [docs/tutti.md](docs/tutti.md).

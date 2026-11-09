@@ -25,9 +25,10 @@ tutti's TUI is the primary front end for a tutti session. It is the complete one
 sidebar, the approvals popup and diffs are there, and new agent features land there first.
 
 rtty's native tutti panes ([tutti panes](#tutti-panes)) are a plain view of a session: rtty draws
-the panes, shows an agent's state on the tab's pill (working, or paused while it is blocked or
-holds a permission request), and notifies when an agent is blocked or done. No further agent UI is
-planned in rtty.
+the panes, shows on the tab's pill when an agent is working, paused while it is blocked or holds a
+permission request, and notifies when an agent is blocked or done. The pill shows no other state
+of an agent: done and idle draw no line. No further agent UI is planned in rtty
+([Not planned](#not-planned)).
 
 ## tutti's TUI in an rtty pane
 
@@ -127,7 +128,11 @@ tutti's. The session's daemon going closes the window, as a last pane closing do
 
 ## Not yet
 
-Not yet: sessions on other machines (`tutti --host`), prompt marks in the scrollback a pane had
-before rtty attached, and tutti's chrome (the sidebar, approvals, notes, the changes panel): the
-TUI stays the place for those ([The two front ends](#the-two-front-ends)). Sessions on other
-machines are on the [roadmap](status.md#roadmap).
+Not yet: sessions on other machines (`tutti --host`), which are on the
+[roadmap](status.md#roadmap), and prompt marks in the scrollback a pane had before rtty attached.
+
+## Not planned
+
+tutti's chrome (the sidebar, approvals, notes, the changes panel) is not planned in rtty: the TUI
+stays the place for those. It is agent UI, rtty's tutti panes stay a plain view of a session, and
+no further agent UI is built in rtty ([The two front ends](#the-two-front-ends)).
