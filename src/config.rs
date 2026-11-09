@@ -85,6 +85,7 @@ pub enum Action {
     SplitRight,
     SplitDown,
     ClosePane,
+    KillPane,
     UndoClose,
     LastPane,
     Zoom,
@@ -133,6 +134,7 @@ impl Action {
             "split-right" => SplitRight,
             "split-down" => SplitDown,
             "close-pane" => ClosePane,
+            "kill-pane" => KillPane,
             "undo-close" => UndoClose,
             "last-pane" => LastPane,
             "zoom" => Zoom,
@@ -729,7 +731,7 @@ mod tests {
     fn every_action_has_its_name() {
         let names = "focus-left focus-right focus-up focus-down resize-left resize-right \
                      resize-up resize-down swap-left swap-right swap-up swap-down split-right \
-                     split-down close-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
+                     split-down close-pane kill-pane undo-close last-pane zoom new-tab next-tab prev-tab tab-1 tab-9 \
                      new-window find copy copy-last-output paste font-bigger font-smaller font-reset \
                      prompt-prev prompt-next clear-scrollback quick-select quick-open copy-mode reload-config \
                      open-config quit close-window minimize zoom-window about hide hide-others \

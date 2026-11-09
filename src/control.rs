@@ -48,6 +48,15 @@ pub enum Request {
     Zoom {
         pane: Option<PaneId>,
     },
+    /// Shows pane `pane` of the tutti daemon listening on `socket` as a pane: split from `from`
+    /// that way, else in a new tab. The socket is the asker's to find, in its own environment, as
+    /// tutti finds it.
+    TuttiAttach {
+        socket: PathBuf,
+        pane: u64,
+        from: Option<PaneId>,
+        split: Option<Direction>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

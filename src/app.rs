@@ -26,7 +26,7 @@ use portable_pty::CommandBuilder;
 
 use crate::config::Action;
 use crate::view::Settings;
-use crate::window::TerminalWindow;
+use crate::window::{Program, TerminalWindow};
 
 actions!(rtty, [About, Hide, HideOthers, ShowAll, ToggleSecureInput]);
 
@@ -304,7 +304,8 @@ pub fn hotkey_pressed(cx: &mut App) {
         }
         (false, None) => {
             cx.activate(true);
-            if let Err(err) = crate::window::open(CommandBuilder::new_default_prog(), cx) {
+            let shell = Program::Command(CommandBuilder::new_default_prog());
+            if let Err(err) = crate::window::open(shell, cx) {
                 eprintln!("rtty: {err}");
             }
         }

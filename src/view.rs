@@ -678,6 +678,10 @@ impl PaneView {
         self.pane.reads_password()
     }
 
+    pub fn kill(&mut self) {
+        self.pane.kill()
+    }
+
     pub fn progress(&self) -> Option<Progress> {
         self.progress
     }

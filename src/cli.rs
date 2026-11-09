@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use crate::control::{self, Request, Response};
 use crate::layout::{Amount, Direction, PaneId};
+use crate::tutti;
 
 pub const USAGE: &str = "usage: rtty cli list
        rtty cli pane focus <pane>
@@ -15,13 +16,17 @@ pub const USAGE: &str = "usage: rtty cli list
                             [--from <pane>]
        rtty cli pane split <pane> <right|down|left|up>
        rtty cli pane zoom [<pane>]
---from defaults to $RTTY_PANE, else the focused pane; --amount to 0.05 of the split.";
+       rtty cli tutti attach <pane> [-s <session>] [--split <right|down|left|up> | --tab]
+                             [--from <pane>]
+--from defaults to $RTTY_PANE, else the focused pane; --amount to 0.05 of the split; -s to
+$TUTTI_SESSION, else tutti; tutti attach opens a new tab unless told to split.";
 
 /// tutti's step for Alt+h/j/k/l and `pane resize`.
 pub const RESIZE_STEP: Amount = Amount::Fraction(0.05);
 
 pub fn run(args: Vec<String>) -> ExitCode {
-    let request = match parse(&args, std::env::var("RTTY_PANE").ok()) {
+    let (here, session) = (std::env::var("RTTY_PANE").ok(), std::env::var("TUTTI_SESSION").ok());
+    let request = match parse(&args, here, session) {
         Ok(request) => request,
         Err(message) => {
             eprintln!("rtty cli: {message}\n{USAGE}");
@@ -64,22 +69,32 @@ fn report(response: Response) -> ExitCode {
     }
 }
 
-/// The request `args` (after `cli`) make; `here` is `$RTTY_PANE`, the default `--from`.
-fn parse(args: &[String], here: Option<String>) -> Result<Request, String> {
+/// The request `args` (after `cli`) make; `here` is `$RTTY_PANE`, the default `--from`, and
+/// `tutti_session` `$TUTTI_SESSION`, the default `-s`.
+fn parse(
+    args: &[String],
+    here: Option<String>,
+    tutti_session: Option<String>,
+) -> Result<Request, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let (command, rest) = match words.as_slice() {
         ["list"] => return Ok(Request::List),
         ["pane", command, rest @ ..] => (*command, rest),
-        _ => return Err("expected `list` or `pane <command>`".into()),
+        ["tutti", "attach", rest @ ..] => ("tutti attach", rest),
+        _ => return Err("expected `list`, `pane <command>` or `tutti attach`".into()),
     };
     let mut positional = Vec::new();
     let (mut direction, mut from, mut amount, mut wrap) = (None, None, None, false);
+    let (mut session, mut split, mut tab) = (None, None, false);
     let mut rest = rest.iter();
     while let Some(&word) = rest.next() {
         let mut value = || rest.next().copied().ok_or(format!("{word} needs a value"));
         match word {
             "--direction" => direction = Some(direction_named(value()?)?),
             "--from" => from = Some(pane_numbered(value()?)?),
+            "-s" | "--session" => session = Some(value()?.to_owned()),
+            "--split" => split = Some(direction_named(value()?)?),
+            "--tab" => tab = true,
             "--amount" | "--cells" if amount.is_some() => {
                 return Err("--amount and --cells: one or the other".into());
             }
@@ -130,6 +145,16 @@ fn parse(args: &[String], here: Option<String>) -> Result<Request, String> {
             only(2, Request::Split { pane: pane(0)?, direction: direction_named(direction)? })
         }
         ("zoom", _) => only(1, Request::Zoom { pane: pane(0)?.or(here) }),
+        ("tutti attach", _) if split.is_some() && tab => {
+            Err("--split and --tab: one or the other".into())
+        }
+        ("tutti attach", _) => {
+            let pane = positional.first().ok_or("tutti attach needs a pane")?;
+            let pane = pane.parse().map_err(|_| format!("{pane}: not a pane number"))?;
+            let session = session.or(tutti_session).unwrap_or_else(|| "tutti".into());
+            let socket = tutti::socket_path(&session);
+            only(1, Request::TuttiAttach { socket, pane, from, split })
+        }
         _ => Err(format!("unknown command pane {command}")),
     }
 }
@@ -151,7 +176,7 @@ mod tests {
 
     fn parsed(line: &str, here: Option<&str>) -> Result<Request, String> {
         let args: Vec<String> = line.split_whitespace().map(String::from).collect();
-        parse(&args, here.map(String::from))
+        parse(&args, here.map(String::from), None)
     }
 
     #[test]
@@ -194,6 +219,50 @@ mod tests {
         );
         assert_eq!(parsed("pane zoom", Some("7")), Ok(Request::Zoom { pane: Some(7) }));
         assert_eq!(parsed("pane zoom 2", Some("7")), Ok(Request::Zoom { pane: Some(2) }));
+    }
+
+    /// `tutti attach` names a pane as tutti does, in the session `-s` names, else the one tutti
+    /// would take (`$TUTTI_SESSION`, else `tutti`), and finds that session's socket here.
+    #[test]
+    fn tutti_attach_names_a_pane_of_a_session() {
+        let attach = |line: &str, session: Option<&str>| {
+            let args: Vec<String> = line.split_whitespace().map(String::from).collect();
+            parse(&args, Some("7".into()), session.map(String::from))
+        };
+        let socket = tutti::socket_path;
+        assert_eq!(
+            attach("tutti attach 3 -s work --split down", Some("outer")),
+            Ok(Request::TuttiAttach {
+                socket: socket("work"),
+                pane: 3,
+                from: Some(7),
+                split: Some(Direction::Down)
+            })
+        );
+        assert_eq!(
+            attach("tutti attach 3", Some("outer")),
+            Ok(Request::TuttiAttach {
+                socket: socket("outer"),
+                pane: 3,
+                from: Some(7),
+                split: None
+            })
+        );
+        assert_eq!(
+            attach("tutti attach --tab 3 --from 2", None),
+            Ok(Request::TuttiAttach {
+                socket: socket("tutti"),
+                pane: 3,
+                from: Some(2),
+                split: None
+            })
+        );
+        let error = |line| attach(line, None).unwrap_err();
+        assert!(error("tutti attach").contains("needs a pane"));
+        assert!(error("tutti attach x").contains("x: not a pane number"));
+        assert!(error("tutti attach 3 4").contains("unexpected 4"));
+        assert!(error("tutti attach 3 --tab --split left").contains("one or the other"));
+        assert!(error("tutti attach 3 -s").contains("-s needs a value"));
     }
 
     #[test]

@@ -58,9 +58,9 @@ use view::{
     PreviousPrompt, QuickOpen, QuickSelect, Settings,
 };
 use window::{
-    ClosePane, CloseWindow, LastPane, Minimize, MoveFocus, NewTab, NewWindow, NextTab, OpenConfig,
-    PreviousTab, ResizePane, SelectTab, SplitDown, SplitRight, SwapPane, ToggleZoom, UndoClose,
-    ZoomWindow,
+    ClosePane, CloseWindow, KillPane, LastPane, Minimize, MoveFocus, NewTab, NewWindow, NextTab,
+    OpenConfig, PreviousTab, Program, ResizePane, SelectTab, SplitDown, SplitRight, SwapPane,
+    ToggleZoom, UndoClose, ZoomWindow,
 };
 
 actions!(rtty, [Quit, IncreaseFontSize, DecreaseFontSize, ResetFontSize, ReloadConfig]);
@@ -76,7 +76,7 @@ impl Global for Seen {}
 
 const USAGE: &str = "usage: rtty [--config FILE] [--font NAME] [--size PT] [--ligatures on|off] \
                      [--stats] [--trace FILE] [--script FILE [--activate] [--restore]]
-                     [-e PROGRAM [ARGS...]]
+                     [--tutti SESSION:PANE | -e PROGRAM [ARGS...]]
        rtty cli COMMAND...       ask the rtty this pane runs in (`rtty cli` lists the commands)
        rtty --smoke              run a command through the pty pipeline headless and check it
        rtty --bench [COMMAND]    time the pty -> parser -> grid pipeline (default: seq)";
@@ -151,6 +151,8 @@ struct Options {
     /// A scripted launch restores and saves the layout only when asked to, as a normal one does.
     restore: bool,
     command: Option<Vec<String>>,
+    /// The first pane shows this pane of this tutti session instead.
+    tutti: Option<(String, u64)>,
 }
 
 fn main() -> ExitCode {
@@ -192,6 +194,15 @@ fn main() -> ExitCode {
                 Some("off") => options.overrides.ligatures = Some(false),
                 _ => return usage_error("--ligatures needs on or off"),
             },
+            "--tutti" => {
+                let at = args.next();
+                let at = at.as_deref().and_then(|at| at.rsplit_once(':'));
+                match at.and_then(|(session, pane)| Some((session.to_owned(), pane.parse().ok()?)))
+                {
+                    Some(at) => options.tutti = Some(at),
+                    None => return usage_error("--tutti needs a session and a pane: SESSION:PANE"),
+                }
+            }
             "-e" => match args.next() {
                 Some(program) => {
                     options.command = Some(std::iter::once(program).chain(args.by_ref()).collect())
@@ -235,6 +246,7 @@ pub fn gpui_action(action: Action, chord: &str) -> (Box<dyn gpui::Action>, Optio
         Action::SplitRight => (Box::new(SplitRight), None),
         Action::SplitDown => (Box::new(SplitDown), None),
         Action::ClosePane => (Box::new(ClosePane { keystroke }), None),
+        Action::KillPane => (Box::new(KillPane), None),
         Action::UndoClose => (Box::new(UndoClose), None),
         Action::LastPane => (Box::new(LastPane { keystroke }), None),
         Action::Zoom => (Box::new(ToggleZoom), None),
@@ -482,6 +494,15 @@ fn run(options: Options) -> Result<(), String> {
     if options.restore && script.is_none() {
         return Err("--restore goes with --script".into());
     }
+    // The login shell, the layout's to restore in its place.
+    let shell = options.tutti.is_none() && options.command.is_none();
+    let first = match (options.tutti, options.command) {
+        (Some(_), Some(_)) => return Err("--tutti and -e: one or the other".into()),
+        (Some((session, pane)), None) => {
+            Program::Tutti { socket: tutti::socket_path(&session), pane }
+        }
+        (None, command) => Program::Command(self::command(command)),
+    };
     let activate = script.is_none() || options.activate;
     let (open_links, clipboard) = (script.is_none(), script.is_none());
     let trace = options
@@ -496,7 +517,7 @@ fn run(options: Options) -> Result<(), String> {
     let requests =
         control::listen(&socket).map_err(|err| format!("{}: {err}", socket.display()))?;
     // One rtty at a time keeps the layout: the first to lock it.
-    let keeps_layout = options.command.is_none() && (script.is_none() || options.restore);
+    let keeps_layout = shell && (script.is_none() || options.restore);
     let layout = session::path().filter(|_| keeps_layout).filter(|path| {
         let taken = session::take(path);
         match &taken {
@@ -691,10 +712,7 @@ fn run(options: Options) -> Result<(), String> {
             window::restore(saved, cx).map_err(|err| note(&format!("not restored: {err}"))).ok()
         });
         let restored: Vec<_> = restored.collect();
-        let window = restored
-            .first()
-            .copied()
-            .map_or_else(|| window::open(command(options.command), cx), Ok);
+        let window = restored.first().copied().map_or_else(|| window::open(first, cx), Ok);
         let window = window.unwrap_or_else(|err| {
             eprintln!("rtty: {err}");
             std::process::exit(1);

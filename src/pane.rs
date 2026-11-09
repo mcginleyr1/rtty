@@ -322,6 +322,15 @@ impl Pane {
         }
     }
 
+    /// Ends the program: hangs up on the child, or asks a tutti pane's daemon to kill the pane.
+    /// The exit follows, as any exit does.
+    pub fn kill(&mut self) {
+        if let Source::Pty { killer, .. } = &mut self.source {
+            let _ = killer.kill();
+        }
+        self.ask(|pane| tutti::Request::PaneKill { pane });
+    }
+
     /// The pane took the keyboard: a tutti pane becomes its session's active one, and a finished
     /// agent's there counts as seen.
     pub fn focused(&self) {

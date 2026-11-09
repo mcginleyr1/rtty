@@ -49,6 +49,7 @@ use crate::progress::{self, Progress, State};
 use crate::scheme::Scheme;
 use crate::session;
 use crate::tabbar::{self, Bar, Hit};
+use crate::tutti;
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
 actions!(
@@ -65,7 +66,8 @@ actions!(
         OpenConfig,
         CloseWindow,
         Minimize,
-        ZoomWindow
+        ZoomWindow,
+        KillPane
     ]
 );
 
@@ -417,13 +419,20 @@ pub fn quit(cx: &mut App) {
     crate::app::asking(asker.window_id(), answer, cx)
 }
 
-/// Opens a window with `command` running in its one pane: the first window centered, later ones
+/// What a new pane shows: a program on a pty of its own, or pane `pane` of the tutti daemon
+/// listening on `socket` (`Pane::attach`).
+pub enum Program {
+    Command(CommandBuilder),
+    Tutti { socket: PathBuf, pane: u64 },
+}
+
+/// Opens a window with `program` in its one pane: the first window centered, later ones
 /// cascading from the active one.
-pub fn open(command: CommandBuilder, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
+pub fn open(program: Program, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
     let id = next_pane_id();
     let first = cx.windows().is_empty();
     let bounds = first.then(|| Bounds::centered(None, size(px(900.), px(600.)), cx));
-    open_tabs(Tabs::new(id), vec![(id, command)], bounds, None, cx)
+    open_tabs(Tabs::new(id), vec![(id, program)], bounds, None, cx)
 }
 
 /// Opens a window as `saved` has it: its frame on its display (centered on the main one, that
@@ -436,7 +445,8 @@ pub fn restore(
 ) -> Result<WindowHandle<TerminalWindow>, String> {
     let ids: Vec<PaneId> = saved.tabs.all().iter().flat_map(|tab| tab.panes()).collect();
     NEXT_PANE.fetch_max(ids.iter().max().map_or(1, |id| id + 1), Ordering::Relaxed);
-    let commands = ids.into_iter().map(|id| (id, shell(saved.cwds.get(&id).cloned()))).collect();
+    let shells =
+        ids.into_iter().map(|id| (id, Program::Command(shell(saved.cwds.get(&id).cloned()))));
     // The middle of its titlebar on its display, where it can be taken hold of.
     let frame = saved.frame;
     let titlebar = point(frame.origin.x + frame.size.width / 2., frame.origin.y);
@@ -449,22 +459,22 @@ pub fn restore(
         Some(display) => (saved.frame, Some(display.id())),
         None => (Bounds::centered(None, saved.frame.size, cx), None),
     };
-    open_tabs(saved.tabs, commands, Some(frame), display, cx)
+    open_tabs(saved.tabs, shells.collect(), Some(frame), display, cx)
 }
 
-/// Opens a window holding `tabs`, each pane running its command, at `bounds` on `display`; with
+/// Opens a window holding `tabs`, each pane showing its program, at `bounds` on `display`; with
 /// no bounds, cascading from the active window.
 fn open_tabs(
     tabs: Tabs,
-    commands: Vec<(PaneId, CommandBuilder)>,
+    programs: Vec<(PaneId, Program)>,
     bounds: Option<Bounds<Pixels>>,
     display_id: Option<DisplayId>,
     cx: &mut App,
 ) -> Result<WindowHandle<TerminalWindow>, String> {
     let scheme = cx.global::<Settings>().theme.for_appearance(cx.window_appearance()).clone();
     let (rows, cols) = START_SIZE;
-    let panes = commands.into_iter().map(|(id, command)| {
-        spawn(command, id, rows, cols, &scheme, cx).map(|(pane, notices)| (id, pane, notices))
+    let panes = programs.into_iter().map(|(id, program)| {
+        spawn(program, id, rows, cols, &scheme, cx).map(|(pane, notices)| (id, pane, notices))
     });
     let panes = panes.collect::<Result<Vec<_>, String>>()?;
     let options = WindowOptions {
@@ -516,9 +526,9 @@ fn next_pane_id() -> PaneId {
 }
 
 /// Starts pane `id`'s program, which finds its pane and the way to `rtty cli` in `RTTY_PANE` and
-/// `RTTY_SOCKET`.
+/// `RTTY_SOCKET`; or shows the tutti pane.
 fn spawn(
-    mut command: CommandBuilder,
+    program: Program,
     id: PaneId,
     rows: u16,
     cols: u16,
@@ -526,13 +536,20 @@ fn spawn(
     cx: &App,
 ) -> Result<(Pane, UnboundedReceiver<Notice>), String> {
     let settings = cx.global::<Settings>();
-    command.env("RTTY_PANE", id.to_string());
-    command.env("RTTY_SOCKET", &settings.launch.socket);
     let trace = settings.launch.trace.as_ref().map(|trace| trace.for_pane(id));
-    let integration = settings.shell_integration.as_deref();
-    let spawned =
-        Pane::spawn(command, rows, cols, Some(scheme), trace, integration, settings.graphics)
-            .map_err(|err| format!("cannot start the shell: {err}"));
+    let (scheme, graphics) = (Some(scheme), settings.graphics);
+    let spawned = match program {
+        Program::Command(mut command) => {
+            command.env("RTTY_PANE", id.to_string());
+            command.env("RTTY_SOCKET", &settings.launch.socket);
+            let integration = settings.shell_integration.as_deref();
+            Pane::spawn(command, rows, cols, scheme, trace, integration, graphics)
+                .map_err(|err| format!("cannot start the shell: {err}"))
+        }
+        Program::Tutti { socket, pane } => tutti::connect(&socket)
+            .and_then(|stream| Pane::attach(stream, pane, rows, cols, scheme, trace, graphics))
+            .map_err(|err| format!("cannot show tutti pane {pane}: {err}")),
+    };
     match &spawned {
         Ok(_) => crate::note(&format!("pane {id}: started at {rows}x{cols}")),
         Err(err) => crate::note(&format!("pane {id}: {err}")),
@@ -594,6 +611,7 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
         Request::Focus { pane } => Some(pane),
         Request::FocusToward { from, .. } | Request::Resize { from, .. } => from,
         Request::Split { pane, .. } | Request::Zoom { pane } => pane,
+        Request::TuttiAttach { from, .. } => from,
         Request::List => None,
     };
     let holds = |handle: &&WindowHandle<TerminalWindow>, cx: &App| match pane {
@@ -912,7 +930,8 @@ impl TerminalWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let command = editor::command(cx.global::<Settings>().editor.as_deref(), at);
+        let command =
+            Program::Command(editor::command(cx.global::<Settings>().editor.as_deref(), at));
         if let Err(err) = self.split(from, Direction::Right, Some(command), window, cx) {
             eprintln!("rtty: {err}");
         }
@@ -1247,13 +1266,13 @@ impl TerminalWindow {
         }
     }
 
-    /// Splits `from`, showing its tab; the new pane runs `program`, else the login shell, in
-    /// `from`'s working directory and takes the keyboard.
+    /// Splits `from`, showing its tab; the new pane shows `program`, else runs the login shell, a
+    /// command in `from`'s working directory, and takes the keyboard.
     fn split(
         &mut self,
         from: PaneId,
         direction: Direction,
-        program: Option<CommandBuilder>,
+        program: Option<Program>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<PaneId, String> {
@@ -1265,12 +1284,14 @@ impl TerminalWindow {
         let rects = layout.rects(area);
         let (_, rect) =
             rects.iter().find(|(pane, _)| *pane == id).expect("the new pane is laid out");
-        let mut command = program.unwrap_or_else(CommandBuilder::new_default_prog);
-        if let Some(cwd) = self.views.get(&from).and_then(|view| view.read(cx).cwd()) {
+        let mut program =
+            program.unwrap_or_else(|| Program::Command(CommandBuilder::new_default_prog()));
+        let cwd = self.views.get(&from).and_then(|view| view.read(cx).cwd());
+        if let (Program::Command(command), Some(cwd)) = (&mut program, cwd) {
             command.cwd(cwd);
         }
         crate::note(&format!("pane {from}: splitting {} into pane {id}", direction.name()));
-        let (pane, notices) = spawn(command, id, rect.rows, rect.cols, &self.scheme, cx)?;
+        let (pane, notices) = spawn(program, id, rect.rows, rect.cols, &self.scheme, cx)?;
         *self.tabs.active_mut() = layout;
         self.add(id, pane, notices, window, cx);
         Ok(id)
@@ -1325,6 +1346,16 @@ impl TerminalWindow {
                 cx.notify();
                 Response::Done
             }
+            Request::TuttiAttach { socket, pane, from, split } => {
+                let program = Program::Tutti { socket, pane };
+                let opened = match split {
+                    Some(direction) => {
+                        self.split(from.unwrap_or(focused), direction, Some(program), window, cx)
+                    }
+                    None => self.open_tab(program, window, cx),
+                };
+                opened.map_or_else(Response::Error, Response::Pane)
+            }
         }
     }
 
@@ -1360,15 +1391,26 @@ impl TerminalWindow {
     }
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = Program::Command(shell(self.focused_cwd(cx)));
+        if let Err(err) = self.open_tab(shell, window, cx) {
+            eprintln!("rtty: {err}");
+        }
+    }
+
+    /// Opens a tab after the current one with `program` in its one pane, which takes the
+    /// keyboard.
+    fn open_tab(
+        &mut self,
+        program: Program,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<PaneId, String> {
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
-        match spawn(shell(self.focused_cwd(cx)), id, area.rows, area.cols, &self.scheme, cx) {
-            Ok((pane, notices)) => {
-                self.tabs.open(id);
-                self.add(id, pane, notices, window, cx);
-            }
-            Err(err) => eprintln!("rtty: {err}"),
-        }
+        let (pane, notices) = spawn(program, id, area.rows, area.cols, &self.scheme, cx)?;
+        self.tabs.open(id);
+        self.add(id, pane, notices, window, cx);
+        Ok(id)
     }
 
     /// Shows `said` along the window's bottom for a moment: what came of the config's reload or
@@ -1400,25 +1442,28 @@ impl TerminalWindow {
         if let Some(dir) = path.parent() {
             command.cwd(dir);
         }
-        let (area, ..) = self.area(window, cx);
-        let id = next_pane_id();
-        match spawn(command, id, area.rows, area.cols, &self.scheme, cx) {
-            Ok((pane, notices)) => {
-                self.tabs.open(id);
-                self.add(id, pane, notices, window, cx);
-            }
-            Err(err) => self.say(&err, cx),
+        if let Err(err) = self.open_tab(Program::Command(command), window, cx) {
+            self.say(&err, cx);
         }
     }
 
     fn new_window(&mut self, _: &NewWindow, _: &mut Window, cx: &mut Context<Self>) {
-        let command = shell(self.focused_cwd(cx));
+        let command = Program::Command(shell(self.focused_cwd(cx)));
         // Opened once this window's update is done, so it cascades from this one.
         cx.defer(move |cx| {
             if let Err(err) = open(command, cx) {
                 eprintln!("rtty: {err}");
             }
         });
+    }
+
+    /// `kill-pane`: ends the focused pane's program now, without asking (`Pane::kill`); its exit
+    /// closes the pane. Closing a tutti pane only detaches from it.
+    fn kill_pane(&mut self, _: &KillPane, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.focused() {
+            crate::note(&format!("pane {}: killed", self.tabs.active().focus()));
+            view.update(cx, |view, _| view.kill());
+        }
     }
 
     /// Moves the keyboard from `from` to the nearest pane in `direction` (with `wrap`, round to
@@ -1873,6 +1918,7 @@ impl Render for TerminalWindow {
             }))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_window))
+            .on_action(cx.listener(Self::kill_pane))
             .on_action(cx.listener(Self::open_config))
             .on_action(cx.listener(|this, action: &SelectTab, window, cx| {
                 this.select_tab(action.0, window, cx)
