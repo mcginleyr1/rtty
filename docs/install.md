@@ -9,6 +9,16 @@ macOS only (GPUI's Metal renderer, and AppKit for notifications and Finder); no 
 planned. Needs a Rust toolchain with edition 2024 and Xcode's SDK; the offline Metal compiler is
 **not** needed (see [the GPUI pin](internals.md#the-gpui-pin)).
 
+rtty depends on `tutti-wire`, the crate of tutti's wire, from tutti's repository, pinned by `rev`
+in `Cargo.toml`. To build against a local tutti instead, put this in `.cargo/config.toml`, which
+git ignores, and do not commit the lock files it changes (`Cargo.lock`, and `vt/Cargo.lock`, which
+gains a `[[patch.unused]]` entry when `just verify` runs rtty-vt's steps from the root):
+
+```toml
+[patch."https://github.com/mcginleyr1/tutti"]
+tutti-wire = { path = "<a tutti checkout>/crates/tutti-wire" }
+```
+
 ## Running from source
 
 ```sh

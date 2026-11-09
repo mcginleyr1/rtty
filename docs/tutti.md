@@ -60,8 +60,11 @@ tutti's daemon must be running; rtty never starts one.
   daemon on its Unix socket (`$XDG_RUNTIME_DIR/tutti/<session>.sock`, else
   `/tmp/tutti-<uid>/<session>.sock`), and everything goes over it, however many panes it shows. It
   attaches as a quiet view that hands moves past tutti's edges on (`Attach` with `view`, `handoff`
-  and `quiet`: no pane frames but its own streams'), and watches: the daemon must speak tutti's
-  wire revision 19, or rtty says which side to update. The connection opens off the main thread,
+  and `quiet`: no pane frames but its own streams'), and watches. The daemon's wire and rtty's must work together, each at or above the
+  other's floor, the oldest revision it still reads faithfully: rtty speaks tutti's wire revision
+  20 and works with a daemon at 19 or newer, and tutti's own `tutti-wire` crate decides. Otherwise
+  rtty says which side to update (``tutti's daemon speaks wire revision 18 (floor 18), rtty 20
+  (floor 19): update tutti and restart its daemon (`tutti server stop`)``). The connection opens off the main thread,
   and the daemon has 3 s to answer: meanwhile the window goes on, the panes waiting for it blank;
   should it not answer, they say why (`[cannot show tutti session work: tutti's daemon did not
   answer within 3 s]`, the pane's title too). Closing the window's last pane of the session, or

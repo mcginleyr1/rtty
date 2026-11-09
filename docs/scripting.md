@@ -33,8 +33,15 @@ A scripted window differs from a normal one in these ways:
 
 - It does not take the keyboard from whatever app has it.
 - It keeps a question in its dump instead of showing a sheet.
-- A clipboard read a script answers gets a stand-in, never the clipboard.
-- `copy-last-output` never copies to the clipboard; the dump shows what it copied.
+- Nothing reaches the clipboard: whatever is copied (`Cmd+C`, the menu's Copy, copy mode, quick
+  select, `copy-last-output`, a program's OSC 52 write) goes to the dump's `copied` line instead,
+  and a paste or a clipboard read a script answers gets a stand-in (`rtty --script's clipboard`),
+  never the clipboard.
+- It is never the key window, so AppKit offers a Cmd chord pressed with `nskey` to the menu bar
+  before the window. An unshifted chord on a key a menu item uses (`cmd-d`, `cmd-w`, `cmd-t`,
+  `cmd-f`) runs that item, whose action goes to the app's main window: an app-wide item (`cmd-=`)
+  runs and a window's does nothing, so press those with `keys`. A chord on a key no item uses
+  (`cmd-1`, `cmd-alt-left`) and Shift with a letter (`cmd-shift-d`) reach the window.
 - Short of `--restore`, it neither restores nor saves the layout
   ([Restoring windows](windows.md#restoring-windows)).
 
@@ -46,7 +53,7 @@ A scripted window differs from a normal one in these ways:
 - what the next frame draws in each shown pane: runs, their glyphs, colors, underlines, the cursor,
   the font with its features, the cell, and the rows each drawn character fills;
 - the modes the frame is drawn from;
-- the shell's marks, a running command, and what `copy-last-output` copied.
+- the shell's marks, a running command, and what was copied last (`copied`).
 
 ### `--activate` and `--restore`
 

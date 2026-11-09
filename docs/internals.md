@@ -22,10 +22,9 @@ terminal engine in `vt/`, holds the terminal state, and
   it into the terminal and takes what is typed, resizing votes, and dropping it ends nothing;
   nothing above the pane knows the difference but for its title and its size. `Pane::held` is a
   pane that only says why it shows no tutti pane.
-- `tutti.rs` — tutti's daemon's wire as rtty speaks it, rtty's own types written from tutti's
-  protocol (frames, and the requests, responses and events rtty needs: the session's tabs and
-  split trees among them); `Session`, a window's connection to a session, opened off the main
-  thread with its revision checks, and every pane stream on it. Its one reader hands each pane
+- `tutti.rs` — a window's connection to a tutti session, on tutti's own wire crate (`tutti-wire`:
+  the frames, the requests, responses and events, and the revision check); `Session`, that
+  connection, opened off the main thread with its revision checks, and every pane stream on it. Its one reader hands each pane
   frame, and each event of a stream (its rows, its exit, a refusal by its `req`), to the stream of
   the pane it names, ported from tutti's `pane attach --inline`: scrollback rows before each
   snapshot, snapshots less what the daemon keeps, raw reads with the engine's replies sent back.
@@ -144,6 +143,6 @@ their `"C"`), so a build prints no future-incompatibility warning.
 ## Licensing
 
 Licensing: GPUI and rtty-vt are Apache-2.0, portable-pty is MIT, global-hotkey is Apache-2.0 or
-MIT; the image crates (`png` and `miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or
+MIT, tutti-wire is MIT or Apache-2.0; the image crates (`png` and `miniz_oxide` in rtty-vt, `image` for GPUI's frames) are MIT or
 Apache-2.0. rtty takes nothing from Zed's GPL `terminal` / `terminal_view` crates, and nothing
 from kitty's GPL source: the graphics protocol is implemented from its documentation.

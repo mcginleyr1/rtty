@@ -203,6 +203,9 @@ panes natively, a pane or a whole session in a window. What is left:
    - the progress line and the dock's badge;
    - quick select's labels over their matches;
    - the menu bar and a click on its items;
+   - `Cmd+A` and `Cmd+O`, which no binding takes: under `--script`'s `nskey` the menu bar ran an
+     item on an unshifted chord whose own chord has Shift, so in a key window they may run Copy
+     Last Output (`Shift+Cmd+A`) and Quick Open (`Shift+Cmd+O`);
    - the dock's Quit and a logout;
    - Secure Keyboard Entry's lock and check mark;
    - a real press of the global hotkey;
