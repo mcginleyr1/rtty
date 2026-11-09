@@ -1097,10 +1097,11 @@ fn a_restore_launch_brings_back_tabs_splits_and_directories() {
          dump
          quit",
     );
-    let layout = fs::read_to_string(dir.join("rtty/layout.json")).unwrap();
+    let layout = fs::read_to_string(dir.join("rtty/layout.json"));
     let (third, plain) = launch(&dir, &[], "wait ready>\ndump\nquit");
-    let kept = fs::read_to_string(dir.join("rtty/layout.json")).unwrap();
+    let kept = fs::read_to_string(dir.join("rtty/layout.json"));
     remove(&dir);
+    let (layout, kept) = (layout.unwrap(), kept.unwrap());
     assert!(first.success() && second.success() && third.success());
     let [again, left, other] = &restored[..] else { panic!("{} dumps", restored.len()) };
     let split = "\npane 1 at 0,0 24x36\npane 2 at 0,37 24x43\n\n";
