@@ -1,10 +1,13 @@
 //! A window's tabs, each a tree of splits over its panes, in cells: where each pane goes, where
-//! the dividers are, which pane has the focus, and every way those change. Nothing here knows
-//! GPUI, so all of it is unit tested.
+//! the dividers are, which pane has the focus, and every way those change. A window that is a
+//! tutti session takes its trees from tutti's (`Layout::mirror`), the same binary trees with
+//! ratios. Nothing here knows GPUI, so all of it is unit tested.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::tutti::{Axis, Tree};
 
 pub type PaneId = u64;
 
@@ -135,6 +138,40 @@ impl Layout {
             zoomed: false,
             focused_at: BTreeMap::from([(pane, 0)]),
             clock: 0,
+        }
+    }
+
+    /// A tab laid out as tutti's `tree`, its panes named by `id` from tutti's ids: as `was` was,
+    /// its focus, the pane before it and its zoom, while their panes are still there; else
+    /// focused where tutti last focused (`active`), else on its first pane.
+    pub fn mirror(
+        was: Option<&Layout>,
+        tree: &Tree,
+        active: Option<u64>,
+        id: &mut impl FnMut(u64) -> PaneId,
+    ) -> Layout {
+        let root = Node::mirror(tree, id);
+        let mut panes = Vec::new();
+        root.collect(&mut panes);
+        let active = active.map(id).filter(|pane| panes.contains(pane)).unwrap_or(panes[0]);
+        let mut layout = was.cloned().unwrap_or_else(|| Layout::new(active));
+        layout.root = root;
+        layout.focused_at.retain(|pane, _| panes.contains(pane));
+        layout.previous = layout.previous.filter(|pane| panes.contains(pane));
+        if !panes.contains(&layout.focus) {
+            (layout.focus, layout.zoomed) = (active, false);
+        }
+        layout.zoomed &= panes.len() > 1;
+        layout
+    }
+
+    /// The split at `path`: a pane from each side of it, and its ratio.
+    pub fn divided(&self, path: &[bool]) -> Option<(PaneId, PaneId, f32)> {
+        match self.root.clone().at_path(path)? {
+            Node::Split { ratio, first, second, .. } => {
+                Some((first.first_pane(false), second.first_pane(false), *ratio))
+            }
+            Node::Pane(_) => None,
         }
     }
 
@@ -436,6 +473,22 @@ fn ratio_for(offset: u16, len: u16) -> f32 {
 }
 
 impl Node {
+    /// tutti's `tree`, its panes named by `id`.
+    fn mirror(tree: &Tree, id: &mut impl FnMut(u64) -> PaneId) -> Node {
+        match tree {
+            Tree::Leaf(pane) => Node::Pane(id(*pane)),
+            Tree::Split { direction, ratio, first, second } => Node::Split {
+                orientation: match direction {
+                    Axis::Horizontal => Orientation::SideBySide,
+                    Axis::Vertical => Orientation::Stacked,
+                },
+                ratio: ratio.clamp(0., 1.),
+                first: Box::new(Node::mirror(first, id)),
+                second: Box::new(Node::mirror(second, id)),
+            },
+        }
+    }
+
     /// Every split's ratio is a share, from 0 to 1.
     fn shares(&self) -> bool {
         match self {
@@ -638,6 +691,12 @@ pub enum Closed {
 impl Tabs {
     pub fn new(pane: PaneId) -> Tabs {
         Tabs { tabs: vec![Layout::new(pane)], active: 0 }
+    }
+
+    /// `tabs`, tab `active` showing (the last, past them); at least one tab.
+    pub fn of(tabs: Vec<Layout>, active: usize) -> Tabs {
+        assert!(!tabs.is_empty(), "a window has a tab");
+        Tabs { active: active.min(tabs.len() - 1), tabs }
     }
 
     /// Whether tabs read back from a file hold together: one of them shows, each one's focus,
@@ -1104,6 +1163,65 @@ mod tests {
         layout.toggle_zoom();
         layout.close(4);
         assert!(!layout.zoomed());
+    }
+
+    /// tutti's tree for 1 | (2 / 3), its panes numbered `base` and on.
+    fn tutti_three(base: u64) -> Tree {
+        let leaf = |pane: u64| Box::new(Tree::Leaf(base + pane));
+        let column =
+            Tree::Split { direction: Axis::Vertical, ratio: 0.5, first: leaf(2), second: leaf(3) };
+        Tree::Split {
+            direction: Axis::Horizontal,
+            ratio: 0.25,
+            first: leaf(1),
+            second: Box::new(column),
+        }
+    }
+
+    /// A tab mirrors tutti's tree as rtty's own, ratios and all, its panes named as the window
+    /// names them; it keeps its focus, the one before and zoom while their panes stay, else takes
+    /// tutti's focus, else its first pane.
+    #[test]
+    fn a_tab_mirrors_tuttis_tree_and_keeps_its_own_focus() {
+        let mut named = |pane: u64| pane - 10;
+        let fresh = Layout::mirror(None, &tutti_three(10), Some(13), &mut named);
+        let mut three = three();
+        three.drag(&[], AREA, (20, 0));
+        assert_eq!(fresh.rects(AREA), three.rects(AREA));
+        assert_eq!(fresh.focus(), 3, "a tab rtty had not shown starts where tutti focused");
+        let first = Layout::mirror(None, &tutti_three(10), None, &mut named);
+        assert_eq!(first.focus(), 1, "else on its first pane");
+        let mut was = fresh.clone();
+        was.set_focus(2);
+        was.set_focus(3);
+        was.toggle_zoom();
+        let kept = Layout::mirror(Some(&was), &tutti_three(10), Some(11), &mut named);
+        assert_eq!((kept.focus(), kept.zoomed()), (3, true));
+        // 3 gone: tutti's focus, zoom left; 2 stays the one before.
+        let two = Tree::Split {
+            direction: Axis::Horizontal,
+            ratio: 0.5,
+            first: Box::new(Tree::Leaf(11)),
+            second: Box::new(Tree::Leaf(12)),
+        };
+        let mut after = Layout::mirror(Some(&kept), &two, Some(11), &mut named);
+        assert_eq!((after.panes(), after.focus(), after.zoomed()), (vec![1, 2], 1, false));
+        assert_eq!(after.focus_previous(), Some(2));
+        // tutti's focus not among them: the first pane.
+        let lone = Layout::mirror(Some(&after), &Tree::Leaf(14), Some(19), &mut named);
+        assert_eq!((lone.panes(), lone.focus()), (vec![4], 4));
+        let tabs = Tabs::of(vec![lone, after], 5);
+        assert_eq!(tabs.index(), 1);
+    }
+
+    /// A divider names the split it moves by a pane from either side, as tutti's border drag does.
+    #[test]
+    fn a_divider_names_a_pane_on_either_side() {
+        let layout = three();
+        assert_eq!(layout.divided(&[]), Some((1, 2, 0.5)));
+        assert_eq!(layout.divided(&[true]), Some((2, 3, 0.5)));
+        assert_eq!(layout.divided(&[false]), None);
+        assert_eq!(layout.divided(&[true, true, true]), None);
     }
 
     #[test]

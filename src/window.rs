@@ -4,18 +4,26 @@
 //!
 //! The layout is in cells, and every pane's grid and pty follow the cells it gets, shown or not.
 //! Each pane draws as a cached view, so output in one pane redraws that pane alone.
+//!
+//! A window that shows tutti panes keeps one connection to each of their sessions, opened off the
+//! main thread; a pane waits for it, blank, and shows its tutti pane once it is open, or says why
+//! it cannot. A window can be a whole tutti session (`Mirror`): its tabs and splits are then the
+//! session's, which the daemon keeps and tells of (`Told::Layout`), and what would change them asks
+//! the daemon instead.
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use block2::RcBlock;
+use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
@@ -49,7 +57,7 @@ use crate::progress::{self, Progress, State};
 use crate::scheme::Scheme;
 use crate::session;
 use crate::tabbar::{self, Bar, Hit};
-use crate::tutti;
+use crate::tutti::{self, Told};
 use crate::view::{PaneEvent, PaneView, Settings, hsla, metrics};
 
 actions!(
@@ -163,9 +171,45 @@ impl AssetSource for Icons {
 /// A divider being dragged, by its path in the layout.
 struct DividerDrag(Vec<bool>);
 
+/// What a window that is a tutti session says to a close of a pane or a tab: they are tutti's.
+const DETACHES: &str =
+    "tutti's panes run on: kill-pane ends one, and closing the window detaches from the session";
+
+/// What it says to a pane of rtty's own.
+const SESSION_ONLY: &str = "a tutti session's window shows the session's panes only";
+
+/// What it says to an action before the session answered.
+const UNANSWERED: &str = "the tutti session has not answered yet";
+
+/// A window's connection to a tutti session.
+enum Link {
+    /// Opening, and the panes waiting for it: rtty's id, and tutti's.
+    Opening(Vec<(PaneId, u64)>),
+    /// Open, while a pane showing one of its panes, or the window that is it, holds it.
+    Open(Weak<tutti::Session>),
+}
+
+/// A window that is a tutti session: the session's tabs are its tabs.
+struct Mirror {
+    /// The daemon's socket, which names the session.
+    socket: PathBuf,
+    /// The window's connection to it, once the daemon answered.
+    session: Option<Arc<tutti::Session>>,
+    /// Each of the window's tabs, as tutti's workspace and tab ids.
+    tabs: Vec<(u64, u64)>,
+    /// rtty's id for each tutti pane, by tutti's.
+    panes: HashMap<u64, PaneId>,
+    /// The tab the session last heard the window show.
+    selected: Option<u64>,
+}
+
 pub struct TerminalWindow {
     tabs: Tabs,
     views: HashMap<PaneId, Entity<PaneView>>,
+    /// The tutti sessions whose panes the window shows, by their daemons' sockets.
+    sessions: HashMap<PathBuf, Link>,
+    /// The tutti session the window is, if it is one.
+    mirror: Option<Mirror>,
     /// The theme's scheme for the window's appearance, for the tab bar and dividers.
     scheme: Arc<Scheme>,
     /// What in the bar the pointer is over, and what a press there began on: a close button or
@@ -419,34 +463,54 @@ pub fn quit(cx: &mut App) {
     crate::app::asking(asker.window_id(), answer, cx)
 }
 
-/// What a new pane shows: a program on a pty of its own, or pane `pane` of the tutti daemon
-/// listening on `socket` (`Pane::attach`).
+/// What a new pane shows: a program on a pty of its own, or pane `pane` of the tutti session whose
+/// daemon listens on `socket` (`TerminalWindow::attach_tutti`).
 pub enum Program {
     Command(CommandBuilder),
     Tutti { socket: PathBuf, pane: u64 },
 }
 
-/// Opens a window with `program` in its one pane: the first window centered, later ones
-/// cascading from the active one.
+/// Where the first window goes, centered; later ones cascade from the active one.
+fn first_bounds(cx: &App) -> Option<Bounds<Pixels>> {
+    cx.windows().is_empty().then(|| Bounds::centered(None, size(px(900.), px(600.)), cx))
+}
+
+/// Opens a window with `program` in its one pane.
 pub fn open(program: Program, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
     let id = next_pane_id();
-    let first = cx.windows().is_empty();
-    let bounds = first.then(|| Bounds::centered(None, size(px(900.), px(600.)), cx));
-    open_tabs(Tabs::new(id), vec![(id, program)], bounds, None, cx)
+    open_tabs(Tabs::new(id), vec![(id, program)], None, first_bounds(cx), None, cx)
+}
+
+/// Opens a window that is the tutti session whose daemon listens on `socket`: the session's tabs,
+/// splits and panes are the window's once the daemon answers. Until then its one pane waits, and
+/// says why should the daemon not answer. At `frame` on its display, else where `open` puts one.
+pub fn open_session(
+    socket: PathBuf,
+    frame: Option<(Bounds<Pixels>, Option<DisplayId>)>,
+    cx: &mut App,
+) -> Result<WindowHandle<TerminalWindow>, String> {
+    let (bounds, display) = frame.map_or_else(|| (first_bounds(cx), None), |(b, d)| (Some(b), d));
+    open_tabs(Tabs::new(next_pane_id()), Vec::new(), Some(socket), bounds, display, cx)
 }
 
 /// Opens a window as `saved` has it: its frame on its display (centered on the main one, that
 /// display gone or the frame's titlebar off it), its tabs, splits, zoom and focus, and in each
-/// pane a new login shell in the pane's directory (the home directory, that one gone). Its panes
-/// keep their ids.
+/// pane a new login shell in the pane's directory (the home directory, that one gone), or the
+/// tutti pane it showed. Its panes keep their ids. A window that was a tutti session is that
+/// session again, as its daemon has it now.
 pub fn restore(
     saved: session::Window,
     cx: &mut App,
 ) -> Result<WindowHandle<TerminalWindow>, String> {
     let ids: Vec<PaneId> = saved.tabs.all().iter().flat_map(|tab| tab.panes()).collect();
     NEXT_PANE.fetch_max(ids.iter().max().map_or(1, |id| id + 1), Ordering::Relaxed);
-    let shells =
-        ids.into_iter().map(|id| (id, Program::Command(shell(saved.cwds.get(&id).cloned()))));
+    let programs = ids.into_iter().map(|id| {
+        let program = match saved.tutti.get(&id).cloned() {
+            Some((socket, pane)) => Program::Tutti { socket, pane },
+            None => Program::Command(shell(saved.cwds.get(&id).cloned())),
+        };
+        (id, program)
+    });
     // The middle of its titlebar on its display, where it can be taken hold of.
     let frame = saved.frame;
     let titlebar = point(frame.origin.x + frame.size.width / 2., frame.origin.y);
@@ -459,24 +523,35 @@ pub fn restore(
         Some(display) => (saved.frame, Some(display.id())),
         None => (Bounds::centered(None, saved.frame.size, cx), None),
     };
-    open_tabs(saved.tabs, shells.collect(), Some(frame), display, cx)
+    match saved.session {
+        Some(socket) => open_session(socket, Some((frame, display)), cx),
+        None => open_tabs(saved.tabs, programs.collect(), None, Some(frame), display, cx),
+    }
 }
 
 /// Opens a window holding `tabs`, each pane showing its program, at `bounds` on `display`; with
-/// no bounds, cascading from the active window.
+/// no bounds, cascading from the active window. With `session`, the window is that tutti session,
+/// whose daemon listens there, and `tabs` its one waiting pane.
 fn open_tabs(
     tabs: Tabs,
     programs: Vec<(PaneId, Program)>,
+    session: Option<PathBuf>,
     bounds: Option<Bounds<Pixels>>,
     display_id: Option<DisplayId>,
     cx: &mut App,
 ) -> Result<WindowHandle<TerminalWindow>, String> {
     let scheme = cx.global::<Settings>().theme.for_appearance(cx.window_appearance()).clone();
     let (rows, cols) = START_SIZE;
-    let panes = programs.into_iter().map(|(id, program)| {
-        spawn(program, id, rows, cols, &scheme, cx).map(|(pane, notices)| (id, pane, notices))
-    });
-    let panes = panes.collect::<Result<Vec<_>, String>>()?;
+    let (mut panes, mut tutti) = (Vec::new(), Vec::new());
+    for (id, program) in programs {
+        match program {
+            Program::Command(command) => {
+                let (pane, notices) = spawn(command, id, rows, cols, &scheme, cx)?;
+                panes.push((id, pane, notices));
+            }
+            Program::Tutti { socket, pane } => tutti.push((id, socket, pane)),
+        }
+    }
     let options = WindowOptions {
         window_bounds: bounds.map(WindowBounds::Windowed),
         display_id,
@@ -491,8 +566,10 @@ fn open_tabs(
         }),
         ..Default::default()
     };
-    cx.open_window(options, |window, cx| cx.new(|cx| TerminalWindow::new(tabs, panes, window, cx)))
-        .map_err(|err| format!("cannot open a window: {err}"))
+    cx.open_window(options, |window, cx| {
+        cx.new(|cx| TerminalWindow::new(tabs, panes, tutti, session, window, cx))
+    })
+    .map_err(|err| format!("cannot open a window: {err}"))
 }
 
 /// Every window shown (not one a close hid), as `session` keeps them for the next launch.
@@ -526,9 +603,9 @@ fn next_pane_id() -> PaneId {
 }
 
 /// Starts pane `id`'s program, which finds its pane and the way to `rtty cli` in `RTTY_PANE` and
-/// `RTTY_SOCKET`; or shows the tutti pane.
+/// `RTTY_SOCKET`.
 fn spawn(
-    program: Program,
+    mut command: CommandBuilder,
     id: PaneId,
     rows: u16,
     cols: u16,
@@ -537,19 +614,12 @@ fn spawn(
 ) -> Result<(Pane, UnboundedReceiver<Notice>), String> {
     let settings = cx.global::<Settings>();
     let trace = settings.launch.trace.as_ref().map(|trace| trace.for_pane(id));
-    let (scheme, graphics) = (Some(scheme), settings.graphics);
-    let spawned = match program {
-        Program::Command(mut command) => {
-            command.env("RTTY_PANE", id.to_string());
-            command.env("RTTY_SOCKET", &settings.launch.socket);
-            let integration = settings.shell_integration.as_deref();
-            Pane::spawn(command, rows, cols, scheme, trace, integration, graphics)
-                .map_err(|err| format!("cannot start the shell: {err}"))
-        }
-        Program::Tutti { socket, pane } => tutti::connect(&socket)
-            .and_then(|stream| Pane::attach(stream, pane, rows, cols, scheme, trace, graphics))
-            .map_err(|err| format!("cannot show tutti pane {pane}: {err}")),
-    };
+    command.env("RTTY_PANE", id.to_string());
+    command.env("RTTY_SOCKET", &settings.launch.socket);
+    let integration = settings.shell_integration.as_deref();
+    let spawned =
+        Pane::spawn(command, rows, cols, Some(scheme), trace, integration, settings.graphics)
+            .map_err(|err| format!("cannot start the shell: {err}"));
     match &spawned {
         Ok(_) => crate::note(&format!("pane {id}: started at {rows}x{cols}")),
         Err(err) => crate::note(&format!("pane {id}: {err}")),
@@ -607,12 +677,15 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
             .filter_map(|handle| handle.update(cx, |this, window, cx| this.info(window, cx)).ok());
         return Response::Windows(info.collect());
     }
+    if let Request::TuttiOpen { socket } = request {
+        return open_session(socket, None, cx).map_or_else(Response::Error, |_| Response::Done);
+    }
     let pane = match request {
         Request::Focus { pane } => Some(pane),
         Request::FocusToward { from, .. } | Request::Resize { from, .. } => from,
         Request::Split { pane, .. } | Request::Zoom { pane } => pane,
         Request::TuttiAttach { from, .. } => from,
-        Request::List => None,
+        Request::List | Request::TuttiOpen { .. } => None,
     };
     let holds = |handle: &&WindowHandle<TerminalWindow>, cx: &App| match pane {
         Some(pane) => handle.read(cx).is_ok_and(|this| this.views.contains_key(&pane)),
@@ -631,9 +704,14 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
 }
 
 impl TerminalWindow {
+    /// A window of `tabs`, `panes` in it shown at once, and its `tutti` panes (rtty's id, the
+    /// session's socket, tutti's id) once their sessions answer. With `session`, the window is that
+    /// tutti session, and the one pane of `tabs` waits for it.
     fn new(
         tabs: Tabs,
         panes: Vec<(PaneId, Pane, UnboundedReceiver<Notice>)>,
+        tutti: Vec<(PaneId, PathBuf, u64)>,
+        session: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -671,6 +749,8 @@ impl TerminalWindow {
         let mut this = TerminalWindow {
             tabs,
             views: HashMap::new(),
+            sessions: HashMap::new(),
+            mirror: None,
             scheme,
             bar_hover: None,
             bar_press: None,
@@ -681,19 +761,302 @@ impl TerminalWindow {
         for (id, pane, notices) in panes {
             this.add(id, pane, notices, window, cx);
         }
+        if let Some(socket) = session {
+            let (session, tabs, panes, selected) = (None, Vec::new(), HashMap::new(), None);
+            this.mirror = Some(Mirror { socket: socket.clone(), session, tabs, panes, selected });
+            this.sessions.insert(socket.clone(), Link::Opening(Vec::new()));
+            this.connect(socket, window, cx);
+        }
+        for (id, socket, pane) in tutti {
+            this.attach_tutti(id, socket, pane, window, cx);
+        }
         this
     }
 
     /// The window as `session` keeps it: its frame (the one it goes back to from full screen),
-    /// its display, its tabs, and its panes' directories.
+    /// its display, its tabs, its panes' directories, and the tutti panes they show, or the tutti
+    /// session it is.
     fn saved(&self, window: &Window, cx: &App) -> session::Window {
         let display = window.display(cx).and_then(|display| display.uuid().ok());
         let cwds = self.views.iter().filter_map(|(id, view)| Some((*id, view.read(cx).cwd()?)));
+        let tutti = self.views.iter().filter(|_| self.mirror.is_none()).filter_map(|(id, view)| {
+            let (socket, pane) = view.read(cx).tutti()?;
+            Some((*id, (socket.to_owned(), pane)))
+        });
         session::Window {
             frame: window.window_bounds().get_bounds(),
             display: display.map(|uuid| uuid.to_string()),
             tabs: self.tabs.clone(),
             cwds: cwds.collect(),
+            tutti: tutti.collect(),
+            session: self.mirror.as_ref().map(|mirror| mirror.socket.clone()),
+        }
+    }
+
+    /// Shows tutti pane `pane` of the session whose daemon listens on `socket` in pane `id`, which
+    /// the layout has already: at once while the window's connection to the session is open, else
+    /// once it is, opening it first, off the main thread (`connect`).
+    fn attach_tutti(
+        &mut self,
+        id: PaneId,
+        socket: PathBuf,
+        pane: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = match self.sessions.get_mut(&socket) {
+            Some(Link::Opening(waiting)) => return waiting.push((id, pane)),
+            Some(Link::Open(session)) => session.upgrade(),
+            None => None,
+        };
+        match session {
+            Some(session) => self.show_tutti(id, &session, pane, window, cx),
+            None => {
+                self.sessions.insert(socket.clone(), Link::Opening(vec![(id, pane)]));
+                self.connect(socket, window, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens the window's connection to the session whose daemon listens on `socket`, off the
+    /// main thread: the daemon has a few seconds to answer (`tutti::Session::open`), and the
+    /// window goes on meanwhile. `opened` takes what came of it.
+    fn connect(&mut self, socket: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        crate::note(&format!("tutti session {}: opening", tutti::name(&socket)));
+        let opening = cx.background_spawn({
+            let socket = socket.clone();
+            async move {
+                tutti::connect(&socket).and_then(|stream| tutti::Session::open(stream, socket))
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let opened = opening.await;
+            this.update_in(cx, |this, window, cx| this.opened(socket, opened, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// The window's connection to the session at `socket` opened, or why not. The panes waiting
+    /// for it show their tutti panes, or say why they cannot; a window that is the session lays
+    /// the session out, or says in its waiting pane why it cannot. What the session says from then
+    /// on goes to `told`.
+    fn opened(
+        &mut self,
+        socket: PathBuf,
+        opened: io::Result<(tutti::Session, Vec<tutti::Workspace>, UnboundedReceiver<Told>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let waiting = match self.sessions.remove(&socket) {
+            Some(Link::Opening(waiting)) => waiting,
+            _ => Vec::new(),
+        };
+        let name = tutti::name(&socket);
+        let mirrored = self.mirror.as_ref().is_some_and(|mirror| mirror.socket == socket);
+        let (session, tabs, mut told) = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                let why = format!("cannot show tutti session {name}: {err}");
+                crate::note(&why);
+                if mirrored {
+                    self.mirror = None;
+                    self.hold(self.tabs.active().focus(), &why, window, cx);
+                }
+                for (id, _) in waiting {
+                    self.hold(id, &why, window, cx);
+                }
+                return;
+            }
+        };
+        crate::note(&format!("tutti session {name}: open"));
+        let session = Arc::new(session);
+        self.sessions.insert(socket.clone(), Link::Open(Arc::downgrade(&session)));
+        cx.spawn_in(window, async move |this, cx| {
+            while let Some(said) = told.next().await {
+                let heard =
+                    this.update_in(cx, |this, window, cx| this.told(&socket, said, window, cx));
+                if heard.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        if let Some(mirror) = self.mirror.as_mut().filter(|_| mirrored) {
+            mirror.session = Some(session.clone());
+            self.mirror_layout(tabs, window, cx);
+        }
+        for (id, pane) in waiting {
+            self.show_tutti(id, &session, pane, window, cx);
+        }
+    }
+
+    /// Shows tutti pane `pane` of `session` in pane `id`, at the cells the layout gives it there,
+    /// or says why it cannot; nothing once `id` is gone.
+    fn show_tutti(
+        &mut self,
+        id: PaneId,
+        session: &Arc<tutti::Session>,
+        pane: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((rows, cols)) = self.cells(id, window, cx) else { return };
+        let settings = cx.global::<Settings>();
+        let trace = settings.launch.trace.as_ref().map(|trace| trace.for_pane(id));
+        let scheme = Some(&*self.scheme);
+        match Pane::attach(session.clone(), pane, rows, cols, scheme, trace, settings.graphics) {
+            Ok((pane, notices)) => {
+                crate::note(&format!("pane {id}: showing tutti pane at {rows}x{cols}"));
+                self.add(id, pane, notices, window, cx)
+            }
+            Err(err) => self.hold(id, &format!("cannot show tutti pane {pane}: {err}"), window, cx),
+        }
+    }
+
+    /// Pane `id` says `why` it shows nothing (`Pane::held`); nothing once `id` is gone.
+    fn hold(&mut self, id: PaneId, why: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((rows, cols)) = self.cells(id, window, cx) else { return };
+        crate::note(&format!("pane {id}: {why}"));
+        let (pane, notices) = Pane::held(why, rows, cols, Some(&self.scheme));
+        self.add(id, pane, notices, window, cx);
+    }
+
+    /// The cells pane `id` gets in its tab, shown or not.
+    fn cells(&self, id: PaneId, window: &Window, cx: &App) -> Option<(u16, u16)> {
+        let (area, ..) = self.area(window, cx);
+        let grids = self.tabs.all()[self.tabs.find(id)?].grids(area);
+        grids.into_iter().find(|(pane, _)| *pane == id).map(|(_, rect)| (rect.rows, rect.cols))
+    }
+
+    /// The pane that shows tutti pane `pane` of the session at `socket`.
+    fn tutti_pane(&self, socket: &Path, pane: u64, cx: &App) -> Option<PaneId> {
+        let showing = |(_, view): &(&PaneId, &Entity<PaneView>)| {
+            view.read(cx).tutti() == Some((socket, pane))
+        };
+        self.views.iter().find(showing).map(|(id, _)| *id)
+    }
+
+    /// What the session at `socket` said. A window that is the session lays out its tabs as they
+    /// are now; any window shows a pane that something other than rtty focused, and one rtty
+    /// asked tutti for, and takes on a move past the edge of tutti's tab; a window of rtty's own
+    /// takes on a resize past it too (one that is the session has no split tutti does not). A
+    /// refusal is said along the window's bottom. The session's end closes the window that is it:
+    /// its panes went with their daemon.
+    fn told(&mut self, socket: &Path, said: Told, window: &mut Window, cx: &mut Context<Self>) {
+        let mirrored = self.mirror.as_ref().is_some_and(|mirror| mirror.socket == socket);
+        let shown = |this: &Self, pane: u64, cx: &App| this.tutti_pane(socket, pane, cx);
+        match said {
+            Told::Layout(tabs) if mirrored => self.mirror_layout(tabs, window, cx),
+            Told::Layout(_) => {}
+            Told::Focused(pane) | Told::Created(pane) => {
+                if let Some(id) = shown(self, pane, cx) {
+                    self.show(id, window, cx)
+                }
+            }
+            Told::FocusEdge(pane, direction) => {
+                if let Some(id) = shown(self, pane, cx) {
+                    self.focus_toward(id, direction, false, window, cx);
+                }
+            }
+            Told::ResizeEdge(pane, direction) => {
+                if let Some(id) = shown(self, pane, cx).filter(|_| !mirrored) {
+                    self.resize(id, direction, RESIZE_STEP, window, cx)
+                }
+            }
+            Told::Refused(why) => {
+                crate::note(&format!("tutti session {}: {why}", tutti::name(socket)));
+                self.say(&format!("tutti: {why}"), cx)
+            }
+            Told::Ended(why) => {
+                crate::note(&format!("tutti session {}: {why}", tutti::name(socket)));
+                if mirrored {
+                    self.close_window(false, window, cx)
+                }
+            }
+        }
+    }
+
+    /// The session's tabs, `workspaces`, as the window's own: tutti's split trees as its layouts,
+    /// each tab keeping its focus and zoom while their panes stay (`Layout::mirror`), the tab that
+    /// showed showing still, else tutti's current one. Panes new to the window are shown, and
+    /// panes gone from the session taken out, which detaches from them. A session with no pane
+    /// left closes the window, as a last pane's close does.
+    fn mirror_layout(
+        &mut self,
+        workspaces: Vec<tutti::Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mirror) = self.mirror.as_mut() else { return };
+        let Some(session) = mirror.session.clone() else { return };
+        let shown = mirror.tabs.get(self.tabs.index()).map(|(_, tab)| *tab);
+        let old: HashMap<u64, &Layout> =
+            mirror.tabs.iter().map(|(_, tab)| *tab).zip(self.tabs.all()).collect();
+        let (mut layouts, mut tabs, mut current) = (Vec::new(), Vec::new(), None);
+        let mut named: HashMap<u64, PaneId> = HashMap::new();
+        for workspace in &workspaces {
+            for tab in &workspace.tabs {
+                let Some(tree) = &tab.layout else { continue };
+                let mut id = |pane| {
+                    let known = mirror.panes.get(&pane).copied();
+                    *named.entry(pane).or_insert_with(|| known.unwrap_or_else(next_pane_id))
+                };
+                layouts.push(Layout::mirror(
+                    old.get(&tab.id).copied(),
+                    tree,
+                    tab.active_pane,
+                    &mut id,
+                ));
+                if tab.active {
+                    current = Some(tabs.len());
+                }
+                tabs.push((workspace.id, tab.id));
+            }
+        }
+        if layouts.is_empty() {
+            crate::note(&format!("tutti session {}: no pane left", tutti::name(&mirror.socket)));
+            return self.close_window(false, window, cx);
+        }
+        let present: Vec<PaneId> = layouts.iter().flat_map(Layout::panes).collect();
+        named.retain(|_, id| present.contains(id));
+        let gone: Vec<PaneId> =
+            mirror.panes.values().filter(|id| !present.contains(id)).copied().collect();
+        let index = tabs.iter().position(|(_, tab)| Some(*tab) == shown).or(current).unwrap_or(0);
+        let new: Vec<(PaneId, u64)> = named
+            .iter()
+            .filter(|(_, id)| !self.views.contains_key(id))
+            .map(|(pane, id)| (*id, *pane))
+            .collect();
+        (mirror.panes, mirror.tabs) = (named, tabs);
+        self.tabs = Tabs::of(layouts, index);
+        self.take_out(&gone, None, window, cx);
+        for (id, pane) in new {
+            self.show_tutti(id, &session, pane, window, cx);
+        }
+        self.focus_shown(window, cx);
+    }
+
+    /// The session of the window that is one, and tutti's id for its pane `id`; or what to say
+    /// instead.
+    fn mirrored(&self, id: PaneId) -> Result<(Arc<tutti::Session>, u64), String> {
+        let mirror = self.mirror.as_ref().ok_or("not a tutti session's window")?;
+        let session = mirror.session.clone().ok_or(UNANSWERED)?;
+        let pane = mirror.panes.iter().find(|(_, shown)| **shown == id).map(|(pane, _)| *pane);
+        Ok((session, pane.ok_or(format!("pane {id} shows no pane of the session"))?))
+    }
+
+    /// Asks the session the window is what `request` makes of tutti's id for pane `id`, else says
+    /// why it cannot.
+    fn ask_tutti(
+        &mut self,
+        id: PaneId,
+        request: impl FnOnce(u64) -> tutti::Request,
+        cx: &mut Context<Self>,
+    ) {
+        match self.mirrored(id) {
+            Ok((session, pane)) => session.ask(&request(pane)),
+            Err(why) => self.say(&why, cx),
         }
     }
 
@@ -808,15 +1171,25 @@ impl TerminalWindow {
     }
 
     /// The keyboard goes to the shown tab's focused pane, whose title names the window, and
-    /// whose password prompt holds Secure Keyboard Entry.
-    fn focus_shown(&self, window: &mut Window, cx: &mut Context<Self>) {
+    /// whose password prompt holds Secure Keyboard Entry; a tutti pane's session hears the window
+    /// shows it focused, active or not. A window that is a tutti session makes the tab it shows
+    /// the session's current one, where tutti's runs land.
+    fn focus_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.tabs.active().focus();
         if let Some(view) = self.views.get(&focus) {
             view.read(cx).focus(window);
+            view.read(cx).shown_focused();
         }
         window.set_window_title(&self.title(focus, cx));
         cx.defer(crate::app::refresh_secure_input);
         cx.notify();
+        if let Some(mirror) = self.mirror.as_mut()
+            && let (Some(session), Some(&(_, tab))) =
+                (&mirror.session, mirror.tabs.get(self.tabs.index()))
+            && mirror.selected.replace(tab) != Some(tab)
+        {
+            session.ask(&tutti::Request::TabSelect { id: tab });
+        }
     }
 
     fn pane_event(
@@ -836,6 +1209,9 @@ impl TerminalWindow {
             PaneEvent::Focused => {
                 if self.tabs.active().panes().contains(&id) {
                     self.tabs.active_mut().set_focus(id);
+                    if let Some(view) = self.views.get(&id) {
+                        view.read(cx).shown_focused();
+                    }
                     window.set_window_title(&self.title(id, cx));
                     cx.defer(crate::app::refresh_secure_input);
                     cx.notify();
@@ -863,6 +1239,11 @@ impl TerminalWindow {
                 };
                 self.attention
                     .push(format!("notification from pane {id} {title:?} {body:?}: {fate}"));
+            }
+            // tutti keeps an exited pane until it is killed: so does the window that is its
+            // session, showing its last screen.
+            PaneEvent::Exited(status) if self.mirror.is_some() => {
+                crate::note(&format!("pane {id}: its tutti pane's stream ended: {status}"))
             }
             PaneEvent::Exited(status) => {
                 crate::note(&format!("pane {id}: its program exited: {status}"));
@@ -933,7 +1314,7 @@ impl TerminalWindow {
         let command =
             Program::Command(editor::command(cx.global::<Settings>().editor.as_deref(), at));
         if let Err(err) = self.split(from, Direction::Right, Some(command), window, cx) {
-            eprintln!("rtty: {err}");
+            self.say(&err, cx);
         }
     }
 
@@ -1074,6 +1455,9 @@ impl TerminalWindow {
     /// Tab `index`'s close button: closes the tab, once what runs in it is confirmed, and its
     /// panes wait for `undo-close`; the last tab closes the window.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mirror.is_some() {
+            return self.say(DETACHES, cx);
+        }
         let Some(tab) = self.tabs.all().get(index) else { return };
         let panes = tab.panes();
         let closing = if self.tabs.all().len() == 1 { Closing::Window } else { Closing::Tab };
@@ -1267,7 +1651,9 @@ impl TerminalWindow {
     }
 
     /// Splits `from`, showing its tab; the new pane shows `program`, else runs the login shell, a
-    /// command in `from`'s working directory, and takes the keyboard.
+    /// command in `from`'s working directory, and takes the keyboard. Its id; none from a window
+    /// that is a tutti session, which asks tutti to split instead (right or down, as tutti does),
+    /// and shows the new pane once tutti has it (`Told::Created`).
     fn split(
         &mut self,
         from: PaneId,
@@ -1275,7 +1661,18 @@ impl TerminalWindow {
         program: Option<Program>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<PaneId, String> {
+    ) -> Result<Option<PaneId>, String> {
+        if self.mirror.is_some() {
+            let direction = match (direction, program) {
+                (_, Some(_)) => return Err(SESSION_ONLY.into()),
+                (Direction::Right, None) => tutti::Axis::Horizontal,
+                (Direction::Down, None) => tutti::Axis::Vertical,
+                _ => return Err("tutti splits a pane right or down".into()),
+            };
+            let (session, pane) = self.mirrored(from)?;
+            session.ask(&tutti::Request::PaneSplit { pane, direction });
+            return Ok(None);
+        }
         self.tabs.select(self.tabs.find(from).ok_or(format!("no pane {from}"))?);
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
@@ -1284,22 +1681,27 @@ impl TerminalWindow {
         let rects = layout.rects(area);
         let (_, rect) =
             rects.iter().find(|(pane, _)| *pane == id).expect("the new pane is laid out");
-        let mut program =
-            program.unwrap_or_else(|| Program::Command(CommandBuilder::new_default_prog()));
-        let cwd = self.views.get(&from).and_then(|view| view.read(cx).cwd());
-        if let (Program::Command(command), Some(cwd)) = (&mut program, cwd) {
-            command.cwd(cwd);
-        }
         crate::note(&format!("pane {from}: splitting {} into pane {id}", direction.name()));
-        let (pane, notices) = spawn(program, id, rect.rows, rect.cols, &self.scheme, cx)?;
-        *self.tabs.active_mut() = layout;
-        self.add(id, pane, notices, window, cx);
-        Ok(id)
+        match program.unwrap_or_else(|| Program::Command(CommandBuilder::new_default_prog())) {
+            Program::Command(mut command) => {
+                if let Some(cwd) = self.views.get(&from).and_then(|view| view.read(cx).cwd()) {
+                    command.cwd(cwd);
+                }
+                let (pane, notices) = spawn(command, id, rect.rows, rect.cols, &self.scheme, cx)?;
+                *self.tabs.active_mut() = layout;
+                self.add(id, pane, notices, window, cx);
+            }
+            Program::Tutti { socket, pane } => {
+                *self.tabs.active_mut() = layout;
+                self.attach_tutti(id, socket, pane, window, cx);
+            }
+        }
+        Ok(Some(id))
     }
 
     fn split_focused(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(err) = self.split(self.tabs.active().focus(), direction, None, window, cx) {
-            eprintln!("rtty: {err}");
+            self.say(&err, cx);
         }
     }
 
@@ -1337,9 +1739,13 @@ impl TerminalWindow {
                 self.resize(from.unwrap_or(focused), direction, amount, window, cx);
                 Response::Done
             }
-            Request::Split { pane, direction } => self
-                .split(pane.unwrap_or(focused), direction, None, window, cx)
-                .map_or_else(Response::Error, Response::Pane),
+            Request::Split { pane, direction } => {
+                match self.split(pane.unwrap_or(focused), direction, None, window, cx) {
+                    Ok(Some(pane)) => Response::Pane(pane),
+                    Ok(None) => Response::Done,
+                    Err(err) => Response::Error(err),
+                }
+            }
             Request::Zoom { pane } => {
                 self.show(pane.unwrap_or(focused), window, cx);
                 self.tabs.active_mut().toggle_zoom();
@@ -1349,13 +1755,14 @@ impl TerminalWindow {
             Request::TuttiAttach { socket, pane, from, split } => {
                 let program = Program::Tutti { socket, pane };
                 let opened = match split {
-                    Some(direction) => {
-                        self.split(from.unwrap_or(focused), direction, Some(program), window, cx)
-                    }
+                    Some(direction) => self
+                        .split(from.unwrap_or(focused), direction, Some(program), window, cx)
+                        .map(|id| id.expect("a window of rtty's own splits itself")),
                     None => self.open_tab(program, window, cx),
                 };
                 opened.map_or_else(Response::Error, Response::Pane)
             }
+            Request::TuttiOpen { .. } => Response::Error("not a pane's request".into()),
         }
     }
 
@@ -1371,6 +1778,7 @@ impl TerminalWindow {
                 .filter_map(|id| {
                     let view = self.views.get(&id)?.read(cx);
                     let (rows, cols) = view.size();
+                    let tutti = view.tutti().map(|(socket, pane)| (tutti::name(socket), pane));
                     Some(PaneInfo {
                         id,
                         focused: id == tab.focus(),
@@ -1379,6 +1787,7 @@ impl TerminalWindow {
                         rows,
                         cols,
                         claims_keys: view.claims_keys(),
+                        tutti,
                     })
                 })
                 .collect(),
@@ -1390,26 +1799,47 @@ impl TerminalWindow {
         }
     }
 
+    /// A new tab, a login shell in it. A window that is a tutti session asks tutti for one in the
+    /// workspace of the tab it shows, and a shell in it, as tutti's own new tab and its run do,
+    /// and shows it once tutti has it (`Told::Created`).
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(mirror) = &self.mirror {
+            let Some(session) = mirror.session.clone() else { return self.say(UNANSWERED, cx) };
+            let workspace = mirror.tabs.get(self.tabs.index()).map(|(workspace, _)| *workspace);
+            session.ask(&tutti::Request::TabNew { workspace });
+            let cmd = vec![CommandBuilder::new_default_prog().get_shell()];
+            return session.ask(&tutti::Request::PaneRun { tab: None, cmd });
+        }
         let shell = Program::Command(shell(self.focused_cwd(cx)));
         if let Err(err) = self.open_tab(shell, window, cx) {
-            eprintln!("rtty: {err}");
+            self.say(&err, cx);
         }
     }
 
     /// Opens a tab after the current one with `program` in its one pane, which takes the
-    /// keyboard.
+    /// keyboard; not in a window that is a tutti session, whose tabs are tutti's.
     fn open_tab(
         &mut self,
         program: Program,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<PaneId, String> {
+        if self.mirror.is_some() {
+            return Err(SESSION_ONLY.into());
+        }
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
-        let (pane, notices) = spawn(program, id, area.rows, area.cols, &self.scheme, cx)?;
-        self.tabs.open(id);
-        self.add(id, pane, notices, window, cx);
+        match program {
+            Program::Command(command) => {
+                let (pane, notices) = spawn(command, id, area.rows, area.cols, &self.scheme, cx)?;
+                self.tabs.open(id);
+                self.add(id, pane, notices, window, cx);
+            }
+            Program::Tutti { socket, pane } => {
+                self.tabs.open(id);
+                self.attach_tutti(id, socket, pane, window, cx);
+            }
+        }
         Ok(id)
     }
 
@@ -1485,7 +1915,9 @@ impl TerminalWindow {
         moved
     }
 
-    /// Moves the divider nearest `from` across `direction` by `amount`.
+    /// Moves the divider nearest `from` across `direction` by `amount`. A window that is a tutti
+    /// session asks tutti to, by a share of the window as tutti measures, cells taken as theirs of
+    /// the window across.
     fn resize(
         &mut self,
         from: PaneId,
@@ -1494,6 +1926,23 @@ impl TerminalWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mirror.is_some() {
+            let (area, ..) = self.area(window, cx);
+            let across = match direction {
+                Direction::Left | Direction::Right => area.cols,
+                Direction::Up | Direction::Down => area.rows,
+            };
+            let delta = match amount {
+                Amount::Fraction(share) => share,
+                Amount::Cells(cells) => f32::from(cells) / f32::from(across),
+            };
+            let toward = |pane| tutti::Request::PaneResizeToward {
+                from: Some(pane),
+                toward: direction,
+                delta,
+            };
+            return self.ask_tutti(from, toward, cx);
+        }
         let Some(tab) = self.tabs.find(from) else { return };
         self.tabs.select(tab);
         let (area, ..) = self.area(window, cx);
@@ -1522,8 +1971,21 @@ impl TerminalWindow {
         let col = (position.x / cell.width).max(0.) as u16;
         let row = ((position.y - bar) / cell.height).max(0.) as u16;
         let path = event.drag(cx).0.clone();
+        let before = self.tabs.active().divided(&path);
         self.tabs.active_mut().drag(&path, area, (col, row));
         cx.notify();
+        // A window that is a tutti session asks tutti to move it too, as tutti's border drag
+        // does, whenever it crosses a cell; the layout tutti then tells of settles it.
+        let Some((a, b, ratio)) =
+            self.tabs.active().divided(&path).filter(|_| self.mirror.is_some())
+        else {
+            return;
+        };
+        if before.is_some_and(|(.., was)| was != ratio)
+            && let (Ok((session, a)), Ok((_, b))) = (self.mirrored(a), self.mirrored(b))
+        {
+            session.ask(&tutti::Request::PaneSplitRatio { a, b, ratio });
+        }
     }
 
     /// macOS switched between light and dark: every pane, shown or not, recolors and tells its
@@ -1614,10 +2076,21 @@ impl TerminalWindow {
             let _ = writeln!(out, "said {said:?} {} ms ago", at.elapsed().as_millis());
         }
         out.push_str(&crate::app::dump(cx));
+        if let Some(mirror) = &self.mirror {
+            let panes: BTreeMap<u64, PaneId> = mirror.panes.iter().map(|(t, r)| (*t, *r)).collect();
+            let (name, tabs) = (tutti::name(&mirror.socket), &mirror.tabs);
+            let open = mirror.session.is_some();
+            let _ = writeln!(out, "tutti session {name} open {open} tabs {tabs:?} panes {panes:?}");
+        }
         let rects = layout.rects(area);
         for (id, rect) in &rects {
-            let _ =
-                writeln!(out, "pane {id} at {},{} {}x{}", rect.row, rect.col, rect.rows, rect.cols);
+            let tutti = self.views.get(id).and_then(|view| {
+                let (socket, pane) = view.read(cx).tutti()?;
+                Some(format!(" tutti {}:{pane}", tutti::name(socket)))
+            });
+            let (row, col, rows, cols) = (rect.row, rect.col, rect.rows, rect.cols);
+            let tutti = tutti.unwrap_or_default();
+            let _ = writeln!(out, "pane {id} at {row},{col} {rows}x{cols}{tutti}");
         }
         for (id, _) in &rects {
             if let Some(view) = self.views.get(id) {
@@ -1885,6 +2358,9 @@ impl Render for TerminalWindow {
             .on_action(cx.listener(|this, action: &ClosePane, window, cx| {
                 let pane = this.tabs.active().focus();
                 crate::note(&format!("pane {pane}: {}", action.keystroke));
+                if this.mirror.is_some() {
+                    return this.say(DETACHES, cx);
+                }
                 let running = this.running(&[pane], cx);
                 this.confirm(Closing::Pane, running, window, cx, move |this, window, cx| {
                     this.close(pane, true, window, cx)
@@ -1907,6 +2383,9 @@ impl Render for TerminalWindow {
                 this.focus_shown(window, cx);
             }))
             .on_action(cx.listener(|this, action: &SwapPane, window, cx| {
+                if this.mirror.is_some() {
+                    return this.say("tutti swaps no panes", cx);
+                }
                 let (area, ..) = this.area(window, cx);
                 let focus = this.tabs.active().focus();
                 this.tabs.active_mut().swap(focus, action.0, area);

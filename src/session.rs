@@ -1,6 +1,8 @@
 //! The windows' layout, kept for the next launch: each window's frame, its tabs, their splits with
 //! ratios, zoom and focus, and each pane's working directory. Never what runs in a pane or what it
-//! shows: a restored pane starts a new login shell in its directory.
+//! shows: a restored pane starts a new login shell in its directory. But a pane that showed a tutti
+//! pane shows it again, and a window that was a tutti session is that session again, as its daemon
+//! has it now: the daemon kept them running.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -26,6 +28,12 @@ pub struct Window {
     /// Each pane's working directory, as its shell last reported it (OSC 7), else as its
     /// foreground process had it.
     pub cwds: BTreeMap<PaneId, PathBuf>,
+    /// The panes that showed a tutti pane: its session, by its daemon's socket, and its id there.
+    #[serde(default)]
+    pub tutti: BTreeMap<PaneId, (PathBuf, u64)>,
+    /// The tutti session the window was, by its daemon's socket: its tabs are the daemon's.
+    #[serde(default)]
+    pub session: Option<PathBuf>,
 }
 
 /// A saved frame narrower or shorter than this, in points, is no window's.
@@ -123,7 +131,8 @@ mod tests {
     fn window(tabs: Tabs) -> Window {
         let frame = Bounds::new(point(px(40.), px(60.)), size(px(900.), px(600.)));
         let cwds = BTreeMap::from([(1, PathBuf::from("/tmp"))]);
-        Window { frame, display: Some("a-display".into()), tabs, cwds }
+        let display = Some("a-display".into());
+        Window { frame, display, tabs, cwds, tutti: BTreeMap::new(), session: None }
     }
 
     #[test]
@@ -135,9 +144,19 @@ mod tests {
         tabs.active_mut().toggle_zoom();
         tabs.open(3);
         tabs.select(0);
-        let windows = vec![window(tabs), window(Tabs::new(4))];
+        let mut tutti = window(tabs);
+        tutti.tutti.insert(2, ("/run/tutti/work.sock".into(), 7));
+        let session =
+            Window { session: Some("/run/tutti/work.sock".into()), ..window(Tabs::new(4)) };
+        let windows = vec![tutti, session];
         write(&path, &serde_json::to_string(&windows).unwrap()).unwrap();
         assert_eq!(read(&path).unwrap(), windows);
+        // A layout saved before tutti panes were kept reads as one with none.
+        let older = serde_json::to_string(&[window(Tabs::new(5))]).unwrap();
+        let older = older.replace(r#","tutti":{},"session":null"#, "");
+        assert!(!older.contains("tutti"), "{older}");
+        write(&path, &older).unwrap();
+        assert_eq!(read(&path).unwrap(), [window(Tabs::new(5))]);
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         let names: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().flatten().collect();

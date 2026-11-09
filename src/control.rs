@@ -57,6 +57,10 @@ pub enum Request {
         from: Option<PaneId>,
         split: Option<Direction>,
     },
+    /// Opens a window that is the tutti session whose daemon listens on `socket`.
+    TuttiOpen {
+        socket: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -99,6 +103,9 @@ pub struct PaneInfo {
     pub cols: u16,
     /// The program claimed rtty's navigation and resize keys (`RTTY_KEYS=pane`).
     pub claims_keys: bool,
+    /// The tutti pane it shows: its session, and its id there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tutti: Option<(String, u64)>,
 }
 
 /// A request and where its answer goes.

@@ -8,7 +8,8 @@
 //! waiter reports the child's exit.
 //!
 //! A pane can show a pane of tutti's daemon instead (`attach`, `tutti.rs`): its reader and writer
-//! take frames from and to the daemon's connection, and the daemon keeps the program.
+//! take frames from and to the daemon's connection, and the daemon keeps the program. Or it can
+//! only say why it shows nothing (`held`).
 
 use std::ascii;
 use std::ffi::OsString;
@@ -99,14 +100,17 @@ enum Source {
         killer: Box<dyn ChildKiller + Send + Sync>,
         shell: Option<libc::pid_t>,
     },
-    /// A pane of tutti's daemon: the connection, the pane's id there, the writer's frames, and
-    /// what the session's last snapshot said of the pane.
+    /// A pane of tutti's daemon: its stream's connection, the pane's id there, the writer's
+    /// frames, the session's connection, and what the session's last snapshot said of the pane.
     Tutti {
         stream: UnixStream,
         pane: u64,
         frames: mpsc::Sender<tutti::Frame>,
+        session: Arc<tutti::Session>,
         watched: Arc<Mutex<tutti::Watched>>,
     },
+    /// Nothing: the terminal says why.
+    Held,
 }
 
 impl Pane {
@@ -185,14 +189,16 @@ impl Pane {
         Ok((pane, receiver))
     }
 
-    /// Shows pane `pane` of tutti's daemon, which `stream` reaches (`tutti::connect`): the daemon
-    /// keeps the program, and its scrollback, screen and output come over the connection
+    /// Shows pane `pane` of `session` on a connection of its own to the session's daemon: the
+    /// daemon keeps the program, and its scrollback, screen and output come over the connection
     /// (`tutti::Reader`), what is typed goes back, and dropping the pane closes the connection,
     /// which ends nothing. `rows`×`cols` is this pane's vote in the pane's size, which the daemon
     /// settles among all that show it: the terminal takes the size each snapshot comes at. The
-    /// rest as `spawn`; there is no waiter, the reader tells of the program's exit.
+    /// session names the pane and tells its agent's state. Nothing here waits on the daemon: a
+    /// Unix socket's connect does not, and the stream asks for no answer. The rest as `spawn`;
+    /// there is no waiter, the reader tells of the program's exit.
     pub fn attach(
-        mut stream: UnixStream,
+        session: Arc<tutti::Session>,
         pane: u64,
         rows: u16,
         cols: u16,
@@ -200,12 +206,17 @@ impl Pane {
         trace: Option<Trace>,
         graphics: bool,
     ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
-        let (first, read) = tutti::open(&mut stream, pane, rows, cols, scheme.map(tutti::colors))?;
+        let colors = scheme.map(|scheme| tutti::Request::HostColors(tutti::colors(scheme)));
+        let history = SCROLLBACK as u32;
+        let attach = tutti::Request::PaneAttach { pane, rows, cols, history, inline: true };
+        let asked = colors.iter().chain([&attach]).flat_map(|asked| tutti::control(asked).encode());
+        let mut stream = tutti::connect(&session.socket)?;
+        stream.write_all(&asked.collect::<Vec<u8>>())?;
         let term = Arc::new(Mutex::new(terminal(rows, cols, scheme, graphics)));
         let (notices, receiver) = unbounded();
         let (frames, outgoing) = mpsc::channel::<tutti::Frame>();
         let output_pending = Arc::new(AtomicBool::new(false));
-        let watched = Arc::new(Mutex::new(first));
+        let watched = session.show(pane, notices.clone());
 
         let (mut writer, writer_trace) = (stream.try_clone()?, trace.clone());
         thread::Builder::new().name("tutti writer".into()).spawn(move || {
@@ -224,15 +235,14 @@ impl Pane {
             frames: frames.clone(),
             notices,
             pending: output_pending.clone(),
-            watched: watched.clone(),
             trace,
         };
-        let input = io::Cursor::new(read).chain(stream.try_clone()?);
+        let input = stream.try_clone()?;
         let reader =
             thread::Builder::new().name("tutti reader".into()).spawn(move || reader.run(input))?;
         let pane = Pane {
             term,
-            source: Source::Tutti { stream, pane, frames, watched },
+            source: Source::Tutti { stream, pane, frames, session, watched },
             output_pending,
             reader: Some(reader),
             waiter: None,
@@ -240,6 +250,28 @@ impl Pane {
             selection: None,
         };
         Ok((pane, receiver))
+    }
+
+    /// A pane that shows nothing but `why`, on a `rows`×`cols` terminal, and is titled so: a
+    /// tutti pane that cannot be shown. It stays until it is closed.
+    pub fn held(
+        why: &str,
+        rows: u16,
+        cols: u16,
+        scheme: Option<&Scheme>,
+    ) -> (Pane, UnboundedReceiver<Notice>) {
+        let mut term = terminal(rows, cols, scheme, false);
+        term.advance(format!("\x1b]2;{why}\x07[{why}]\r\n").as_bytes());
+        let pane = Pane {
+            term: Arc::new(Mutex::new(term)),
+            source: Source::Held,
+            output_pending: Arc::default(),
+            reader: None,
+            waiter: None,
+            scrolled: None,
+            selection: None,
+        };
+        (pane, unbounded().1)
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Terminal> {
@@ -261,6 +293,7 @@ impl Pane {
             Source::Tutti { pane, frames, .. } => {
                 let _ = frames.send(tutti::Frame::Input { pane: *pane, bytes });
             }
+            Source::Held => {}
         }
     }
 
@@ -286,7 +319,7 @@ impl Pane {
     /// resizes the terminal.
     pub fn resize(&mut self, rows: u16, cols: u16, cell: (u16, u16)) {
         let mut term = self.lock();
-        if matches!(self.source, Source::Pty { .. }) {
+        if !matches!(self.source, Source::Tutti { .. }) {
             term.resize(rows, cols);
         }
         term.set_cell_pixels(cell.0, cell.1);
@@ -322,19 +355,28 @@ impl Pane {
         }
     }
 
-    /// Ends the program: hangs up on the child, or asks a tutti pane's daemon to kill the pane.
-    /// The exit follows, as any exit does.
+    /// Ends the program: hangs up on the child, or asks a tutti pane's daemon to kill the pane,
+    /// over the session's connection, which an exit leaves open (a pane tutti keeps once its
+    /// program exited goes too). The exit follows, as any exit does.
     pub fn kill(&mut self) {
-        if let Source::Pty { killer, .. } = &mut self.source {
-            let _ = killer.kill();
+        match &mut self.source {
+            Source::Pty { killer, .. } => {
+                let _ = killer.kill();
+            }
+            Source::Tutti { pane, session, .. } => {
+                session.ask(&tutti::Request::PaneKill { pane: *pane })
+            }
+            Source::Held => {}
         }
-        self.ask(|pane| tutti::Request::PaneKill { pane });
     }
 
-    /// The pane took the keyboard: a tutti pane becomes its session's active one, and a finished
-    /// agent's there counts as seen.
+    /// The window shows the pane focused, whether or not it is the active window: a tutti pane's
+    /// session hears so, as a view's own focus, which moves nothing of the session's
+    /// (`tutti::Request::Attach`) but where tutti hands moves at its edges back.
     pub fn focused(&self) {
-        self.ask(|pane| tutti::Request::PaneFocus { pane });
+        if let Source::Tutti { pane, session, .. } = &self.source {
+            session.ask(&tutti::Request::PaneFocus { pane: *pane });
+        }
     }
 
     /// What tutti calls a tutti pane, and the directory its daemon last saw the pane's program in.
@@ -342,6 +384,12 @@ impl Pane {
         let Source::Tutti { watched, .. } = &self.source else { return None };
         let watched = watched.lock().expect("a reader panicked");
         Some((watched.title.clone(), watched.cwd.clone()))
+    }
+
+    /// A tutti pane's session, by its daemon's socket, and the pane's id there.
+    pub fn tutti(&self) -> Option<(&Path, u64)> {
+        let Source::Tutti { session, pane, .. } = &self.source else { return None };
+        Some((&session.socket, *pane))
     }
 
     /// The directory the pane's program is in, as the system tells (`foreground`) or a tutti
@@ -447,9 +495,11 @@ impl Drop for Pane {
             Source::Pty { killer, .. } => {
                 let _ = killer.kill();
             }
-            Source::Tutti { stream, .. } => {
+            Source::Tutti { stream, session, watched, .. } => {
                 let _ = stream.shutdown(Shutdown::Both);
+                session.forget(watched);
             }
+            Source::Held => {}
         }
     }
 }
@@ -925,6 +975,21 @@ mod tests {
         }
         std::fs::remove_dir_all(integration.parent().unwrap()).unwrap();
         std::fs::remove_dir_all(homes).unwrap();
+    }
+
+    /// A pane that cannot show its tutti pane says why, on its screen and in its title, and
+    /// takes nothing: what is typed goes nowhere, a kill ends nothing, and a resize reflows it.
+    #[test]
+    fn a_held_pane_says_why_and_takes_nothing() {
+        let (mut pane, mut notices) = Pane::held("no pane 9 in tutti session s", 4, 40, None);
+        assert_eq!(pane.lock().contents(), "[no pane 9 in tutti session s]");
+        assert_eq!(pane.lock().title(), "no pane 9 in tutti session s");
+        pane.input(b"ls\r".to_vec());
+        pane.kill();
+        pane.resize(4, 20, (8, 16));
+        assert_eq!(pane.lock().size(), (4, 20));
+        assert_eq!((pane.tutti(), pane.foreground(), pane.reads_password()), (None, None, false));
+        assert!(notices.try_recv().is_err(), "nothing to tell");
     }
 
     #[test]

@@ -320,8 +320,9 @@ pub fn parse(source: &str) -> Result<Vec<(usize, Step)>, String> {
     Ok(steps)
 }
 
-/// Runs the steps against the window, each after the focused pane's first frame. A step that
-/// fails ends rtty with exit status 1.
+/// Runs the steps against the window, each once it has a focused pane (a tutti pane's shows
+/// once its session answers, 10 s at most) and after that pane's first frame. A step that fails
+/// ends rtty with exit status 1.
 pub fn run(steps: Vec<(usize, Step)>, window: &mut Window, cx: &mut Context<TerminalWindow>) {
     cx.spawn_in(window, async move |this, cx| {
         for (number, step) in steps {
@@ -339,8 +340,17 @@ async fn perform(
     step: &Step,
     cx: &mut AsyncWindowContext,
 ) -> Result<(), String> {
-    let pane = this.update(cx, |window, _| window.focused()).map_err(|err| err.to_string())?;
-    let pane = pane.ok_or("no pane")?;
+    let started = Instant::now();
+    let pane = loop {
+        let pane = this.update(cx, |window, _| window.focused()).map_err(|err| err.to_string())?;
+        match pane {
+            Some(pane) => break pane,
+            None if started.elapsed() < WAIT_TIMEOUT => {
+                cx.background_executor().timer(Duration::from_millis(10)).await
+            }
+            None => return Err("no pane".into()),
+        }
+    };
     // The pane's first frame lays out what the step works on.
     while pane
         .update(cx, |pane, _| pane.cell_center(0, 0))

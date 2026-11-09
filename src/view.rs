@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::iter;
 use std::mem;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Poll;
@@ -467,11 +467,6 @@ impl PaneView {
             stats,
         };
         view.refresh_title();
-        // A pane that starts with the keyboard in the active window sees no change of focus: a
-        // tutti pane's daemon hears of it now. A program of rtty's own is told nothing.
-        if view.focused {
-            view.pane.focused();
-        }
         view
     }
 
@@ -486,9 +481,6 @@ impl PaneView {
         let changed = mem::replace(&mut self.focused, focused) != focused;
         if changed && self.pane.lock().modes().focus_reports {
             self.pane.write(if focused { b"\x1b[I" } else { b"\x1b[O" }.to_vec());
-        }
-        if changed && focused {
-            self.pane.focused();
         }
         cx.notify();
     }
@@ -685,6 +677,16 @@ impl PaneView {
 
     pub fn kill(&mut self) {
         self.pane.kill()
+    }
+
+    /// A tutti pane's session, by its daemon's socket, and the pane's id there.
+    pub fn tutti(&self) -> Option<(&Path, u64)> {
+        self.pane.tutti()
+    }
+
+    /// The window shows this pane focused: a tutti pane's session hears so (`Pane::focused`).
+    pub fn shown_focused(&self) {
+        self.pane.focused()
     }
 
     pub fn progress(&self) -> Option<Progress> {

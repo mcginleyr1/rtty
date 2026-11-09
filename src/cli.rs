@@ -18,8 +18,10 @@ pub const USAGE: &str = "usage: rtty cli list
        rtty cli pane zoom [<pane>]
        rtty cli tutti attach <pane> [-s <session>] [--split <right|down|left|up> | --tab]
                              [--from <pane>]
+       rtty cli tutti open [-s <session>]
 --from defaults to $RTTY_PANE, else the focused pane; --amount to 0.05 of the split; -s to
-$TUTTI_SESSION, else tutti; tutti attach opens a new tab unless told to split.";
+$TUTTI_SESSION, else tutti; tutti attach opens a new tab unless told to split; tutti open opens
+a window that is the whole session.";
 
 /// tutti's step for Alt+h/j/k/l and `pane resize`.
 pub const RESIZE_STEP: Amount = Amount::Fraction(0.05);
@@ -81,7 +83,8 @@ fn parse(
         ["list"] => return Ok(Request::List),
         ["pane", command, rest @ ..] => (*command, rest),
         ["tutti", "attach", rest @ ..] => ("tutti attach", rest),
-        _ => return Err("expected `list`, `pane <command>` or `tutti attach`".into()),
+        ["tutti", "open", rest @ ..] => ("tutti open", rest),
+        _ => return Err("expected `list`, `pane <command>`, `tutti attach` or `tutti open`".into()),
     };
     let mut positional = Vec::new();
     let (mut direction, mut from, mut amount, mut wrap) = (None, None, None, false);
@@ -119,6 +122,8 @@ fn parse(
     }
     let here = here.as_deref().map(pane_numbered).transpose()?;
     let from = from.or(here);
+    let session = session.or(tutti_session).unwrap_or_else(|| "tutti".into());
+    let socket = || tutti::socket_path(&session);
     let pane = |index: usize| positional.get(index).map(|&word| pane_numbered(word)).transpose();
     let only = |count: usize, request: Request| {
         if positional.len() > count {
@@ -151,10 +156,9 @@ fn parse(
         ("tutti attach", _) => {
             let pane = positional.first().ok_or("tutti attach needs a pane")?;
             let pane = pane.parse().map_err(|_| format!("{pane}: not a pane number"))?;
-            let session = session.or(tutti_session).unwrap_or_else(|| "tutti".into());
-            let socket = tutti::socket_path(&session);
-            only(1, Request::TuttiAttach { socket, pane, from, split })
+            only(1, Request::TuttiAttach { socket: socket(), pane, from, split })
         }
+        ("tutti open", _) => only(0, Request::TuttiOpen { socket: socket() }),
         _ => Err(format!("unknown command pane {command}")),
     }
 }
@@ -257,7 +261,13 @@ mod tests {
                 split: None
             })
         );
+        assert_eq!(
+            attach("tutti open -s work", Some("outer")),
+            Ok(Request::TuttiOpen { socket: socket("work") })
+        );
+        assert_eq!(attach("tutti open", None), Ok(Request::TuttiOpen { socket: socket("tutti") }));
         let error = |line| attach(line, None).unwrap_err();
+        assert!(error("tutti open 3").contains("unexpected 3"));
         assert!(error("tutti attach").contains("needs a pane"));
         assert!(error("tutti attach x").contains("x: not a pane number"));
         assert!(error("tutti attach 3 4").contains("unexpected 4"));
