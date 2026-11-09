@@ -194,10 +194,10 @@ quits, and once a second when any of that changed since it last wrote it; a writ
 tried again each second, its error logged once. At launch it opens those windows, each pane a new
 login shell in its directory (the home directory, when that is gone). It never starts the programs
 that ran there and never keeps what a pane showed. [tutti panes](#tutti-panes) are the exception,
-since tutti's daemon kept them running: a pane that showed one shows it again, by the session's
-socket and the pane's id, and one tutti no longer has says so (`[tutti pane 2: no pane 2]`) rather
-than becoming a shell; a window that was a tutti session is that session again, as its daemon has
-it now. A missing or corrupt file starts fresh, and the
+since tutti's daemon kept them running: a pane asked to show one asks again, by the session's
+socket and the pane's id (whether it showed it or its daemon was down), and one tutti no longer has
+says so (`[tutti pane 2: no pane 2]`) rather than becoming a shell; a window that was a tutti
+session, answered or not, is that session again, as its daemon has it now. A missing or corrupt file starts fresh, and the
 log says why: corrupt is also a pane in two tabs, a focus on no pane, a ratio past 1, or a frame
 under 100 points across or down. Closing the last window quits with no window to restore, so the
 next launch opens one fresh window.

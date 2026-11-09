@@ -3,13 +3,19 @@
 //! tutti session takes its trees from tutti's (`Layout::mirror`), the same binary trees with
 //! ratios. Nothing here knows GPUI, so all of it is unit tested.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tutti::{Axis, Tree};
+use crate::tutti::{Axis, Tree, Workspace};
 
 pub type PaneId = u64;
+
+/// rtty's id for each tutti pane a window shows, by tutti's.
+pub type Named = HashMap<u64, PaneId>;
+
+/// Each of a window's tabs as tutti's workspace and tab ids, in the tabs' order.
+pub type TabIds = Vec<(u64, u64)>;
 
 /// A block of cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +340,28 @@ impl Layout {
         if let Some(Node::Split { ratio: old, .. }) = self.root.at_path(path) {
             *old = ratio;
         }
+    }
+
+    /// How far a resize of `pane` toward `direction` by `amount` moves the ratio of the split it
+    /// moves (`resize`'s, the deepest across that way, as tutti's is), in `area`: a fraction is
+    /// itself, cells their share of the cells that split shares out. `None` with no such split.
+    pub fn share(
+        &self,
+        pane: PaneId,
+        direction: Direction,
+        amount: Amount,
+        area: Rect,
+    ) -> Option<f32> {
+        let path = self.root.ancestor(pane, direction.orientation())?;
+        let (extent, orientation) = self.split_at(&path, area)?;
+        let len = match orientation {
+            Orientation::SideBySide => extent.cols,
+            Orientation::Stacked => extent.rows,
+        };
+        Some(match amount {
+            Amount::Fraction(share) => share,
+            Amount::Cells(cells) => f32::from(cells) / f32::from(len.saturating_sub(1).max(1)),
+        })
     }
 
     /// Moves the divider nearest `pane` that runs across `direction` that way by `amount`, as
@@ -691,6 +719,46 @@ pub enum Closed {
 impl Tabs {
     pub fn new(pane: PaneId) -> Tabs {
         Tabs { tabs: vec![Layout::new(pane)], active: 0 }
+    }
+
+    /// The tabs tutti's `workspaces` have (those with a pane, workspace by workspace) as these
+    /// tabs, whose tutti workspace and tab ids `ids` lists in order, would show them: each laid
+    /// out by `Layout::mirror` from the tab here with its tutti id, wherever it moved; rtty's id
+    /// for each tutti pane from `panes`, else `next`. The tab that shows here shows still, else
+    /// tutti's current one, else the first. With the new tabs' ids and the panes they hold; none
+    /// when no tab has a pane.
+    pub fn mirror(
+        &self,
+        ids: &[(u64, u64)],
+        workspaces: &[Workspace],
+        panes: &Named,
+        mut next: impl FnMut() -> PaneId,
+    ) -> Option<(Tabs, TabIds, Named)> {
+        let shown = ids.get(self.active).map(|(_, tab)| *tab);
+        let was = |tab| ids.iter().position(|(_, id)| *id == tab).and_then(|at| self.tabs.get(at));
+        let (mut layouts, mut tabs, mut current) = (Vec::new(), Vec::new(), None);
+        let mut named = HashMap::new();
+        for workspace in workspaces {
+            for tab in &workspace.tabs {
+                let Some(tree) = &tab.layout else { continue };
+                let mut id = |pane| {
+                    let known = panes.get(&pane).copied();
+                    *named.entry(pane).or_insert_with(|| known.unwrap_or_else(&mut next))
+                };
+                layouts.push(Layout::mirror(was(tab.id), tree, tab.active_pane, &mut id));
+                if tab.active {
+                    current = Some(tabs.len());
+                }
+                tabs.push((workspace.id, tab.id));
+            }
+        }
+        if layouts.is_empty() {
+            return None;
+        }
+        let present: Vec<PaneId> = layouts.iter().flat_map(Layout::panes).collect();
+        named.retain(|_, id| present.contains(id));
+        let index = tabs.iter().position(|(_, tab)| Some(*tab) == shown).or(current).unwrap_or(0);
+        Some((Tabs::of(layouts, index), tabs, named))
     }
 
     /// `tabs`, tab `active` showing (the last, past them); at least one tab.
@@ -1212,6 +1280,81 @@ mod tests {
         assert_eq!((lone.panes(), lone.focus()), (vec![4], 4));
         let tabs = Tabs::of(vec![lone, after], 5);
         assert_eq!(tabs.index(), 1);
+    }
+
+    /// tutti's tabs as a window's, then reordered: each tab keeps its own zoom and rtty's pane ids
+    /// by its tutti id, wherever it moved; the tab that showed shows still; a new pane gets the
+    /// next id, a tab with no pane is left out, and a session with none gives no tabs.
+    #[test]
+    fn tabs_mirror_tuttis_by_tab_id_whatever_their_order() {
+        use crate::tutti::Tab;
+        let tab = |id, layout, active| Tab { id, active, layout, active_pane: None };
+        let column = Tree::Split {
+            direction: Axis::Vertical,
+            ratio: 0.5,
+            first: Box::new(Tree::Leaf(21)),
+            second: Box::new(Tree::Leaf(22)),
+        };
+        let first = [Workspace {
+            id: 5,
+            tabs: vec![tab(10, Some(tutti_three(10)), true), tab(20, Some(Tree::Leaf(21)), false)],
+        }];
+        let mut next = 100..;
+        let mirrored = Tabs::new(1).mirror(&[], &first, &HashMap::new(), || next.next().unwrap());
+        let (mut tabs, ids, panes) = mirrored.unwrap();
+        assert_eq!((ids.as_slice(), tabs.index()), ([(5, 10), (5, 20)].as_slice(), 0));
+        assert_eq!(
+            (tabs.all()[0].panes(), tabs.all()[1].panes()),
+            (vec![100, 101, 102], vec![103])
+        );
+        tabs.active_mut().toggle_zoom();
+        tabs.select(1);
+        let reordered = [Workspace {
+            id: 5,
+            tabs: vec![
+                tab(20, Some(column), false),
+                tab(10, Some(tutti_three(10)), true),
+                tab(30, None, false),
+            ],
+        }];
+        let mirrored = tabs.mirror(&ids, &reordered, &panes, || next.next().unwrap());
+        let (again, ids, panes) = mirrored.unwrap();
+        assert_eq!(ids, [(5, 20), (5, 10)]);
+        assert_eq!(again.index(), 0, "tab 20 shows still, first now");
+        assert_eq!(
+            (again.all()[0].panes(), again.all()[1].panes()),
+            (vec![103, 104], vec![100, 101, 102])
+        );
+        assert!(!again.all()[0].zoomed() && again.all()[1].zoomed(), "zoom stays with tab 10");
+        assert_eq!(panes.len(), 5);
+        let none = [Workspace { id: 5, tabs: vec![tab(30, None, true)] }];
+        assert!(again.mirror(&ids, &none, &panes, || 0).is_none());
+    }
+
+    /// A resize by cells is their share of the split it moves, not of the window: in 1 | (2 | 3),
+    /// 4 cells left from 3 move the inner split, 40 cells across, by 0.1, and that ratio moved
+    /// so (as tutti moves it) gives 3 four more columns.
+    #[test]
+    fn a_resize_by_cells_is_its_share_of_the_split_it_moves() {
+        let area = Rect { cols: 83, ..AREA };
+        let mut layout = Layout::new(1);
+        layout.split(1, Direction::Right, 2);
+        layout.split(2, Direction::Right, 3);
+        let delta = layout.share(3, Direction::Left, Amount::Cells(4), area).unwrap();
+        assert_eq!(delta, 0.1);
+        let width = |layout: &Layout| layout.rects(area)[2].1.cols;
+        let before = width(&layout);
+        if let Some(Node::Split { ratio, .. }) = layout.root.at_path(&[true]) {
+            *ratio -= delta;
+        }
+        assert_eq!(width(&layout), before + 4);
+        let fraction = layout.share(3, Direction::Left, Amount::Fraction(0.05), area);
+        assert_eq!(fraction, Some(0.05));
+        assert_eq!(
+            layout.share(3, Direction::Up, Amount::Cells(4), area),
+            None,
+            "no split that way"
+        );
     }
 
     /// A divider names the split it moves by a pane from either side, as tutti's border drag does.

@@ -148,6 +148,8 @@ pub enum Request {
     /// Subscribe to the session's snapshots (`Message::Snapshot`): one at once, then one on every
     /// change. Read-only: it moves no size, focus or seen state.
     Watch,
+    /// The session's tabs as they are now (`Message::View`).
+    View,
     /// The colours of the terminal the panes are shown on, which the daemon answers their colour
     /// queries with, and whose light or dark it tells the programs that asked (mode 2031).
     HostColors(HostColors),
@@ -238,6 +240,10 @@ enum Message {
     },
     /// The session's tabs or panes changed: all of them, as they are now.
     LayoutChanged {
+        workspaces: Vec<Workspace>,
+    },
+    /// The answer to `View`: the session's workspaces.
+    View {
         workspaces: Vec<Workspace>,
     },
     /// The answer to a split or a run: the pane it made.
@@ -449,7 +455,13 @@ impl Session {
         stream
             .write_all(&[control(&attach).encode(), control(&Request::Watch).encode()].concat())?;
         let (mut buf, mut tabs, mut first) = (Vec::new(), None, None);
-        while tabs.is_none() || first.is_none() {
+        // A change told before the answer may be older than the answer's layout or newer: the
+        // daemon registers the client, takes the layout, then queues its answer, and tells every
+        // client of a change meanwhile. The session's view, asked after the answer, settles it:
+        // the daemon reads a connection's requests in order, so it takes that view after any
+        // change it told before its answer.
+        let (mut early, mut asked) = (false, false);
+        while tabs.is_none() || first.is_none() || asked {
             let frame =
                 next(&mut Until(&stream, deadline), &mut buf).map_err(|err| match err.kind() {
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
@@ -484,11 +496,21 @@ impl Session {
                         "tutti's daemon speaks wire revision {wire_rev}, rtty {WIRE_REV}: {update}"
                     )));
                 }
-                Ok(Message::Attached { workspaces, .. }) => tabs = Some(workspaces),
-                // A change before the answer is older than it; one after, newer.
-                Ok(Message::LayoutChanged { workspaces }) if tabs.is_some() => {
-                    tabs = Some(workspaces)
+                Ok(Message::Attached { workspaces, .. }) => {
+                    tabs = Some(workspaces);
+                    if early {
+                        stream.write_all(&control(&Request::View).encode())?;
+                        asked = true;
+                    }
                 }
+                Ok(Message::View { workspaces }) if asked => {
+                    (tabs, asked) = (Some(workspaces), false)
+                }
+                // One after the answer is newer than it.
+                Ok(Message::LayoutChanged { workspaces }) => match tabs {
+                    None => early = true,
+                    Some(_) => tabs = Some(workspaces),
+                },
                 Ok(Message::Snapshot { panes }) => first = Some(panes),
                 Ok(Message::Error { message }) => return Err(io::Error::other(message)),
                 _ => {}
@@ -903,6 +925,7 @@ mod tests {
             frame => panic!("{frame:?}"),
         };
         assert_eq!(json(Request::Watch), r#"{"type":"watch"}"#);
+        assert_eq!(json(Request::View), r#"{"type":"view"}"#);
         assert_eq!(
             json(Request::Attach {
                 terminal: Some("local.rtty".into()),
@@ -978,6 +1001,8 @@ mod tests {
             read(r#"{"type":"layout_changed","workspaces":[]}"#),
             Message::LayoutChanged { .. }
         ));
+        let view = read(r#"{"req":3,"type":"view","workspaces":[{"id":5,"name":"w","tabs":[]}]}"#);
+        assert!(matches!(&view, Message::View { workspaces } if workspaces[0].id == 5), "{view:?}");
         assert!(matches!(
             read(r#"{"req":4,"type":"pane_created","id":9}"#),
             Message::PaneCreated { id: 9 }
@@ -1161,12 +1186,11 @@ mod tests {
     }
 
     /// The opening: the answer gives the session's tabs, whatever pane frames come between, and a
-    /// layout change after it replaces them (one before it is older); the first snapshot names
-    /// the panes, which a pane shown later hears at once.
+    /// layout change after it replaces them; the first snapshot names the panes, which a pane
+    /// shown later hears at once.
     #[test]
     fn a_session_opens_on_its_answer_and_its_first_snapshot() {
         let (open, mut daemon) = opening();
-        daemon.say(r#"{"type":"layout_changed","workspaces":[]}"#);
         daemon.say(&attached_json(WIRE_REV));
         daemon.send(Frame::Snapshot { pane: 2, rows: 4, cols: 40, bytes: b"x".to_vec() });
         daemon.send(Frame::Delta);
@@ -1175,6 +1199,8 @@ mod tests {
         let (session, tabs, _told) = open.join().unwrap().unwrap();
         assert_eq!(tabs, attached_tabs());
         assert_eq!(name(&session.socket), "s");
+        session.ask(&Request::PaneKill { pane: 9 });
+        assert_eq!(daemon.asked()["type"], "pane_kill", "no view asked: nothing came before");
         let (notices, mut heard) = unbounded();
         let watched = session.show(3, notices);
         assert_eq!(watched.lock().unwrap().state, "working");
@@ -1190,6 +1216,24 @@ mod tests {
         daemon.say(&attached_json(WIRE_REV));
         daemon.say(r#"{"type":"layout_changed","workspaces":[{"id":5,"tabs":[]}]}"#);
         daemon.watched(&[]);
+        let (_, tabs, _) = open.join().unwrap().unwrap();
+        assert_eq!(tabs, [Workspace { id: 5, tabs: Vec::new() }]);
+    }
+
+    /// A layout change told before the answer may be newer than the answer's layout (the daemon
+    /// tells changes to a client it registered before it took that layout): the opening asks the
+    /// session's view, which the daemon takes after it, and opens on that.
+    #[test]
+    fn a_change_told_before_the_answer_is_settled_by_the_view() {
+        let (open, mut daemon) = opening();
+        let newer = r#"{"type":"layout_changed","workspaces":[{"id":5,"tabs":[]}]}"#;
+        daemon.say(newer);
+        daemon.say(&attached_json(WIRE_REV));
+        daemon.watched(&[]);
+        thread::sleep(Duration::from_millis(100));
+        assert!(!open.is_finished(), "the opening waits for the view");
+        assert_eq!(daemon.asked(), json!({"type": "view"}));
+        daemon.say(&newer.replace("layout_changed", "view"));
         let (_, tabs, _) = open.join().unwrap().unwrap();
         assert_eq!(tabs, [Workspace { id: 5, tabs: Vec::new() }]);
     }
