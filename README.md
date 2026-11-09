@@ -150,3 +150,7 @@ this README only summarizes.
 
 What works, how each part was checked, what is not yet checked on screen and what is left to do
 are in [docs/status.md](docs/status.md). No Linux port is planned.
+
+## License
+
+Apache-2.0: see [LICENSE](LICENSE).
