@@ -684,9 +684,10 @@ impl PaneView {
         self.pane.tutti()
     }
 
-    /// The window shows this pane focused: a tutti pane's session hears so (`Pane::focused`).
-    pub fn shown_focused(&self) {
-        self.pane.focused()
+    /// The window shows this pane focused, and someone looks at it (`seen`): a tutti pane's
+    /// session hears so (`Pane::focused`).
+    pub fn shown_focused(&self, seen: bool) {
+        self.pane.focused(seen)
     }
 
     pub fn progress(&self) -> Option<Progress> {

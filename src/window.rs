@@ -751,11 +751,15 @@ impl TerminalWindow {
         })
         .detach();
         let scheme = cx.global::<Settings>().theme.for_appearance(window.appearance()).clone();
-        // The title dims while the window is in the background, as macOS's do.
-        cx.observe_window_activation(window, |_, window, cx| {
+        // The title dims while the window is in the background, as macOS's do. Brought forward,
+        // someone looks at its focused pane.
+        cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 let handle = window.window_handle().downcast().expect("a terminal window");
                 crate::app::key_window(handle, cx);
+                if let Some(view) = this.focused() {
+                    view.read(cx).shown_focused(true);
+                }
             }
             cx.notify()
         })
@@ -1164,13 +1168,14 @@ impl TerminalWindow {
 
     /// The keyboard goes to the shown tab's focused pane, whose title names the window, and
     /// whose password prompt holds Secure Keyboard Entry; a tutti pane's session hears the window
-    /// shows it focused, active or not. A window that is a tutti session makes the tab it shows
-    /// the session's current one, where tutti's runs land.
+    /// shows it focused, active or not, and seen while the window is the active one. A window that
+    /// is a tutti session makes the tab it shows the session's current one, where tutti's runs
+    /// land.
     fn focus_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.tabs.active().focus();
         if let Some(view) = self.views.get(&focus) {
             view.read(cx).focus(window);
-            view.read(cx).shown_focused();
+            view.read(cx).shown_focused(window.is_window_active());
         }
         window.set_window_title(&self.title(focus, cx));
         cx.defer(crate::app::refresh_secure_input);
@@ -1202,7 +1207,7 @@ impl TerminalWindow {
                 if self.tabs.active().panes().contains(&id) {
                     self.tabs.active_mut().set_focus(id);
                     if let Some(view) = self.views.get(&id) {
-                        view.read(cx).shown_focused();
+                        view.read(cx).shown_focused(window.is_window_active());
                     }
                     window.set_window_title(&self.title(id, cx));
                     cx.defer(crate::app::refresh_secure_input);
