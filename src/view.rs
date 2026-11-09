@@ -75,7 +75,8 @@ const FLASH: Duration = Duration::from_millis(150);
 /// How long a word on what a key did (copied the last output) stays over the pane.
 const STATUS: Duration = Duration::from_millis(1500);
 
-/// What a program reading the clipboard gets under `--script`, in place of the clipboard.
+/// What a paste or a program reading the clipboard gets under `--script`, in place of the
+/// clipboard.
 pub const STAND_IN: &str = "rtty --script's clipboard";
 
 /// A blinking cursor is on for this long, then off for as long; it holds still once the
@@ -153,9 +154,9 @@ pub struct Launch {
     /// Cmd+click opens links with the system's handler; under `--script` it records them in the
     /// pane's dump instead, so a scripted run never opens anything.
     pub open_links: bool,
-    /// The last command's output goes to the clipboard, and a program's OSC 52 read gets it;
-    /// under `--script` the output goes to the pane's dump only and a read gets `STAND_IN`, so a
-    /// scripted run leaves the clipboard alone and never shows it.
+    /// What is copied goes to the clipboard, and a paste or a program's OSC 52 read gets it;
+    /// under `--script` what is copied goes to the pane's dump only and a paste or a read gets
+    /// `STAND_IN`, so a scripted run leaves the clipboard alone and never shows it.
     pub clipboard: bool,
     /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
     /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
@@ -222,7 +223,7 @@ pub struct PaneView {
     command: Option<(Instant, Option<String>)>,
     /// A word on what a key did, and when, shown over the pane for `STATUS`.
     status: Option<(&'static str, Instant)>,
-    /// What the last command's output key copied, or under `--script` would have.
+    /// What was copied last, or under `--script` would have been.
     copied: Option<String>,
     /// Where a left click that may move the shell's cursor went down (`prompt::cursor_moves`).
     click: Option<GridPoint>,
@@ -806,9 +807,7 @@ impl PaneView {
                     self.set_progress(progress, cx)
                 }
             }
-            Notice::Event(Event::Clipboard { text, .. }) => {
-                cx.write_to_clipboard(ClipboardItem::new_string(text))
-            }
+            Notice::Event(Event::Clipboard { text, .. }) => self.copy_text(text, cx),
             Notice::Event(Event::ClipboardRead { selection, terminator }) => {
                 cx.emit(PaneEvent::ClipboardRead { selection, terminator })
             }
@@ -881,7 +880,7 @@ impl PaneView {
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.pane.selected_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.copy_text(text, cx);
         }
     }
 
@@ -1054,17 +1053,22 @@ impl PaneView {
         }
     }
 
-    /// Answers the program's OSC 52 read with the clipboard's text (`Launch::clipboard`).
+    /// The clipboard's text (under `--script`, `STAND_IN` in its place).
+    fn clipboard_text(cx: &App) -> Option<String> {
+        match cx.global::<Settings>().launch.clipboard {
+            true => cx.read_from_clipboard().and_then(|item| item.text()),
+            false => Some(STAND_IN.into()),
+        }
+    }
+
+    /// Answers the program's OSC 52 read with the clipboard's text (`clipboard_text`).
     pub fn answer_clipboard(&self, selection: &str, terminator: &str, cx: &App) {
-        let text = match cx.global::<Settings>().launch.clipboard {
-            true => cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default(),
-            false => STAND_IN.into(),
-        };
+        let text = Self::clipboard_text(cx).unwrap_or_default();
         self.pane.write(keys::clipboard(selection, &text, terminator));
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if let Some(text) = Self::clipboard_text(cx) {
             self.paste_text(&text, cx);
         }
     }
