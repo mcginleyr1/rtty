@@ -31,6 +31,12 @@ pair in two ways:
   it. tutti's daemon keeps the programs running; rtty draws them, so rtty's scrollback, search,
   selection and links work on them.
 
+tutti's TUI is the primary front end for a tutti session. It is the complete one: the agent
+sidebar, the approvals popup and diffs are there, and new agent features land there first. rtty's
+native tutti panes, the second way above, are a plain view of a session: rtty draws the panes,
+shows an agent's state on the tab's pill, and notifies when an agent is blocked or done. No
+further agent UI is planned in rtty.
+
 Both run the same engine, rtty-vt, so a program behaves the same in either. More in
 [docs/tutti.md](docs/tutti.md).
 
@@ -128,7 +134,7 @@ this README only summarizes.
 | [docs/color-schemes.md](docs/color-schemes.md) | the scheme format, where schemes are found, following the OS, minimum contrast, DEC mode 2031 |
 | [docs/shell-integration.md](docs/shell-integration.md) | the OSC 133 marks, how the scripts load in zsh, bash and fish, what the marks give |
 | [docs/images.md](docs/images.md) | kitty's graphics protocol as rtty draws it, the cell size it reports |
-| [docs/tutti.md](docs/tutti.md) | tutti's TUI in an rtty pane, tutti panes, a window that is a session |
+| [docs/tutti.md](docs/tutti.md) | the two front ends for a tutti session, tutti's TUI in an rtty pane, tutti panes, a window that is a session |
 | [docs/scripting.md](docs/scripting.md) | `--script` and its `dump`, `--trace`, `--stats`, `--smoke`, `--bench`, the log |
 | [docs/testing.md](docs/testing.md) | the merge gate, CI, the UI test suite |
 | [docs/internals.md](docs/internals.md) | what each file in `src/` does, the GPUI pin, patched dependencies, licensing |

@@ -1,8 +1,8 @@
 # tutti
 
-How rtty pairs with tutti, the multiplexer for AI coding agents: tutti's TUI running in an rtty
-pane, and rtty showing the panes of a tutti session as panes of its own, one pane at a time or a
-whole session in a window.
+How rtty pairs with tutti, the multiplexer for AI coding agents: which of the two front ends for
+a tutti session is the primary one, tutti's TUI running in an rtty pane, and rtty showing the panes
+of a tutti session as panes of its own, one pane at a time or a whole session in a window.
 
 ## rtty and tutti
 
@@ -18,6 +18,16 @@ agents: a TUI you run in any terminal, whose daemon keeps sessions alive across 
   tutti's TUI in an rtty pane works as before, beside either.
 - **Both run the same engine.** rtty-vt is shared by rtty, tutti's daemon and tutti's TUI, so a
   program behaves the same in either.
+
+## The two front ends
+
+tutti's TUI is the primary front end for a tutti session. It is the complete one: the agent
+sidebar, the approvals popup and diffs are there, and new agent features land there first.
+
+rtty's native tutti panes ([tutti panes](#tutti-panes)) are a plain view of a session: rtty draws
+the panes, shows an agent's state on the tab's pill (working, or paused while it is blocked or
+holds a permission request), and notifies when an agent is blocked or done. No further agent UI is
+planned in rtty.
 
 ## tutti's TUI in an rtty pane
 
@@ -119,5 +129,5 @@ tutti's. The session's daemon going closes the window, as a last pane closing do
 
 Not yet: sessions on other machines (`tutti --host`), prompt marks in the scrollback a pane had
 before rtty attached, and tutti's chrome (the sidebar, approvals, notes, the changes panel): the
-TUI stays the place for those. Sessions on other machines are on the
-[roadmap](status.md#roadmap).
+TUI stays the place for those ([The two front ends](#the-two-front-ends)). Sessions on other
+machines are on the [roadmap](status.md#roadmap).
