@@ -467,6 +467,11 @@ impl PaneView {
             stats,
         };
         view.refresh_title();
+        // A pane that starts with the keyboard in the active window sees no change of focus: a
+        // tutti pane's daemon hears of it now. A program of rtty's own is told nothing.
+        if view.focused {
+            view.pane.focused();
+        }
         view
     }
 

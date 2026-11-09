@@ -15,11 +15,12 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::mem;
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedSender;
 use rtty_vt::{BACKGROUND, CURSOR, Event, FOREGROUND, Rgb, Terminal};
@@ -253,14 +254,35 @@ pub fn connect(socket: &Path) -> io::Result<UnixStream> {
     })
 }
 
-/// How long the daemon has to answer an opening.
+/// How long the daemon has to answer an opening, in all: the window waits on it.
 const OPENING: Duration = Duration::from_secs(3);
+
+/// A connection read until a deadline: each read waits only for what is left of it, polled, not
+/// a socket timeout, which macOS refuses to set (EINVAL) once the other side has hung up.
+struct Until<'a>(&'a UnixStream, Instant);
+
+impl Read for Until<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Whole milliseconds, rounded up: never short of the deadline.
+        let left = self.1.saturating_duration_since(Instant::now()).as_micros().div_ceil(1000);
+        let mut ready = libc::pollfd { fd: self.0.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, which outlives the call.
+        match unsafe { libc::poll(&mut ready, 1, i32::try_from(left).unwrap_or(i32::MAX)) } {
+            0 => Err(io::ErrorKind::TimedOut.into()),
+            -1 => Err(io::Error::last_os_error()),
+            // Something to read, or the end: the read does not wait.
+            _ => Read::read(&mut self.0, buf),
+        }
+    }
+}
 
 /// Opens pane `pane`'s stream on `stream`, a connection to tutti's daemon (or to a `tutti proxy`,
 /// whose hello comes first and must speak `HOST_REV`): the session watched, whose first snapshot
 /// must speak `WIRE_REV` and hold the pane, then `colors` and the attach, `rows`×`cols` this
 /// connection's vote in the pane's size, with as much of the pane's scrollback as a pane holds.
-/// What that snapshot said of the pane, and the bytes read past it.
+/// What that snapshot said of the pane, and the bytes read past it. The daemon has `OPENING` to
+/// answer, however it trickles; the requests are a few hundred bytes into an empty socket, which
+/// never wait.
 pub fn open(
     stream: &mut UnixStream,
     pane: u64,
@@ -268,17 +290,18 @@ pub fn open(
     cols: u16,
     colors: Option<HostColors>,
 ) -> io::Result<(Watched, Vec<u8>)> {
-    stream.set_read_timeout(Some(OPENING))?;
+    let deadline = Instant::now() + OPENING;
     stream.write_all(&control(&Request::Watch).encode())?;
     let mut buf = Vec::new();
     let watched = loop {
-        let frame = next(stream, &mut buf).map_err(|err| match err.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
-                let waited = OPENING.as_secs();
-                io::Error::other(format!("tutti's daemon did not answer within {waited} s"))
-            }
-            _ => err,
-        })?;
+        let frame =
+            next(&mut Until(stream, deadline), &mut buf).map_err(|err| match err.kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                    let waited = OPENING.as_secs();
+                    io::Error::other(format!("tutti's daemon did not answer within {waited} s"))
+                }
+                _ => err,
+            })?;
         match frame.ok_or_else(|| io::Error::other("tutti's daemon closed the connection"))? {
             Frame::Host(json) => {
                 if let Ok(HostFrame::Hello { rev }) = serde_json::from_slice(&json)
@@ -319,7 +342,6 @@ pub fn open(
     let history = SCROLLBACK as u32;
     let attach = Request::PaneAttach { pane, rows, cols, history, inline: true };
     stream.write_all(&control(&attach).encode())?;
-    stream.set_read_timeout(None)?;
     Ok((watched, buf))
 }
 
@@ -524,7 +546,6 @@ mod tests {
     use crate::scheme::{find, load};
     use futures::channel::mpsc::UnboundedReceiver;
     use std::thread;
-    use std::time::Instant;
 
     #[test]
     fn frames_round_trip_and_wait_for_their_last_byte() {
@@ -933,6 +954,41 @@ mod tests {
         daemon.watched(WIRE_REV, &[(3, "idle", "")]);
         assert_eq!(daemon.asked()["type"], "pane_attach");
         assert!(attach.join().unwrap().is_ok());
+    }
+
+    /// A daemon that answers a byte at a time and never a whole frame has 3 s in all, not 3 s a
+    /// byte: the window waits on an opening no longer than that.
+    #[test]
+    fn an_opening_waits_no_longer_than_its_deadline_in_all() {
+        let started = Instant::now();
+        let (attach, mut daemon) = attaching();
+        let trickle = thread::spawn(move || {
+            daemon.stream.write_all(&1000u32.to_le_bytes())?;
+            for _ in 0..100 {
+                thread::sleep(Duration::from_millis(100));
+                daemon.stream.write_all(&[1])?;
+            }
+            Ok::<_, io::Error>(())
+        });
+        let refused = attach.join().unwrap().err().expect("refused").to_string();
+        let waited = started.elapsed();
+        assert_eq!(refused, "tutti's daemon did not answer within 3 s");
+        assert!(waited >= OPENING && waited < OPENING * 2, "waited {waited:?}");
+        assert!(trickle.join().unwrap().is_err(), "rtty hung up while the daemon trickled");
+    }
+
+    /// What a daemon said before it hung up is read whole, within the deadline, then the end: a
+    /// refusal and its reason, which a socket timeout set after the hang-up (macOS refuses it)
+    /// would lose.
+    #[test]
+    fn what_was_said_before_a_hang_up_is_read() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        theirs.write_all(&control(&Request::Watch).encode()).unwrap();
+        drop(theirs);
+        let (mut buf, deadline) = (Vec::new(), Instant::now() + OPENING);
+        let said = next(&mut Until(&ours, deadline), &mut buf).unwrap();
+        assert!(matches!(said, Some(Frame::Control(_))), "{said:?}");
+        assert!(next(&mut Until(&ours, deadline), &mut buf).unwrap().is_none());
     }
 
     /// No daemon at the socket says so.
