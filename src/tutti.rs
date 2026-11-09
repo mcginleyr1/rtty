@@ -16,7 +16,7 @@
 //! search, selection and links work on it as on any pane, and its keys are encoded as the program
 //! asked. Closing the connection detaches: the panes and their programs run on in the daemon.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::net::Shutdown;
@@ -161,10 +161,10 @@ pub enum Request {
     /// `inline` numbers each snapshot's rows (`Message::PaneRows`) and hands on, before a resync's
     /// snapshot, the rows that scrolled off while the stream was behind; `keys` keeps the keyboard
     /// protocols the program sets in the reads. The daemon streams a pane once a connection until
-    /// then, and echoes `req` on its refusal: the pane's id, which names the stream refused.
+    /// then, and echoes `req`, the request's own number, on its refusal.
     PaneAttach { pane: u64, rows: u16, cols: u16, history: u32, inline: bool, keys: bool, req: u64 },
     /// Ends this connection's stream of `pane`, its vote with it: nothing of it follows the answer,
-    /// which echoes `req`, the pane's id, and the pane may be streamed again.
+    /// which echoes `req`, and the pane may be streamed again.
     PaneDetach { pane: u64, req: u64 },
     /// Moves this connection's vote in each pane's size.
     ViewSizes { panes: Vec<Dims> },
@@ -428,14 +428,21 @@ pub struct Session {
     shown: Arc<Mutex<Shown>>,
 }
 
-/// The panes a session's connection streams, by tutti's id, and the session's last snapshot.
+/// The panes a session's connection streams, by tutti's id, the session's last snapshot, and the
+/// stream requests the daemon may still answer, by their `req`, the last of which is `req`.
 #[derive(Default)]
 struct Shown {
     latest: Vec<Watched>,
     streams: BTreeMap<u64, Stream>,
-    /// The panes whose streams rtty detached and the daemon has not yet answered for, once a
-    /// detach: what still comes of them was sent before the answer, and is no stream's now.
-    detaching: Vec<u64>,
+    asked: HashMap<u64, Asked>,
+    req: u64,
+}
+
+/// A stream request, by its pane.
+#[derive(Clone, Copy, PartialEq)]
+enum Asked {
+    Attach(u64),
+    Detach(u64),
 }
 
 /// What shows a pane the connection streams: the terminal its frames feed, what the session's
@@ -576,7 +583,9 @@ impl Session {
     /// Streams tutti pane `pane` to what `shows` it, which votes `rows`×`cols` for its size: the
     /// scrollback rows the pane holds, a snapshot, every pty read raw with the keyboard protocols
     /// its program sets, and its exit. The pane hears what the session's snapshots say of it, the
-    /// last one's at once, and of its notes. Refused while another pane of the window shows it.
+    /// last one's at once, and of its notes. While a detach of the pane waits for its answer, the
+    /// stream is asked for once it comes (`Shown::answered`), so that all the daemon sends of the
+    /// pane until then is the old stream's. Refused while another pane of the window shows it.
     pub fn stream(&self, pane: u64, rows: u16, cols: u16, shows: Shows) -> io::Result<()> {
         let mut shown = self.shown();
         if shown.streams.contains_key(&pane) {
@@ -589,10 +598,9 @@ impl Session {
         let size = (rows, cols);
         let stream = Stream { shows, size, rows: None, started: false, ended: false };
         shown.streams.insert(pane, stream);
-        let history = SCROLLBACK as u32;
-        let attach =
-            Request::PaneAttach { pane, rows, cols, history, inline: true, keys: true, req: pane };
-        self.ask(&attach);
+        if !shown.detaching(pane) {
+            shown.attach(pane, &self.frames);
+        }
         Ok(())
     }
 
@@ -608,14 +616,19 @@ impl Session {
     }
 
     /// Tutti pane `pane` is shown no more: its stream is detached, its vote in the pane's size
-    /// with it, and the view's set no longer names it; the pane may be streamed again.
+    /// with it, and the view's set no longer names it; the pane may be streamed again. A stream
+    /// still waiting behind a detach was never asked for, and needs none.
     pub fn forget(&self, pane: u64) {
         let mut shown = self.shown();
-        if shown.streams.remove(&pane).is_some() {
-            shown.detaching.push(pane);
-            self.ask(&Request::PaneDetach { pane, req: pane });
-            self.ask(&shown.sizes());
+        if shown.streams.remove(&pane).is_none() {
+            return;
         }
+        shown.asked.retain(|_, asked| *asked != Asked::Attach(pane));
+        if !shown.detaching(pane) {
+            let req = shown.asking(Asked::Detach(pane));
+            self.ask(&Request::PaneDetach { pane, req });
+        }
+        self.ask(&shown.sizes());
     }
 }
 
@@ -681,15 +694,12 @@ fn listen(
                 }
                 continue;
             }
-            Ok(Message::Ok { req: Some(pane) }) => {
-                shown().answered(pane);
+            Ok(Message::Ok { req: Some(req) }) => {
+                shown().answered(req, None, replies);
                 continue;
             }
-            Ok(Message::Error { message, req: Some(pane) }) => {
-                let mut shown = shown();
-                if !shown.answered(pane) {
-                    shown.refused(pane, &message);
-                }
+            Ok(Message::Error { message, req: Some(req) }) => {
+                shown().answered(req, Some(&message), replies);
                 continue;
             }
             Ok(Message::Snapshot { panes }) => {
@@ -728,7 +738,7 @@ impl Shown {
     /// until then is the detached stream's, and goes nowhere. The daemon streams only what rtty
     /// asked for, so a frame of any other pane is noted.
     fn streamed(&mut self, pane: u64) -> Option<&mut Stream> {
-        if self.detaching.contains(&pane) {
+        if self.detaching(pane) {
             return None;
         }
         let stream = self.streams.get_mut(&pane);
@@ -738,6 +748,38 @@ impl Shown {
         stream
     }
 
+    /// `asked`, under a `req` of its own.
+    fn asking(&mut self, asked: Asked) -> u64 {
+        self.req += 1;
+        self.asked.insert(self.req, asked);
+        self.req
+    }
+
+    /// Whether a detach of `pane` waits for its answer.
+    fn detaching(&self, pane: u64) -> bool {
+        self.asked.values().any(|asked| *asked == Asked::Detach(pane))
+    }
+
+    /// Asks the daemon, by `out`, to stream `pane` to its stream, at its vote.
+    fn attach(&mut self, pane: u64, out: &mpsc::Sender<Frame>) {
+        let Some(&Stream { size: (rows, cols), .. }) = self.streams.get(&pane) else { return };
+        let (req, history) = (self.asking(Asked::Attach(pane)), SCROLLBACK as u32);
+        let attach =
+            Request::PaneAttach { pane, rows, cols, history, inline: true, keys: true, req };
+        let _ = out.send(control(&attach));
+    }
+
+    /// The daemon answered request `req`, refusing it as `why` says if it did. A detach's answer is
+    /// the last of the stream it ended: a pane shown again meanwhile is streamed now, by `out`. An
+    /// attach's refusal is said in its pane.
+    fn answered(&mut self, req: u64, why: Option<&str>, out: &mpsc::Sender<Frame>) {
+        match (self.asked.remove(&req), why) {
+            (Some(Asked::Detach(pane)), _) => self.attach(pane, out),
+            (Some(Asked::Attach(pane)), Some(why)) => self.refused(pane, why),
+            _ => {}
+        }
+    }
+
     /// Every pane streamed at its vote: the view's whole set.
     fn sizes(&self) -> Request {
         let dims = |(&pane, stream): (&u64, &Stream)| {
@@ -745,16 +787,6 @@ impl Shown {
             Dims { pane, rows, cols }
         };
         Request::ViewSizes { panes: self.streams.iter().map(dims).collect() }
-    }
-
-    /// The daemon answered a request that names `pane` by its `req`: when a detach of it waits,
-    /// that one, after which nothing more of the detached stream comes. Whether it was.
-    fn answered(&mut self, pane: u64) -> bool {
-        let Some(at) = self.detaching.iter().position(|&detached| detached == pane) else {
-            return false;
-        };
-        self.detaching.swap_remove(at);
-        true
     }
 
     /// A raw read of `pane`'s: gathered while a `PaneRows` announced rows before a snapshot, else
@@ -1286,12 +1318,20 @@ mod tests {
     fn attach(session: &Arc<Session>, daemon: &mut Daemon, pane: u64) -> (Pane, Notices) {
         let (shown, notices) =
             Pane::attach(session.clone(), pane, 4, 40, None, None, false).unwrap();
-        let asked = json!({
-            "type": "pane_attach", "pane": pane, "rows": 4, "cols": 40, "history": 10000,
-            "inline": true, "keys": true, "req": pane
-        });
-        assert_eq!(daemon.asked(), asked);
+        attached_to(daemon, pane);
         (shown, notices)
+    }
+
+    /// The daemon has heard pane `pane` streamed at 4×40: the request's `req`.
+    fn attached_to(daemon: &mut Daemon, pane: u64) -> u64 {
+        let mut asked = daemon.asked();
+        let req = asked["req"].take().as_u64().expect("a req");
+        let attach = json!({
+            "type": "pane_attach", "pane": pane, "rows": 4, "cols": 40, "history": 10000,
+            "inline": true, "keys": true, "req": null
+        });
+        assert_eq!(asked, attach);
+        req
     }
 
     type Notices = UnboundedReceiver<Notice>;
@@ -1645,22 +1685,24 @@ mod tests {
         pane.focused(true);
         assert_eq!(daemon.asked(), json!({"type": "pane_focus", "pane": 3, "seen": true}));
         drop(pane);
-        let detach = json!({"type": "pane_detach", "pane": 3, "req": 3});
+        let detach = json!({"type": "pane_detach", "pane": 3, "req": 2});
         assert_eq!(daemon.asked(), detach, "detached, with no kill asked");
         assert_eq!(daemon.asked(), json!({"type": "view_sizes", "panes": []}));
         drop(session);
         assert_eq!(daemon.heard(), None, "closed");
     }
 
-    /// A pane the session no longer has: the daemon refuses its stream, naming it by its `req`,
-    /// and the pane says so and stays, with no exit to close it; another refusal is the window's.
+    /// A pane the session no longer has: the daemon refuses its stream, naming the request by its
+    /// `req`, and the pane says so and stays, with no exit to close it; another refusal is the
+    /// window's.
     #[test]
     fn a_pane_the_session_lost_says_so_and_stays() {
         let (session, mut told, mut daemon) = session();
+        let (_two, _) = attach(&session, &mut daemon, 2);
         let (pane, mut notices) = attach(&session, &mut daemon, 3);
         daemon.say(r#"{"type":"ok"}"#);
         daemon.say(r#"{"type":"error","message":"no tab 9"}"#);
-        daemon.say(r#"{"req":3,"type":"error","message":"no pane 3"}"#);
+        daemon.say(r#"{"req":2,"type":"error","message":"no pane 3"}"#);
         let said = |term: &Terminal| term.contents() == "[tutti pane 3: no pane 3]";
         wait_until(&pane.term, "said why", said);
         assert_eq!(received(&mut told, |_| true), [Told::Refused("no tab 9".into())]);
@@ -1724,12 +1766,13 @@ mod tests {
     }
 
     /// A resize votes for every pane the view streams, as the view's whole set. A pane closed
-    /// detaches its stream and leaves the set; shown again, it is streamed anew. What the daemon
-    /// sent of the old stream before it answered the detach goes nowhere, answers nothing and is
-    /// not the new stream's, though the new one was asked for meanwhile; a pane shown already is
-    /// refused; and the session's word of an exit, for a pane no longer streamed, is no one's.
+    /// detaches its stream and leaves the set. Shown again before the detach is answered, its new
+    /// stream is asked for only after the answer: what the daemon sends of the pane until then is
+    /// the old stream's, and goes nowhere and answers nothing; all after is the new stream's, its
+    /// history, snapshot and exit. A pane shown already is refused, and the session's word of an
+    /// exit before the new stream began is no one's.
     #[test]
-    fn a_closed_pane_detaches_and_shows_again_on_a_new_stream() {
+    fn a_closed_pane_shows_again_on_a_new_stream_asked_for_after_the_detach() {
         let (session, _told, mut daemon) = session();
         let (_two, _) = attach(&session, &mut daemon, 2);
         let (mut three, _heard) = attach(&session, &mut daemon, 3);
@@ -1745,20 +1788,48 @@ mod tests {
         assert_eq!(daemon.asked(), json!({"type": "pane_detach", "pane": 3, "req": 3}));
         let two = json!({"type": "view_sizes", "panes": [{"pane": 2, "rows": 4, "cols": 40}]});
         assert_eq!(daemon.asked(), two, "the set without the pane closed");
-        let (again, mut heard) = attach(&session, &mut daemon, 3);
-        let refused = Pane::attach(session.clone(), 3, 4, 40, None, None, false).err();
-        assert_eq!(refused.expect("refused").to_string(), "it shows in this window already");
+        let show = || Pane::attach(session.clone(), 3, 4, 40, None, None, false);
+        let (again, mut heard) = show().unwrap();
+        let refused = show().err().expect("refused");
+        assert_eq!(refused.to_string(), "it shows in this window already");
+        session.ask(&Request::View);
+        assert_eq!(daemon.asked(), json!({"type": "view"}), "no stream asked before the answer");
         daemon.raw(3, b"\x1b[c stale");
-        daemon.say(r#"{"req":3,"type":"ok"}"#);
         daemon.say(r#"{"type":"pane_exited","pane":3,"code":9}"#);
-        daemon.rows(3);
+        daemon.say(r#"{"req":3,"type":"ok"}"#);
+        assert_eq!(attached_to(&mut daemon, 3), 4, "asked after the answer, no reply before it");
+        daemon.say(r#"{"type":"pane_rows","pane":3,"epoch":1,"top":1,"skipped":0}"#);
+        daemon.raw(3, b"before\r\n");
         daemon.screen(3, b"$ new");
         daemon.raw(3, b" one");
         wait_until(&again.term, "streamed anew", |term| term.contents() == "$ new one");
-        assert!(scrollback(&again.lock()).is_empty());
-        session.ask(&Request::View);
-        assert_eq!(daemon.asked(), json!({"type": "view"}), "no reply to the old stream's query");
+        assert_eq!(scrollback(&again.lock()), ["before"]);
         assert!(!drained(&mut heard).iter().any(exited), "the old stream's exit is no one's");
+        daemon.say(r#"{"type":"pane_exited","pane":3,"code":0}"#);
+        let exit = |notice: &Notice| matches!(notice, Notice::Exit(why) if why.ends_with("code 0"));
+        received(&mut heard, exit);
+    }
+
+    /// A refusal answers only the request it names: an earlier stream's refusal, come late, is no
+    /// detach's answer, and the new stream waits for the detach's own, a refusal too here (the
+    /// connection streamed no such pane), then hears its own refusal.
+    #[test]
+    fn an_attachs_refusal_is_no_detachs_answer() {
+        let (session, _told, mut daemon) = session();
+        let (three, _) = attach(&session, &mut daemon, 3);
+        drop(three);
+        assert_eq!(daemon.asked(), json!({"type": "pane_detach", "pane": 3, "req": 2}));
+        assert_eq!(daemon.asked()["type"], "view_sizes");
+        let (again, _) = Pane::attach(session.clone(), 3, 4, 40, None, None, false).unwrap();
+        daemon.say(r#"{"req":1,"type":"error","message":"no pane 3"}"#);
+        daemon.raw(3, b"stale");
+        session.ask(&Request::View);
+        assert_eq!(daemon.asked(), json!({"type": "view"}), "the detach still waits");
+        daemon.say(r#"{"req":2,"type":"error","message":"this connection streams no pane 3"}"#);
+        let req = attached_to(&mut daemon, 3);
+        daemon.say(&format!(r#"{{"req":{req},"type":"error","message":"no pane 3"}}"#));
+        let said = |term: &Terminal| term.contents() == "[tutti pane 3: no pane 3]";
+        wait_until(&again.term, "said why", said);
     }
 
     /// A stream hands on the keyboard protocols the program sets, so the keys rtty encodes for the

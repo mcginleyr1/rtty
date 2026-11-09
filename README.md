@@ -834,9 +834,10 @@ on any pane. tutti's TUI can stay attached beside rtty: rtty never moves its foc
   snapshot after the rows that scrolled off meanwhile, which go into the scrollback, nothing missed
   and nothing twice. A pane the session no longer has says so and stays.
 - **Closing one.** Closing a tutti pane detaches its stream alone (`PaneDetach`), its vote in the
-  pane's size with it, while the window's other panes of the session stream on; what the daemon
-  sent of it before it answered goes nowhere. Shown again (undo-close, `rtty cli tutti attach`),
-  the pane is streamed anew. A window shows a tutti pane once: a second says so.
+  pane's size with it, while the window's other panes of the session stream on. Shown again
+  (undo-close, `rtty cli tutti attach`), the pane is streamed anew, asked for once the daemon has
+  answered the detach: what it sent of the old stream until then goes nowhere. A window shows a
+  tutti pane once: a second says so.
 - **Queries are answered once.** The daemon answers the terminal queries it can (DA1, cursor
   reports, colours, mode 2031's light/dark) and keeps them from the stream; what rtty's engine
   answers goes back to the pane, and answers only what the daemon left. A flip between light and
