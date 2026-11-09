@@ -49,7 +49,7 @@ or another in its tab (a `Cmd+click`, `quick-open`) then goes to that Neovim: rt
 pane the keyboard. rtty takes the var only while `nvim` is the pane's foreground program and the
 socket is the user's own, since any output (an ssh session's) can set it. With no such Neovim, or
 none that answers within half a second, rtty opens a new pane with the configured editor
-([Links](../README.md#keys)); `open` refuses a request it reads past `deadline`, so the file
+([Paths](../docs/selection.md#paths)); `open` refuses a request it reads past `deadline`, so the file
 never opens in both.
 
 Past the editor's edge, the plugins call the CLI with `--from` set to the editor's own
@@ -63,8 +63,9 @@ Past the editor's edge, the plugins call the CLI with `--from` set to the editor
   `Cmd+Ctrl+arrows` and tutti's `Alt+h/j/k/l` do.
 - `rtty cli pane split <pane> <right|down|left|up>` opens a pane there and prints its id.
 
-The whole CLI is in the [README](../README.md#rtty-cli-and-editors). `rtty` must be on the `PATH`,
-or set the plugin's program option.
+The whole CLI is in [docs/cli.md](../docs/cli.md#rtty-cli), and what rtty does with a claim in
+[docs/keys.md](../docs/keys.md#keys-a-pane-can-claim). `rtty` must be on the `PATH`, or set the
+plugin's program option.
 
 ## Neovim
 
