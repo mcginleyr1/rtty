@@ -6,12 +6,17 @@
 //! lock and hands the engine's replies to the writer, in stream order. The writer owns the pty's
 //! input side, so a program that stops reading stalls neither the reader nor the window. The
 //! waiter reports the child's exit.
+//!
+//! A pane can show a pane of tutti's daemon instead (`attach`, `tutti.rs`): its reader and writer
+//! take frames from and to the daemon's connection, and the daemon keeps the program.
 
 use std::ascii;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -26,7 +31,7 @@ use rtty_vt::{ColorScheme, Event, Terminal};
 use crate::scheme::{SLOTS, Scheme};
 use crate::selection::Selection;
 use crate::title::Foreground;
-use crate::{prompt, shell};
+use crate::{prompt, shell, tutti};
 
 pub const SCROLLBACK: usize = 10_000;
 
@@ -62,7 +67,7 @@ impl Trace {
         Trace { pane, ..self.clone() }
     }
 
-    fn log(&self, direction: char, bytes: &[u8]) {
+    pub fn log(&self, direction: char, bytes: &[u8]) {
         let mut trace = self.file.lock().expect("a pty thread panicked");
         let (started, file) = &mut *trace;
         let escaped: String =
@@ -74,18 +79,34 @@ impl Trace {
 
 pub struct Pane {
     pub term: Arc<Mutex<Terminal>>,
-    master: Box<dyn MasterPty + Send>,
-    input: mpsc::Sender<Vec<u8>>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    source: Source,
     output_pending: Arc<AtomicBool>,
     pub reader: Option<JoinHandle<()>>,
     pub waiter: Option<JoinHandle<Option<u32>>>,
-    /// The login shell's pid, when the pane runs one rather than a program of its own (`-e`).
-    shell: Option<libc::pid_t>,
     /// The absolute row at the top of the view while it is scrolled back; `None` follows the
     /// output.
     scrolled: Option<u64>,
     pub selection: Option<Selection>,
+}
+
+/// Where a pane's bytes come from and go.
+enum Source {
+    /// A child on a pty of rtty's own: the pty, the writer's input, the child's killer, and the
+    /// login shell's pid, when the pane runs one rather than a program of its own (`-e`).
+    Pty {
+        master: Box<dyn MasterPty + Send>,
+        input: mpsc::Sender<Vec<u8>>,
+        killer: Box<dyn ChildKiller + Send + Sync>,
+        shell: Option<libc::pid_t>,
+    },
+    /// A pane of tutti's daemon: the connection, the pane's id there, the writer's frames, and
+    /// what the session's last snapshot said of the pane.
+    Tutti {
+        stream: UnixStream,
+        pane: u64,
+        frames: mpsc::Sender<tutti::Frame>,
+        watched: Arc<Mutex<tutti::Watched>>,
+    },
 }
 
 impl Pane {
@@ -125,19 +146,7 @@ impl Pane {
         let output = pty.master.try_clone_reader().map_err(io::Error::other)?;
         let mut writer = pty.master.take_writer().map_err(io::Error::other)?;
 
-        let mut term = Terminal::new(rows, cols, SCROLLBACK);
-        // Alternate scroll on, as most terminals start: the wheel moves a full-screen program
-        // that takes no mouse reports (a pager) by its arrow keys.
-        term.advance(b"\x1b[?1007h");
-        // What a killed program left on (mouse and focus reports, 2031, key encodings) goes off
-        // when the shell marks the command's end, before the shell hears of a click or a flip
-        // to dark as typing.
-        term.set_command_end_reset(true);
-        term.set_graphics(graphics);
-        if let Some(scheme) = scheme {
-            host_scheme(&mut term, scheme);
-        }
-        let term = Arc::new(Mutex::new(term));
+        let term = Arc::new(Mutex::new(terminal(rows, cols, scheme, graphics)));
         let (notices, receiver) = unbounded();
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let output_pending = Arc::new(AtomicBool::new(false));
@@ -166,13 +175,67 @@ impl Pane {
         })?;
         let pane = Pane {
             term,
-            master: pty.master,
-            input,
-            killer,
+            source: Source::Pty { master: pty.master, input, killer, shell },
             output_pending,
             reader: Some(reader),
             waiter: Some(waiter),
-            shell,
+            scrolled: None,
+            selection: None,
+        };
+        Ok((pane, receiver))
+    }
+
+    /// Shows pane `pane` of tutti's daemon, which `stream` reaches (`tutti::connect`): the daemon
+    /// keeps the program, and its scrollback, screen and output come over the connection
+    /// (`tutti::Reader`), what is typed goes back, and dropping the pane closes the connection,
+    /// which ends nothing. `rows`×`cols` is this pane's vote in the pane's size, which the daemon
+    /// settles among all that show it: the terminal takes the size each snapshot comes at. The
+    /// rest as `spawn`; there is no waiter, the reader tells of the program's exit.
+    pub fn attach(
+        mut stream: UnixStream,
+        pane: u64,
+        rows: u16,
+        cols: u16,
+        scheme: Option<&Scheme>,
+        trace: Option<Trace>,
+        graphics: bool,
+    ) -> io::Result<(Pane, UnboundedReceiver<Notice>)> {
+        let (first, read) = tutti::open(&mut stream, pane, rows, cols, scheme.map(tutti::colors))?;
+        let term = Arc::new(Mutex::new(terminal(rows, cols, scheme, graphics)));
+        let (notices, receiver) = unbounded();
+        let (frames, outgoing) = mpsc::channel::<tutti::Frame>();
+        let output_pending = Arc::new(AtomicBool::new(false));
+        let watched = Arc::new(Mutex::new(first));
+
+        let (mut writer, writer_trace) = (stream.try_clone()?, trace.clone());
+        thread::Builder::new().name("tutti writer".into()).spawn(move || {
+            for frame in outgoing {
+                if let (Some(trace), tutti::Frame::Input { bytes, .. }) = (&writer_trace, &frame) {
+                    trace.log('>', bytes);
+                }
+                if writer.write_all(&frame.encode()).is_err() {
+                    break;
+                }
+            }
+        })?;
+        let reader = tutti::Reader {
+            pane,
+            term: term.clone(),
+            frames: frames.clone(),
+            notices,
+            pending: output_pending.clone(),
+            watched: watched.clone(),
+            trace,
+        };
+        let input = io::Cursor::new(read).chain(stream.try_clone()?);
+        let reader =
+            thread::Builder::new().name("tutti reader".into()).spawn(move || reader.run(input))?;
+        let pane = Pane {
+            term,
+            source: Source::Tutti { stream, pane, frames, watched },
+            output_pending,
+            reader: Some(reader),
+            waiter: None,
             scrolled: None,
             selection: None,
         };
@@ -191,7 +254,22 @@ impl Pane {
 
     /// Bytes for the program, behind any replies already queued. Lost once the child is gone.
     pub fn write(&self, bytes: Vec<u8>) {
-        let _ = self.input.send(bytes);
+        match &self.source {
+            Source::Pty { input, .. } => {
+                let _ = input.send(bytes);
+            }
+            Source::Tutti { pane, frames, .. } => {
+                let _ = frames.send(tutti::Frame::Input { pane: *pane, bytes });
+            }
+        }
+    }
+
+    /// Asks a tutti pane's daemon what `request` makes of the pane's id, behind what was typed so
+    /// far; nothing for a pane of rtty's own.
+    fn ask(&self, request: impl FnOnce(u64) -> tutti::Request) {
+        if let Source::Tutti { pane, frames, .. } = &self.source {
+            let _ = frames.send(tutti::control(&request(*pane)));
+        }
     }
 
     /// What the user typed or pasted: it ends the selection and brings the view back to the
@@ -203,10 +281,14 @@ impl Pane {
     }
 
     /// Resizes the terminal (which reflows the primary screen) and the pty, which tells the
-    /// program. `cell` is the cell size in pixels, for programs that ask.
+    /// program. `cell` is the cell size in pixels, for programs that ask. A tutti pane's size is
+    /// its daemon's to settle: this moves the pane's vote, and the snapshot at the size settled
+    /// resizes the terminal.
     pub fn resize(&mut self, rows: u16, cols: u16, cell: (u16, u16)) {
         let mut term = self.lock();
-        term.resize(rows, cols);
+        if matches!(self.source, Source::Pty { .. }) {
+            term.resize(rows, cols);
+        }
         term.set_cell_pixels(cell.0, cell.1);
         drop(term);
         // Reflow renumbers rows, so a scrolled view and a selection would land elsewhere.
@@ -214,21 +296,49 @@ impl Pane {
         self.selection = None;
         let (pixel_width, pixel_height) =
             (cols.saturating_mul(cell.0), rows.saturating_mul(cell.1));
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width, pixel_height });
+        if let Source::Pty { master, .. } = &self.source {
+            let _ = master.resize(PtySize { rows, cols, pixel_width, pixel_height });
+        }
+        self.ask(|pane| tutti::Request::ViewSizes {
+            panes: vec![tutti::Dims { pane, rows, cols }],
+        });
     }
 
     /// The scheme the window draws with: color queries answer with it, and a program that asked
-    /// for mode 2031 reports hears when it flips between dark and light.
+    /// for mode 2031 reports hears when it flips between dark and light. A tutti pane's daemon
+    /// answers and tells its programs, so it hears of the scheme instead.
     pub fn set_scheme(&self, scheme: &Scheme) {
         let mut term = self.lock();
         host_scheme(&mut term, scheme);
         let replies = term.take_events();
         drop(term);
+        if matches!(self.source, Source::Tutti { .. }) {
+            return self.ask(|_| tutti::Request::HostColors(tutti::colors(scheme)));
+        }
         for event in replies {
             if let Event::Reply(bytes) = event {
                 self.write(bytes);
             }
         }
+    }
+
+    /// The pane took the keyboard: a tutti pane becomes its session's active one, and a finished
+    /// agent's there counts as seen.
+    pub fn focused(&self) {
+        self.ask(|pane| tutti::Request::PaneFocus { pane });
+    }
+
+    /// What tutti calls a tutti pane, and the directory its daemon last saw the pane's program in.
+    pub fn tutti_name(&self) -> Option<(String, Option<PathBuf>)> {
+        let Source::Tutti { watched, .. } = &self.source else { return None };
+        let watched = watched.lock().expect("a reader panicked");
+        Some((watched.title.clone(), watched.cwd.clone()))
+    }
+
+    /// The directory the pane's program is in, as the system tells (`foreground`) or a tutti
+    /// pane's daemon does.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        self.foreground().and_then(|process| process.cwd).or_else(|| self.tutti_name()?.1)
     }
 
     /// The absolute row at the top of the view.
@@ -291,20 +401,23 @@ impl Pane {
 
     /// The process in the pty's foreground: its process group's leader (`tcgetpgrp`), the shell
     /// at a prompt, else the program the shell runs. Its arguments and working directory are
-    /// asked of the kernel for that one process, never the whole process table.
+    /// asked of the kernel for that one process, never the whole process table. None for a tutti
+    /// pane, whose program is its daemon's.
     pub fn foreground(&self) -> Option<Foreground> {
-        let pid = self.master.process_group_leader()?;
+        let Source::Pty { master, shell, .. } = &self.source else { return None };
+        let pid = master.process_group_leader()?;
         Some(Foreground {
-            shell: self.shell == Some(pid),
+            shell: *shell == Some(pid),
             argv: process_args(pid).unwrap_or_default(),
             cwd: process_cwd(pid),
         })
     }
 
     /// The program reads a password, as `sudo`, `ssh` and `read -s` do: the pty's echo off and
-    /// its canonical mode on.
+    /// its canonical mode on. Never known of a tutti pane.
     pub fn reads_password(&self) -> bool {
-        let Some(fd) = self.master.as_raw_fd() else { return false };
+        let Source::Pty { master, .. } = &self.source else { return false };
+        let Some(fd) = master.as_raw_fd() else { return false };
         // SAFETY: tcgetattr writes only the struct it is given.
         let mut termios: libc::termios = unsafe { mem::zeroed() };
         let read = unsafe { libc::tcgetattr(fd, &mut termios) } == 0;
@@ -318,10 +431,35 @@ impl Pane {
 }
 
 impl Drop for Pane {
-    /// Hangs up on the child, as closing a terminal does.
+    /// Hangs up on the child, as closing a terminal does. A tutti pane's connection closes, and
+    /// the pane and its program run on in the daemon.
     fn drop(&mut self) {
-        let _ = self.killer.kill();
+        match &mut self.source {
+            Source::Pty { killer, .. } => {
+                let _ = killer.kill();
+            }
+            Source::Tutti { stream, .. } => {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+        }
     }
+}
+
+/// A terminal as a pane starts: `rows`×`cols`, the scrollback a pane keeps, and rtty's setup.
+fn terminal(rows: u16, cols: u16, scheme: Option<&Scheme>, graphics: bool) -> Terminal {
+    let mut term = Terminal::new(rows, cols, SCROLLBACK);
+    // Alternate scroll on, as most terminals start: the wheel moves a full-screen program that
+    // takes no mouse reports (a pager) by its arrow keys.
+    term.advance(b"\x1b[?1007h");
+    // What a killed program left on (mouse and focus reports, 2031, key encodings) goes off when
+    // the shell marks the command's end, before the shell hears of a click or a flip to dark as
+    // typing.
+    term.set_command_end_reset(true);
+    term.set_graphics(graphics);
+    if let Some(scheme) = scheme {
+        host_scheme(&mut term, scheme);
+    }
+    term
 }
 
 /// A new pty, opened by one thread at a time: macOS's openpty(3) now and then fails (errno -6)

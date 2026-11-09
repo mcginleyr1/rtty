@@ -478,10 +478,12 @@ impl PaneView {
             self.quick = None;
         }
         let focused = self.focus.is_focused(window) && window.is_window_active();
-        if mem::replace(&mut self.focused, focused) != focused
-            && self.pane.lock().modes().focus_reports
-        {
+        let changed = mem::replace(&mut self.focused, focused) != focused;
+        if changed && self.pane.lock().modes().focus_reports {
             self.pane.write(if focused { b"\x1b[I" } else { b"\x1b[O" }.to_vec());
+        }
+        if changed && focused {
+            self.pane.focused();
         }
         cx.notify();
     }
@@ -636,6 +638,11 @@ impl PaneView {
         let term = self.pane.lock();
         let (program, reported) = (term.title().to_owned(), term.cwd().map(PathBuf::from));
         drop(term);
+        // A tutti pane has no process here: what tutti calls it comes after its program's own
+        // title, and the directory its daemon saw after its shell's report.
+        let (named, dir) = self.pane.tutti_name().unwrap_or_default();
+        let program = if program.is_empty() { named } else { program };
+        let reported = reported.or(dir);
         let foreground = self.pane.foreground();
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let title =
@@ -685,7 +692,7 @@ impl PaneView {
     /// shells on macOS send OSC 7 only in Terminal.app.
     pub fn cwd(&self) -> Option<PathBuf> {
         let reported = self.pane.lock().cwd().map(PathBuf::from);
-        reported.or_else(|| self.pane.foreground()?.cwd)
+        reported.or_else(|| self.pane.cwd())
     }
 
     /// A chord bound to focus, resize, close or last pane: the program's when it claimed them and
@@ -738,7 +745,9 @@ impl PaneView {
                     cx.emit(PaneEvent::Title)
                 }
             }
-            Notice::Event(Event::UserVar { name, value }) if name == "RTTY_KEYS" => {
+            Notice::Event(Event::UserVar { name, value })
+                if name == "RTTY_KEYS" || name == "TUTTI_KEYS" =>
+            {
                 self.claims_keys = value == "pane"
             }
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_NVIM" => {
@@ -918,7 +927,7 @@ impl PaneView {
         let (top, (row, col)) = (self.pane.top(&term), term.cursor_position());
         let patterns = &cx.global::<Settings>().quick_select;
         let found = quick::found(&term, top, self.grid.0, patterns, open).into_iter();
-        let link = |cells: Match| links::link_at(&term, cells.0, || self.pane.foreground()?.cwd);
+        let link = |cells: Match| links::link_at(&term, cells.0, || self.pane.cwd());
         let picks = found.filter_map(|(cells, text)| match open {
             true => Some((cells, Pick::Open(link(cells)?.target))),
             false => Some((cells, Pick::Copy(text))),
@@ -1474,7 +1483,7 @@ impl PaneView {
     /// The link on a cell (`links::link_at`), a relative path found from the shell's directory,
     /// else the foreground process's.
     fn link_at(&self, point: GridPoint) -> Option<Link> {
-        links::link_at(&self.pane.lock(), point, || self.pane.foreground()?.cwd)
+        links::link_at(&self.pane.lock(), point, || self.pane.cwd())
     }
 
     /// Cmd+click on a link. Whether there was a link.
@@ -1633,10 +1642,12 @@ impl PaneView {
         let minimum_contrast = settings.minimum_contrast;
         let text_system = window.text_system().clone();
         let Metrics { cell, ascent, descent } = metrics(&text_system, settings);
-        let (rows, cols, _) = self.grid;
         let focused = self.focus.is_focused(window) && window.is_window_active();
 
         let mut term = self.pane.lock();
+        // A tutti pane's terminal has the size its daemon settled on, which another client showing
+        // the pane may hold smaller than the cells it has here, or a resize not yet reached.
+        let (rows, cols) = (self.grid.0.min(term.size().0), self.grid.1.min(term.size().1));
         if !term.modes().sync_update {
             self.sync_since = None;
         } else if let Some(frame) = self.cache.last.clone().filter(|frame| frame.bounds == bounds) {
