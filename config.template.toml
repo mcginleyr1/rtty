@@ -1,6 +1,6 @@
 # rtty's config. Every key is optional: each is here, commented out, at its default.
 # rtty reads this file again as it is saved, and Cmd+Shift+, reads it at once.
-# What each key does: rtty's README, under Configuration.
+# What each key does: docs/configuration.md in rtty's repository.
 
 # font = "Menlo"
 # fallback = ["Symbols Nerd Font Mono"]  # unset: an installed Nerd Font
