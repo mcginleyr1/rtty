@@ -139,6 +139,12 @@ impl Pane {
         if let Some(dir) = integration.filter(|_| login_shell) {
             shell::inject(&mut command, dir);
         }
+        // A child forked while another thread makes the process's first use of libnotify dies
+        // before it runs its program: the fork handler libSystem runs in it waits for libnotify's
+        // globals, which a thread the child does not have was making ("os_once_t is corrupt").
+        // So that use is made here, before the fork.
+        // SAFETY: only looks a token up.
+        unsafe { notify_is_valid_token(0) };
         let mut child = pty.slave.spawn_command(command).map_err(io::Error::other)?;
         // The child holds the only other end, so reads end when it and its children are gone.
         drop(pty.slave);
@@ -492,6 +498,11 @@ fn terminal(rows: u16, cols: u16, scheme: Option<&Scheme>, graphics: bool) -> Te
     term
 }
 
+unsafe extern "C" {
+    /// `notify.h`: whether `token` is one libnotify gave out.
+    fn notify_is_valid_token(token: libc::c_int) -> bool;
+}
+
 /// A new pty, opened by one thread at a time: macOS's openpty(3) now and then fails (errno -6)
 /// when two threads of a process call it at once, as the tests' threads do.
 fn open_pty(size: PtySize) -> io::Result<PtyPair> {
@@ -678,6 +689,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(finish(pane), ("ab".into(), Some(3)));
+    }
+
+    /// A child forked while another thread made the process's first use of libnotify, as the
+    /// notify tests' first call into Foundation does, died before it ran its program, of
+    /// libSystem's "os_once_t is corrupt": in one fresh process in six of these. That use comes
+    /// once in a process, so forty fresh ones each spawn panes on four threads while a fifth
+    /// makes it.
+    #[test]
+    fn programs_start_while_another_thread_first_uses_libnotify() {
+        const FRESH: &str = "RTTY_TEST_FRESH_PROCESS";
+        if std::env::var_os(FRESH).is_none() {
+            let test = "pane::tests::programs_start_while_another_thread_first_uses_libnotify";
+            for _ in 0..40 {
+                let run = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", test])
+                    .env(FRESH, "1")
+                    .output()
+                    .unwrap();
+                let told = String::from_utf8_lossy(&run.stdout);
+                assert!(told.contains("1 passed"), "{told}");
+            }
+            return;
+        }
+        let first_use = thread::spawn(|| {
+            thread::sleep(Duration::from_millis(1));
+            crate::notify::bundled()
+        });
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                thread::spawn(|| {
+                    for _ in 0..3 {
+                        let command = shell_command("printf done");
+                        let (pane, _) =
+                            Pane::spawn(command, 24, 80, None, None, None, false).unwrap();
+                        assert_eq!(finish(pane), ("done".into(), Some(0)));
+                    }
+                })
+            })
+            .collect();
+        for spawner in spawners {
+            spawner.join().unwrap();
+        }
+        first_use.join().unwrap();
     }
 
     #[test]
