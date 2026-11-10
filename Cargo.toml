@@ -37,7 +37,7 @@ toml = "0.8"
 # against a local tutti, patch it in a `.cargo/config.toml`, which git ignores:
 #   [patch."https://github.com/mcginleyr1/tutti"]
 #   tutti-wire = { path = "<a tutti checkout>/crates/tutti-wire" }
-tutti-wire = { git = "https://github.com/mcginleyr1/tutti", rev = "cc02db531bf52438462fe9e952bb4d4bd443a2ae" }
+tutti-wire = { git = "https://github.com/mcginleyr1/tutti", rev = "6fb55cfc783fc45af286256417e79dc2f122805e" }
 
 # Two of gpui's dependencies at their last releases, each with a line that will become an error in
 # a future Rust: patches/README.md.

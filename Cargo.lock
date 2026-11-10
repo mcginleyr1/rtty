@@ -5818,6 +5818,7 @@ dependencies = [
 [[package]]
 name = "tutti-wire"
 version = "0.1.0"
+source = "git+https://github.com/mcginleyr1/tutti?rev=6fb55cfc783fc45af286256417e79dc2f122805e#6fb55cfc783fc45af286256417e79dc2f122805e"
 dependencies = [
  "serde",
  "serde_json",
