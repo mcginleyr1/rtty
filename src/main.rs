@@ -516,7 +516,6 @@ fn run(options: Options) -> Result<(), String> {
         }
     };
     let activate = script.is_none() || options.activate;
-    let (open_links, clipboard) = (script.is_none(), script.is_none());
     let trace = options
         .trace
         .as_ref()
@@ -546,9 +545,7 @@ fn run(options: Options) -> Result<(), String> {
         config,
         overrides: options.overrides,
         layout,
-        open_links,
-        clipboard,
-        prompts: script.is_none(),
+        scripted: script.is_some(),
     };
     app::ask_before_terminating();
     Application::new().with_assets(window::Icons).run(move |cx: &mut App| {
@@ -558,7 +555,7 @@ fn run(options: Options) -> Result<(), String> {
         });
         // What the key monitor below reads, which cannot reach the settings.
         let option_as_alt = Rc::new(Cell::new(settings.option_as_alt));
-        app::init(!settings.launch.prompts, cx);
+        app::init(cx);
         configure(settings, cx);
         cx.observe_global::<Settings>({
             let option_as_alt = option_as_alt.clone();

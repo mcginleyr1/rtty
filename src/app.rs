@@ -40,8 +40,6 @@ unsafe extern "C" {
 /// rtty as the app: whether it is the active one, the window it gave the keyboard last, Secure
 /// Keyboard Entry, and the global hotkey.
 struct AppState {
-    /// Under `--script`, the hotkey tells the dump what it would do, and does nothing.
-    scripted: bool,
     /// rtty is the active app (NSApplication's notifications; `--script`'s `app` step).
     active: bool,
     key: Option<WindowHandle<TerminalWindow>>,
@@ -154,9 +152,9 @@ const MENUS: &[(&str, &[Item])] = &[
 ];
 
 /// What the menu bar's app-wide items do, Secure Keyboard Entry's toggle and the global hotkey,
-/// which under `--script` (`scripted`) only says what it would do; `configure` puts the config's
-/// part of them into effect.
-pub fn init(scripted: bool, cx: &mut App) {
+/// which under `--script` only says what it would do; `configure` puts the config's part of them
+/// into effect.
+pub fn init(cx: &mut App) {
     APP.with(|app| app.set(cx.to_async()).ok().expect("rtty starts once"));
     let hotkeys = GlobalHotKeyManager::new()
         .map_err(|err| crate::note(&format!("no global hotkey can be registered: {err}")))
@@ -167,7 +165,6 @@ pub fn init(scripted: bool, cx: &mut App) {
         }
     }));
     cx.set_global(AppState {
-        scripted,
         active: false,
         key: None,
         secure_input: false,
@@ -281,7 +278,7 @@ pub fn key(cx: &App) -> Option<WindowHandle<TerminalWindow>> {
 /// window that had the keyboard last, else the first, else a new one.
 pub fn hotkey_pressed(cx: &mut App) {
     let state = cx.global::<AppState>();
-    let (active, key, scripted) = (state.active, state.key, state.scripted);
+    let (active, key) = (state.active, state.key);
     let hidden = crate::window::hidden_window(cx);
     let windows = cx.windows().into_iter().filter(|window| Some(window.window_id()) != hidden);
     let windows: Vec<WindowHandle<TerminalWindow>> =
@@ -293,7 +290,7 @@ pub fn hotkey_pressed(cx: &mut App) {
         (false, None) => "opened a window".to_owned(),
     };
     crate::note(&format!("global hotkey: {did}"));
-    if scripted {
+    if cx.global::<Settings>().launch.scripted {
         return cx.global_mut::<AppState>().toggled.push(did);
     }
     match (active, front) {

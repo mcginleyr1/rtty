@@ -219,7 +219,8 @@ pub struct TerminalWindow {
     /// the + acts on a release over the same thing, as a button does.
     bar_hover: Option<Hit>,
     bar_press: Option<Hit>,
-    /// What bells and notifications asked of macOS, and what came of it, for `--script`'s dump.
+    /// Under `--script`, what bells and notifications asked of macOS and what came of it, and the
+    /// questions asked, for the dump.
     attention: Vec<String>,
     /// Under `--script`, the question asked before closing, waiting for the script's `answer`.
     asked: Option<oneshot::Sender<usize>>,
@@ -1221,7 +1222,9 @@ impl TerminalWindow {
             }
             PaneEvent::Bell if !window.is_window_active() => {
                 notify::request_attention();
-                self.attention.push(format!("bell in pane {id}: the dock asked for attention"));
+                if cx.global::<Settings>().launch.scripted {
+                    self.attention.push(format!("bell in pane {id}: the dock asked for attention"));
+                }
             }
             PaneEvent::Bell => {}
             // A notification is for someone looking elsewhere: not posted from the pane they are
@@ -1235,8 +1238,10 @@ impl TerminalWindow {
                 } else {
                     "not posted: rtty is not in an app bundle"
                 };
-                self.attention
-                    .push(format!("notification from pane {id} {title:?} {body:?}: {fate}"));
+                if cx.global::<Settings>().launch.scripted {
+                    self.attention
+                        .push(format!("notification from pane {id} {title:?} {body:?}: {fate}"));
+                }
             }
             // tutti keeps an exited pane until it is killed: so does the window that is its
             // session, showing its last screen.
@@ -1379,15 +1384,16 @@ impl TerminalWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<usize> {
-        let keys = if deliberate { format!(" (Return and Esc: {stop})") } else { String::new() };
-        self.attention.push(format!("asked {question:?} {detail:?} [{go}, {stop}]{keys}"));
-        match (cx.global::<Settings>().launch.prompts, deliberate) {
-            (true, true) => deliberate_sheet(question, detail, [go, stop], window),
-            (true, false) => {
+        match (cx.global::<Settings>().launch.scripted, deliberate) {
+            (false, true) => deliberate_sheet(question, detail, [go, stop], window),
+            (false, false) => {
                 let buttons = [PromptButton::ok(go), PromptButton::cancel(stop)];
                 window.prompt(PromptLevel::Warning, question, Some(detail), &buttons, cx)
             }
-            (false, _) => {
+            (true, _) => {
+                let keys =
+                    if deliberate { format!(" (Return and Esc: {stop})") } else { String::new() };
+                self.attention.push(format!("asked {question:?} {detail:?} [{go}, {stop}]{keys}"));
                 let (asked, answer) = oneshot::channel();
                 self.asked = Some(asked);
                 answer

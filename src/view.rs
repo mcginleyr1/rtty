@@ -151,16 +151,11 @@ pub struct Launch {
     /// saves it: not one with `-e`, under `--script` (short of `--restore`), or while another
     /// rtty runs, which keeps it.
     pub layout: Option<PathBuf>,
-    /// Cmd+click opens links with the system's handler; under `--script` it records them in the
-    /// pane's dump instead, so a scripted run never opens anything.
-    pub open_links: bool,
-    /// What is copied goes to the clipboard, and a paste or a program's OSC 52 read gets it;
-    /// under `--script` what is copied goes to the pane's dump only and a paste or a read gets
-    /// `STAND_IN`, so a scripted run leaves the clipboard alone and never shows it.
-    pub clipboard: bool,
-    /// Asking is a native sheet; under `--script` it is recorded in the dump instead, and the
-    /// script's `answer` step answers it, so a scripted run never leaves a dialog open.
-    pub prompts: bool,
+    /// A script drives this run (`--script`), which then touches nothing outside it and says in
+    /// its dump what it would have done: a Cmd+click opens nothing; what is copied leaves the
+    /// clipboard alone, and a paste or a program's OSC 52 read gets `STAND_IN`; a question waits
+    /// for the script's `answer` step, not in a sheet; the global hotkey moves nothing.
+    pub scripted: bool,
 }
 
 /// A pane as the window shows it: the pane itself, its keyboard focus, and what its last frame
@@ -215,7 +210,7 @@ pub struct PaneView {
     /// The link under the pointer while Cmd is held, and its target when its text is not that
     /// (`links::disguise`).
     link: Option<(Link, Option<String>)>,
-    /// What Cmd+clicks on links did, or under `--script` would have.
+    /// Under `--script`, what Cmd+clicks on links would have done.
     followed: Vec<String>,
     /// When the last bell flashed the pane.
     flashed: Option<Instant>,
@@ -223,7 +218,7 @@ pub struct PaneView {
     command: Option<(Instant, Option<String>)>,
     /// A word on what a key did, and when, shown over the pane for `STATUS`.
     status: Option<(&'static str, Instant)>,
-    /// What was copied last, or under `--script` would have been.
+    /// Under `--script`, what would have been copied last.
     copied: Option<String>,
     /// Where a left click that may move the shell's cursor went down (`prompt::cursor_moves`).
     click: Option<GridPoint>,
@@ -913,10 +908,10 @@ impl PaneView {
 
     /// Copies `text` (under `--script`, only into the dump).
     fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
-        if cx.global::<Settings>().launch.clipboard {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        match cx.global::<Settings>().launch.scripted {
+            true => self.copied = Some(text),
+            false => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         }
-        self.copied = Some(text);
     }
 
     /// Says `status` at the pane's bottom right for a moment.
@@ -1055,9 +1050,9 @@ impl PaneView {
 
     /// The clipboard's text (under `--script`, `STAND_IN` in its place).
     fn clipboard_text(cx: &App) -> Option<String> {
-        match cx.global::<Settings>().launch.clipboard {
-            true => cx.read_from_clipboard().and_then(|item| item.text()),
-            false => Some(STAND_IN.into()),
+        match cx.global::<Settings>().launch.scripted {
+            true => Some(STAND_IN.into()),
+            false => cx.read_from_clipboard().and_then(|item| item.text()),
         }
     }
 
@@ -1518,18 +1513,18 @@ impl PaneView {
     /// finding the editor (`PaneEvent::Edit`). Under `--script` only the edit goes ahead; the
     /// rest is recorded.
     fn follow(&mut self, target: Target, cx: &mut Context<Self>) {
-        let act = cx.global::<Settings>().launch.open_links;
+        let scripted = cx.global::<Settings>().launch.scripted;
         let followed = match target {
             Target::Uri(uri) => {
                 let follow = links::follow(
                     &uri,
                     |uri| {
-                        if act {
+                        if !scripted {
                             cx.open_url(uri)
                         }
                     },
                     |uri| {
-                        if act {
+                        if !scripted {
                             reveal_in_finder(uri)
                         }
                     },
@@ -1541,14 +1536,16 @@ impl PaneView {
                 let place = format!("{opening:?} {}:{}:{}", at.path.display(), at.line, at.col);
                 match opening {
                     Opening::Edit => cx.emit(PaneEvent::Edit(at)),
-                    Opening::Open if act => cx.open_with_system(&at.path),
-                    Opening::Reveal if act => cx.reveal_path(&at.path),
+                    Opening::Open if !scripted => cx.open_with_system(&at.path),
+                    Opening::Reveal if !scripted => cx.reveal_path(&at.path),
                     Opening::Open | Opening::Reveal => {}
                 }
                 place
             }
         };
-        self.followed.push(followed);
+        if scripted {
+            self.followed.push(followed);
+        }
     }
 
     /// Motion over this pane, with the button held only when it went down here.
