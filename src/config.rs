@@ -350,11 +350,11 @@ pub enum ShellIntegration {
     None,
 }
 
-/// The scheme for each window appearance.
+/// The scheme for each window appearance; a pinned `scheme` is both.
 #[derive(Clone, Debug)]
-pub enum Theme {
-    Follow { dark: Arc<Scheme>, light: Arc<Scheme> },
-    Fixed(Arc<Scheme>),
+pub struct Theme {
+    dark: Arc<Scheme>,
+    light: Arc<Scheme>,
 }
 
 /// What the command line says over the config, at launch and at every reload: the file itself
@@ -485,38 +485,33 @@ impl Config {
 
     /// `scheme` pins one scheme; otherwise `scheme_dark` and `scheme_light` follow the OS.
     pub fn theme(&self, schemes: &[Scheme]) -> Result<Theme, String> {
-        match (&self.scheme, &self.scheme_dark, &self.scheme_light) {
-            (Some(name), None, None) => Ok(Theme::Fixed(scheme::find(schemes, name)?)),
-            (Some(_), _, _) => Err("set `scheme` or `scheme_dark`/`scheme_light`, not both".into()),
-            (None, dark, light) => Ok(Theme::Follow {
-                dark: scheme::find(schemes, dark.as_deref().unwrap_or("OneDark Pro"))?,
-                light: scheme::find(schemes, light.as_deref().unwrap_or("Solarized Light"))?,
-            }),
-        }
+        let (dark, light) = match (&self.scheme, &self.scheme_dark, &self.scheme_light) {
+            (Some(name), None, None) => (name.as_str(), name.as_str()),
+            (Some(_), _, _) => {
+                return Err("set `scheme` or `scheme_dark`/`scheme_light`, not both".into());
+            }
+            (None, dark, light) => (
+                dark.as_deref().unwrap_or("OneDark Pro"),
+                light.as_deref().unwrap_or("Solarized Light"),
+            ),
+        };
+        Ok(Theme { dark: scheme::find(schemes, dark)?, light: scheme::find(schemes, light)? })
     }
 }
 
 impl Theme {
-    /// The files its schemes were read from; none for the built-ins.
+    /// The files its schemes were read from, each once; none for the built-ins.
     pub fn files(&self) -> Vec<&Path> {
-        let schemes = match self {
-            Theme::Follow { dark, light } => vec![dark, light],
-            Theme::Fixed(scheme) => vec![scheme],
-        };
-        schemes.into_iter().filter_map(|scheme| scheme.path.as_deref()).collect()
+        let mut files: Vec<&Path> =
+            [&self.dark, &self.light].iter().filter_map(|scheme| scheme.path.as_deref()).collect();
+        files.dedup();
+        files
     }
 
     pub fn for_appearance(&self, appearance: WindowAppearance) -> &Arc<Scheme> {
-        match (self, appearance) {
-            (Theme::Fixed(scheme), _) => scheme,
-            (
-                Theme::Follow { dark, .. },
-                WindowAppearance::Dark | WindowAppearance::VibrantDark,
-            ) => dark,
-            (
-                Theme::Follow { light, .. },
-                WindowAppearance::Light | WindowAppearance::VibrantLight,
-            ) => light,
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => &self.dark,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => &self.light,
         }
     }
 }
