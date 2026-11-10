@@ -5,6 +5,12 @@ edition = "2024"
 license = "Apache-2.0"
 description = "A GPU terminal emulator on GPUI and rtty-vt"
 
+# rtty and its engine in vt/ are one workspace: one lock file, one target directory, and a plain
+# `cargo test` that runs both.
+[workspace]
+members = ["vt"]
+default-members = [".", "vt"]
+
 [dependencies]
 futures = "0.3"
 # runtime_shaders: compile the Metal shaders at startup, so building needs no
@@ -44,3 +50,7 @@ tutti-wire = { git = "https://github.com/mcginleyr1/tutti", rev = "6fb55cfc783fc
 [patch.crates-io]
 block = { path = "patches/block" }
 proc-macro-error2 = { path = "patches/proc-macro-error2" }
+
+# For rtty-vt's throughput bench.
+[profile.bench]
+debug = false

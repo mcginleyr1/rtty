@@ -51,20 +51,16 @@ icon:
     done
     iconutil -c icns target/icon/rtty.iconset -o bundle/rtty.icns
 
-# The full merge gate, for both Cargo workspaces (rtty here, rtty-vt in vt/): check, test, clippy -D warnings, fmt --check
+# The full merge gate, for rtty and its engine rtty-vt in vt/: check, test, clippy -D warnings, fmt --check
 verify:
     cargo check --all-targets
     cargo test
     cargo clippy --all-targets -- -D warnings
-    cargo fmt --check
-    cargo check --manifest-path vt/Cargo.toml --all-targets
-    cargo test --manifest-path vt/Cargo.toml
-    cargo clippy --manifest-path vt/Cargo.toml --all-targets -- -D warnings
-    cargo fmt --manifest-path vt/Cargo.toml --check
+    cargo fmt --all --check
 
 # rtty-vt's long campaigns, which verify leaves out: its ignored tests, in release (about a minute); vt/README.md says what they are
 campaigns:
-    cargo test --manifest-path vt/Cargo.toml --release -- --ignored
+    cargo test -p rtty-vt --release -- --ignored
 
 # The scripted UI suite: drives the real rtty in windows, so it needs an awake display
 ui:

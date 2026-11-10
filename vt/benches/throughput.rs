@@ -1,6 +1,6 @@
 //! Throughput in MB/s of rtty-vt, alacritty_terminal and vt100 fed the same
 //! streams in 8 KiB reads, as a pty reader feeds them:
-//! `cargo bench --manifest-path vt/Cargo.toml`.
+//! `cargo bench -p rtty-vt`.
 
 use std::time::{Duration, Instant};
 

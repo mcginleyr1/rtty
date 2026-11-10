@@ -11,8 +11,7 @@ planned. Needs a Rust toolchain with edition 2024 and Xcode's SDK; the offline M
 
 rtty depends on `tutti-wire`, the crate of tutti's wire, from tutti's repository, pinned by `rev`
 in `Cargo.toml`. To build against a local tutti instead, put this in `.cargo/config.toml`, which
-git ignores, and do not commit the lock files it changes (`Cargo.lock`, and `vt/Cargo.lock`, which
-gains a `[[patch.unused]]` entry when `just verify` runs rtty-vt's steps from the root):
+git ignores, and do not commit the `Cargo.lock` it changes:
 
 ```toml
 [patch."https://github.com/mcginleyr1/tutti"]

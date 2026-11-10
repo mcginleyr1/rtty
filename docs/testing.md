@@ -6,18 +6,16 @@
 just verify
 ```
 
-A change merges when this passes. For each of the repository's two Cargo workspaces it runs
-`cargo check --all-targets`, `cargo test`, `cargo clippy --all-targets -- -D warnings` and
-`cargo fmt --check`: rtty at the root first, then rtty-vt with `--manifest-path vt/Cargo.toml`.
+A change merges when this passes. It runs `cargo check --all-targets`, `cargo test`,
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check`, each once, for rtty
+and for [rtty-vt](../vt/README.md), the terminal engine in `vt/`: the two are one Cargo workspace
+with one `Cargo.lock`, and a plain `cargo` command at the root covers both. `-p rtty` or
+`-p rtty-vt` narrows one to a single package.
 
-[rtty-vt](../vt/README.md), the terminal engine in `vt/`, is a Cargo workspace of its own, with
-its own `Cargo.lock`. A `cargo test` at the root builds it as a dependency and runs none of its
-tests, the differential tests against alacritty_terminal among them, so the gate runs every step
-a second time there.
-
-The tests the gate runs at the root are the unit tests beside the code in `src/`. Some run the
-system's shells (`/bin/sh`, `/bin/zsh`, `/bin/bash`, `/bin/dash`) in real ptys; none opens a
-window.
+rtty's tests are the unit tests beside the code in `src/`. Some run the system's shells
+(`/bin/sh`, `/bin/zsh`, `/bin/bash`, `/bin/dash`) in real ptys; none opens a window. rtty-vt's
+are its unit tests and the suites in `vt/tests/`, the differential tests against
+alacritty_terminal among them.
 
 ## rtty-vt's long campaigns
 
