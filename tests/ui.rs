@@ -791,6 +791,31 @@ fn a_second_window_opens_closes_and_comes_back() {
 
 #[test]
 #[ignore = "needs a display: run with `just ui`"]
+fn a_new_window_opens_a_titlebar_below_the_key_one_on_its_display() {
+    let dir = scratch("cascade");
+    let (status, _) = launch(
+        &dir,
+        &["--restore"],
+        "wait ready>
+         app active
+         keys cmd-n
+         sleep 1000
+         quit",
+    );
+    let layout = fs::read_to_string(dir.join("rtty/layout.json"));
+    remove(&dir);
+    assert!(status.success());
+    let windows: Vec<serde_json::Value> = serde_json::from_str(&layout.unwrap()).unwrap();
+    let [key, new] = &windows[..] else { panic!("{} windows", windows.len()) };
+    let origin = |window: &serde_json::Value, axis| window["frame"]["origin"][axis].as_f64();
+    assert_eq!(origin(new, "x"), origin(key, "x"));
+    assert_eq!(origin(new, "y"), origin(key, "y").map(|y| y + 35.));
+    assert_eq!(new["frame"]["size"], key["frame"]["size"]);
+    assert_eq!(new["display"], key["display"]);
+}
+
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
 fn the_config_sets_font_scheme_and_bindings_and_a_change_reloads_live() {
     let (status, dumps) = run(
         "config",

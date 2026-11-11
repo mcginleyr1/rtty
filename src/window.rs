@@ -474,15 +474,27 @@ pub enum Program {
     Tutti { socket: PathBuf, pane: u64 },
 }
 
-/// Where the first window goes, centered; later ones cascade from the active one.
-fn first_bounds(cx: &App) -> Option<Bounds<Pixels>> {
-    cx.windows().is_empty().then(|| Bounds::centered(None, size(px(900.), px(600.)), cx))
+/// Where a new window goes: the first one centered on the main display; a later one a titlebar
+/// below the window that had the keyboard last, on that window's display. GPUI's own cascade
+/// keeps the place and opens on the main display, off screen when that one is the smaller.
+fn new_frame(cx: &mut App) -> (Option<Bounds<Pixels>>, Option<DisplayId>) {
+    if cx.windows().is_empty() {
+        return (Some(Bounds::centered(None, size(px(900.), px(600.)), cx)), None);
+    }
+    let hidden = hidden_window(cx);
+    let below = |window: &mut Window, cx: &mut App| {
+        let display = window.display(cx)?.id();
+        Some((window.window_bounds().get_bounds() + point(px(0.), px(35.)), display))
+    };
+    let key = crate::app::key(cx).filter(|key| Some(key.window_id()) != hidden);
+    key.and_then(|key| key.update(cx, |_, window, cx| below(window, cx)).ok()?).unzip()
 }
 
 /// Opens a window with `program` in its one pane.
 pub fn open(program: Program, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
     let id = next_pane_id();
-    open_tabs(Tabs::new(id), vec![(id, program)], None, first_bounds(cx), None, cx)
+    let (bounds, display) = new_frame(cx);
+    open_tabs(Tabs::new(id), vec![(id, program)], None, bounds, display, cx)
 }
 
 /// Opens a window that is the tutti session whose daemon listens on `socket`: the session's tabs,
@@ -493,7 +505,7 @@ pub fn open_session(
     frame: Option<(Bounds<Pixels>, Option<DisplayId>)>,
     cx: &mut App,
 ) -> Result<WindowHandle<TerminalWindow>, String> {
-    let (bounds, display) = frame.map_or_else(|| (first_bounds(cx), None), |(b, d)| (Some(b), d));
+    let (bounds, display) = frame.map_or_else(|| new_frame(cx), |(b, d)| (Some(b), d));
     open_tabs(Tabs::new(next_pane_id()), Vec::new(), Some(socket), bounds, display, cx)
 }
 

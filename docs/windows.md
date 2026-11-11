@@ -15,6 +15,9 @@ each prompt; without it, macOS's zsh and bash send it only from `/etc/zshrc_$TER
 exists for Terminal.app alone, and the foreground process is what answers. A pane closes when its
 program exits, with the same cascade as `Cmd+W`.
 
+A new window opens a titlebar's height below the window that had the keyboard last, at the same
+size and on the same display; the first one is centered on the main display.
+
 ## Closing what runs
 
 Closing a pane (`close-pane`, whatever chord it is bound to), a tab (its ×), a window (its close
