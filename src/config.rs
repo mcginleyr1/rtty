@@ -38,6 +38,9 @@ pub struct Config {
     /// How many seconds a closed pane, tab or window waits, its programs alive, for
     /// `undo-close`; 0 closes at once.
     pub undo_timeout: Option<u64>,
+    /// Whether a window has tabs and its bar. Without them it is one split tree, for a window
+    /// manager that has tabs of its own to hold: `new-tab` opens a window.
+    pub tabs: Option<bool>,
     pub shell_integration: Option<ShellIntegration>,
     /// Seconds a command must run for its end out of view to be notified (`notify_after()`).
     notify_after: Option<u64>,
@@ -817,6 +820,14 @@ mod tests {
         assert_eq!(confirm("").unwrap(), None);
         assert_eq!(confirm("confirm_close = false").unwrap(), Some(false));
         assert!(confirm("confirm-close = false").is_err(), "keys are written with underscores");
+    }
+
+    #[test]
+    fn a_window_has_tabs_unless_told_not_to() {
+        let tabs = |source| toml::from_str::<Config>(source).map(|config| config.tabs);
+        assert_eq!(tabs("").unwrap(), None);
+        assert_eq!(tabs("tabs = false").unwrap(), Some(false));
+        assert!(tabs("tabs = 0").is_err());
     }
 
     #[test]

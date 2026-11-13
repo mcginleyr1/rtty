@@ -35,7 +35,8 @@ lines, blocks) and `Cmd+C`, copy mode, the wheel, prompt jumps, `Cmd+K`, search,
 font size, the appearance flip, focus in and out, a second window and where it opens, the config
 with `[bind]` and its live reload, shell integration (marks, exit status, `copy-last-output`,
 click to move the cursor), `--restore`, links, quick select, a program's title and progress, cell
-borders, mouse reports, dropped files, a program's clipboard write and read, and a paste.
+borders, `tabs = false`, `rtty cli list` and `window new`, mouse reports, dropped files, a
+program's clipboard write and read, and a paste.
 
 Not covered: tutti panes (they need a tutti daemon), what needs a key window (focus reports, the
 focused cursor, notifications, Secure Keyboard Entry), `Cmd+click` on a path and `open-config`

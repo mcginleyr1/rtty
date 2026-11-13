@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use block2::RcBlock;
 use futures::StreamExt;
@@ -39,6 +39,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAlert, NSAlertSecondButtonReturn, NSEvent, NSEventMask, NSModalResponse, NSView, NSWindow,
+    NSWindowButton,
 };
 use objc2_foundation::NSString;
 use portable_pty::CommandBuilder;
@@ -204,6 +205,11 @@ struct Mirror {
 }
 
 pub struct TerminalWindow {
+    /// The window's own id, which the saved layout keeps, so it is the same after a restart
+    /// (`rtty cli list` tells it).
+    uid: String,
+    /// `tabs = false`: no bar and no window buttons, and what would open a tab opens a window.
+    bare: bool,
     tabs: Tabs,
     views: HashMap<PaneId, Entity<PaneView>>,
     /// The tutti sessions whose panes the window shows, by their daemons' sockets.
@@ -492,21 +498,55 @@ fn new_frame(cx: &mut App) -> (Option<Bounds<Pixels>>, Option<DisplayId>) {
 
 /// Opens a window with `program` in its one pane.
 pub fn open(program: Program, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
-    let id = next_pane_id();
-    let (bounds, display) = new_frame(cx);
-    open_tabs(Tabs::new(id), vec![(id, program)], None, bounds, display, cx)
+    open_at(next_pane_id(), program, None, cx)
 }
 
-/// Opens a window that is the tutti session whose daemon listens on `socket`: the session's tabs,
-/// splits and panes are the window's once the daemon answers. Until then its one pane waits, and
-/// says why should the daemon not answer. At `frame` on its display, else where `open` puts one.
-pub fn open_session(
-    socket: PathBuf,
+/// Opens a window with `program` in its one pane, `id`, at `frame` on its display, else where a
+/// new window goes.
+fn open_at(
+    id: PaneId,
+    program: Program,
     frame: Option<(Bounds<Pixels>, Option<DisplayId>)>,
     cx: &mut App,
 ) -> Result<WindowHandle<TerminalWindow>, String> {
     let (bounds, display) = frame.map_or_else(|| new_frame(cx), |(b, d)| (Some(b), d));
-    open_tabs(Tabs::new(next_pane_id()), Vec::new(), Some(socket), bounds, display, cx)
+    open_tabs(new_uid(), Tabs::new(id), vec![(id, program)], None, bounds, display, cx)
+}
+
+/// Opens a window that is the tutti session whose daemon listens on `socket`: the session's tabs,
+/// splits and panes are the window's once the daemon answers. Until then its one pane waits, and
+/// says why should the daemon not answer. Where `open` puts one.
+pub fn open_session(socket: PathBuf, cx: &mut App) -> Result<WindowHandle<TerminalWindow>, String> {
+    let (bounds, display) = new_frame(cx);
+    let waiting = Tabs::new(next_pane_id());
+    open_tabs(new_uid(), waiting, Vec::new(), Some(socket), bounds, display, cx)
+}
+
+/// A new window's id of its own: the time it opened, and how many this rtty opened before it.
+fn new_uid() -> String {
+    static OPENED: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_micros());
+    format!("{now:x}-{:x}", OPENED.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Where a window with `frame` on the display with UUID `display` goes: there, when that display
+/// is here and holds the middle of the frame's titlebar, where the window can be taken hold of;
+/// else centered on the main display.
+fn placed(
+    frame: Bounds<Pixels>,
+    display: Option<&String>,
+    cx: &App,
+) -> (Bounds<Pixels>, Option<DisplayId>) {
+    let titlebar = point(frame.origin.x + frame.size.width / 2., frame.origin.y);
+    let found = cx.displays().into_iter().find(|found| {
+        let uuid = found.uuid().map(|uuid| uuid.to_string());
+        let on_it = Bounds::new(point(px(0.), px(0.)), found.bounds().size).contains(&titlebar);
+        on_it && uuid.is_ok_and(|uuid| display == Some(&uuid))
+    });
+    match found {
+        Some(found) => (frame, Some(found.id())),
+        None => (Bounds::centered(None, frame.size, cx), None),
+    }
 }
 
 /// Opens a window as `saved` has it: its frame on its display (centered on the main one, that
@@ -521,22 +561,28 @@ pub fn restore(
     let programs = programs(&saved);
     let last = programs.iter().map(|(id, _)| *id).max();
     NEXT_PANE.fetch_max(last.map_or(1, |id| id + 1), Ordering::Relaxed);
-    // The middle of its titlebar on its display, where it can be taken hold of.
-    let frame = saved.frame;
-    let titlebar = point(frame.origin.x + frame.size.width / 2., frame.origin.y);
-    let display = cx.displays().into_iter().find(|display| {
-        let uuid = display.uuid().map(|uuid| uuid.to_string());
-        let on_it = Bounds::new(point(px(0.), px(0.)), display.bounds().size).contains(&titlebar);
-        on_it && uuid.is_ok_and(|uuid| saved.display.as_ref() == Some(&uuid))
-    });
-    let (frame, display) = match display {
-        Some(display) => (saved.frame, Some(display.id())),
-        None => (Bounds::centered(None, saved.frame.size, cx), None),
+    let (frame, display) = placed(saved.frame, saved.display.as_ref(), cx);
+    // A layout saved before windows had ids of their own gives it one now.
+    let uid = Some(saved.uid).filter(|uid| !uid.is_empty()).unwrap_or_else(new_uid);
+    // A session's window waits in one pane for its daemon, whatever tabs it was saved with.
+    let (tabs, mut programs) = match saved.session {
+        Some(_) => (Tabs::new(next_pane_id()), Vec::new()),
+        None => (saved.tabs, programs),
     };
-    match saved.session {
-        Some(socket) => open_session(socket, Some((frame, display)), cx),
-        None => open_tabs(saved.tabs, programs, None, Some(frame), display, cx),
+    if cx.global::<Settings>().tabs || tabs.all().len() == 1 {
+        return open_tabs(uid, tabs, programs, saved.session, Some(frame), display, cx);
     }
+    // Without tabs each saved tab is a window, all at the saved frame; the one that showed keeps
+    // the saved window's id and is the one given back.
+    let mut windows = Vec::new();
+    for (index, tab) in tabs.all().iter().enumerate() {
+        let (own, rest) = programs.into_iter().partition(|(id, _)| tab.contains(*id));
+        programs = rest;
+        let uid = if index == tabs.index() { uid.clone() } else { new_uid() };
+        let tab = Tabs::of(vec![tab.clone()], 0);
+        windows.push(open_tabs(uid, tab, own, None, Some(frame), display, cx)?);
+    }
+    Ok(windows.swap_remove(tabs.index()))
 }
 
 /// What each pane of a saved window shows again: the tutti pane it was asked to show (open,
@@ -564,6 +610,7 @@ fn kept(
 /// no bounds, cascading from the active window. With `session`, the window is that tutti session,
 /// whose daemon listens there, and `tabs` its one waiting pane.
 fn open_tabs(
+    uid: String,
     tabs: Tabs,
     programs: Vec<(PaneId, Program)>,
     session: Option<PathBuf>,
@@ -598,7 +645,7 @@ fn open_tabs(
         ..Default::default()
     };
     cx.open_window(options, |window, cx| {
-        cx.new(|cx| TerminalWindow::new(tabs, panes, tutti, session, window, cx))
+        cx.new(|cx| TerminalWindow::new(uid, tabs, panes, tutti, session, window, cx))
     })
     .map_err(|err| format!("cannot open a window: {err}"))
 }
@@ -709,14 +756,29 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
         return Response::Windows(info.collect());
     }
     if let Request::TuttiOpen { socket } = request {
-        return open_session(socket, None, cx).map_or_else(Response::Error, |_| Response::Done);
+        return open_session(socket, cx).map_or_else(Response::Error, |_| Response::Done);
+    }
+    if let Request::NewWindow { cwd, frame, display } = request {
+        let key = crate::app::key(cx).and_then(|key| key.read(cx).ok());
+        let cwd = cwd.or_else(|| key?.focused_cwd(cx));
+        // A frame with no display named is on the main one.
+        let frame = frame.map(|frame| match &display {
+            Some(_) => placed(frame, display.as_ref(), cx),
+            None => (frame, cx.primary_display().map(|display| display.id())),
+        });
+        let opened = open_at(next_pane_id(), Program::Command(shell(cwd)), frame, cx);
+        let info = opened.and_then(|handle| {
+            let info = handle.update(cx, |this, window, cx| this.info(window, cx));
+            info.map_err(|err| err.to_string())
+        });
+        return info.map_or_else(Response::Error, |info| Response::Windows(vec![info]));
     }
     let pane = match request {
         Request::Focus { pane } => Some(pane),
         Request::FocusToward { from, .. } | Request::Resize { from, .. } => from,
         Request::Split { pane, .. } | Request::Zoom { pane } => pane,
         Request::TuttiAttach { from, .. } => from,
-        Request::List | Request::TuttiOpen { .. } => None,
+        Request::List | Request::TuttiOpen { .. } | Request::NewWindow { .. } => None,
     };
     let holds = |handle: &&WindowHandle<TerminalWindow>, cx: &App| match pane {
         Some(pane) => handle.read(cx).is_ok_and(|this| this.views.contains_key(&pane)),
@@ -739,6 +801,7 @@ impl TerminalWindow {
     /// session's socket, tutti's id) once their sessions answer. With `session`, the window is that
     /// tutti session, and the one pane of `tabs` waits for it.
     fn new(
+        uid: String,
         tabs: Tabs,
         panes: Vec<(PaneId, Pane, UnboundedReceiver<Notice>)>,
         tutti: Vec<(PaneId, PathBuf, u64)>,
@@ -750,8 +813,13 @@ impl TerminalWindow {
             this.follow_appearance(window.appearance(), cx)
         })
         .detach();
-        // The font size sets the cells the layout shares out.
-        cx.observe_global_in::<Settings>(window, |_, _, cx| cx.notify()).detach();
+        // The font size sets the cells the layout shares out, and `tabs` whether there is a bar.
+        cx.observe_global_in::<Settings>(window, |this, window, cx| {
+            this.bare = !cx.global::<Settings>().tabs;
+            this.show_buttons(window);
+            cx.notify()
+        })
+        .detach();
         // Nothing tells a terminal that a command started or the shell changed directory, short
         // of the shell's own reports: look, cheaply, once a second.
         cx.spawn_in(window, async move |this, cx| {
@@ -782,6 +850,8 @@ impl TerminalWindow {
             this.update(cx, |this, cx| this.close_button(window, cx)).is_err()
         });
         let mut this = TerminalWindow {
+            uid,
+            bare: !cx.global::<Settings>().tabs,
             tabs,
             views: HashMap::new(),
             sessions: HashMap::new(),
@@ -794,6 +864,7 @@ impl TerminalWindow {
             asked: None,
             said: None,
         };
+        this.show_buttons(window);
         for (id, pane, notices) in panes {
             this.add(id, pane, notices, window, cx);
         }
@@ -816,6 +887,7 @@ impl TerminalWindow {
         let display = window.display(cx).and_then(|display| display.uuid().ok());
         let cwds = self.views.iter().filter_map(|(id, view)| Some((*id, view.read(cx).cwd()?)));
         session::Window {
+            uid: self.uid.clone(),
             frame: window.window_bounds().get_bounds(),
             display: display.map(|uuid| uuid.to_string()),
             tabs: self.tabs.clone(),
@@ -1029,6 +1101,10 @@ impl TerminalWindow {
             crate::note(&format!("tutti session {}: no pane left", tutti::name(&mirror.socket)));
             return self.close_window(false, window, cx);
         };
+        let (tabs, ids, named) = match self.bare {
+            true => tabs.shown_only(ids, named),
+            false => (tabs, ids, named),
+        };
         let kept: Vec<PaneId> = named.values().copied().collect();
         let gone: Vec<PaneId> =
             mirror.panes.values().filter(|id| !kept.contains(id)).copied().collect();
@@ -1102,7 +1178,24 @@ impl TerminalWindow {
     /// The bar in the titlebar, for the window's width and tabs.
     fn bar(&self, window: &Window) -> Bar {
         let width = f32::from(window.viewport_size().width);
-        Bar::new(width, self.tabs.all().len(), window.is_fullscreen())
+        // Without tabs there is no bar, as for a lone tab in full screen.
+        let tabs = if self.bare { 1 } else { self.tabs.all().len() };
+        Bar::new(width, tabs, self.bare || window.is_fullscreen())
+    }
+
+    /// The close, minimize and zoom buttons show with the bar they sit in, and go with it: a
+    /// window with no bar (`tabs = false`) is its window manager's to move and close. The window
+    /// stays a titled one, as the Accessibility API knows a standard window.
+    fn show_buttons(&self, window: &Window) {
+        let Some(window) = ns_window(window) else { return };
+        let buttons = [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ];
+        for button in buttons.into_iter().filter_map(|button| window.standardWindowButton(button)) {
+            button.setHidden(self.bare);
+        }
     }
 
     /// The cells the panes share, the size of a cell, and the height of the bar above them.
@@ -1778,7 +1871,9 @@ impl TerminalWindow {
                 };
                 opened.map_or_else(Response::Error, Response::Pane)
             }
-            Request::TuttiOpen { .. } => Response::Error("not a pane's request".into()),
+            Request::TuttiOpen { .. } | Request::NewWindow { .. } => {
+                Response::Error("not a pane's request".into())
+            }
         }
     }
 
@@ -1804,12 +1899,16 @@ impl TerminalWindow {
                         cols,
                         claims_keys: view.claims_keys(),
                         tutti,
+                        progress: view.progress(),
+                        vars: view.vars().clone(),
                     })
                 })
                 .collect(),
         });
         WindowInfo {
             id: window.window_handle().window_id().as_u64(),
+            uid: self.uid.clone(),
+            window_number: ns_window(window).map(|window| window.windowNumber()),
             active: window.is_window_active(),
             tabs: tabs.collect(),
         }
@@ -1847,6 +1946,15 @@ impl TerminalWindow {
         }
         let (area, ..) = self.area(window, cx);
         let id = next_pane_id();
+        if self.bare {
+            // Without tabs, a window of its own, opened once this one's update is done.
+            cx.defer(move |cx| {
+                if let Err(err) = open_at(id, program, None, cx) {
+                    eprintln!("rtty: {err}");
+                }
+            });
+            return Ok(id);
+        }
         match program {
             Program::Command(command) => {
                 let (pane, notices) = spawn(command, id, area.rows, area.cols, &self.scheme, cx)?;
@@ -2053,6 +2161,11 @@ impl TerminalWindow {
             crate::app::secure_input_held(cx),
             window.window_title()
         );
+        // The close button as AppKit has it: hidden with the bar, under `tabs = false`.
+        let close = ns_window(window)
+            .and_then(|window| window.standardWindowButton(NSWindowButton::CloseButton));
+        let buttons = close.map(|button| if button.isHidden() { "hidden" } else { "shown" });
+        let _ = writeln!(out, "window buttons {buttons:?} uid {}", self.uid);
         if bar.tabs.is_empty() && bar.height > 0. {
             let title = self.views.get(&layout.focus()).map(|view| view.read(cx).title().clone());
             let folder = title.as_ref().is_some_and(|title| title.dir.is_some());
@@ -2455,7 +2568,8 @@ mod tests {
         assert_eq!(tutti, BTreeMap::from([(2, asked(7)), (3, asked(8))]), "9 closed since");
         let frame = Bounds::new(point(px(0.), px(0.)), size(px(900.), px(600.)));
         let cwds = BTreeMap::new();
-        let saved = session::Window { frame, display: None, tabs, cwds, tutti, session: None };
+        let (uid, display, session) = (String::new(), None, None);
+        let saved = session::Window { uid, frame, display, tabs, cwds, tutti, session };
         let back: Vec<_> = programs(&saved)
             .into_iter()
             .map(|(id, program)| match program {

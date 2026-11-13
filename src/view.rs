@@ -111,6 +111,8 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How long a close waits for `undo-close`; zero closes at once (`undo_timeout`).
     pub undo_timeout: Duration,
+    /// `tabs`: a window has tabs and its bar; without, it is one split tree and has neither.
+    pub tabs: bool,
     /// Where the shell integration's scripts are, when login shells load it.
     pub shell_integration: Option<PathBuf>,
     /// A command that ran this long notifies its end out of view; `None` never.
@@ -183,6 +185,9 @@ pub struct PaneView {
     /// The program claimed the chords bound to focus, resize, close and last pane (user var
     /// `RTTY_KEYS=pane`), until it clears the var or a shell draws its next prompt (OSC 133;A).
     claims_keys: bool,
+    /// The other user vars the program set, until it empties them or a shell draws its next
+    /// prompt: `rtty cli list` tells them (tutti's TUI names its session in `TUTTI_TUI`).
+    vars: BTreeMap<String, String>,
     /// The server of a Neovim running rtty's plugin here (user var `RTTY_NVIM`), which edits the
     /// files Cmd+clicks open, until it clears the var or a shell draws its next prompt.
     nvim: Option<PathBuf>,
@@ -442,6 +447,7 @@ impl PaneView {
             selecting: None,
             autoscroll: None,
             claims_keys: false,
+            vars: BTreeMap::new(),
             nvim: None,
             keys_down: Vec::new(),
             grid: (rows, cols, (0, 0)),
@@ -662,6 +668,11 @@ impl PaneView {
         self.claims_keys
     }
 
+    /// The user vars the pane's program set, but for the ones rtty reads itself.
+    pub fn vars(&self) -> &BTreeMap<String, String> {
+        &self.vars
+    }
+
     /// The server the pane's Neovim named, while `nvim` is the pane's foreground program and the
     /// server a socket of this user's (`editor::trusted`).
     pub fn nvim(&self) -> Option<PathBuf> {
@@ -764,11 +775,20 @@ impl PaneView {
             Notice::Event(Event::UserVar { name, value }) if name == "RTTY_NVIM" => {
                 self.nvim = (!value.is_empty()).then(|| value.into())
             }
+            // Any other var is kept for `rtty cli list` until it is emptied: a few, short ones.
+            Notice::Event(Event::UserVar { name, value }) => {
+                let fits = self.vars.len() < 16 || self.vars.contains_key(&name);
+                match value.is_empty() || value.len() > 256 || !fits {
+                    true => self.vars.remove(&name),
+                    false => self.vars.insert(name, value),
+                };
+            }
             // A mark a program sent while the alternate screen was up is not the shell's: no grid
             // row holds it, and it neither starts nor ends a command.
             Notice::Event(Event::Mark(mark)) if !prompt::held(&self.pane.lock(), &mark) => {}
             Notice::Event(Event::Mark(Mark { kind: MarkKind::PromptStart, .. })) => {
                 (self.claims_keys, self.nvim) = (false, None);
+                self.vars.clear();
                 self.command = None;
                 self.set_progress(None, cx)
             }

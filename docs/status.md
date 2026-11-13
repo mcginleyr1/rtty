@@ -31,6 +31,9 @@ are in [scripting.md](scripting.md#--script).
 - WezTerm-format color schemes that follow the macOS appearance live in every pane (with DEC mode
   2031 reports).
 - `rtty cli` and the editor plugins.
+- `tabs = false` for a window manager with tabs of its own ([Without tabs](windows.md#without-tabs)),
+  and what one reads and asks through `rtty cli`: windows' ids, panes' progress and user vars, a
+  new window.
 - The log.
 - Shell integration that loads itself (prompt jumps, the last command's output, notifications of
   long commands, click to move the cursor).
@@ -108,6 +111,15 @@ pixels (inside and centred strokes, the merge on a shared edge, corners, centre 
 forks) are unit tested. Seen on screen under tutti's TUI: its pane frames, inside strokes on whole
 edges with rounded corners. The rest has not been seen yet, and the protocol author's gallery has
 not been run in rtty.
+
+### Without tabs
+
+Checked with `tabs = false` in a scratch config: no bar and the close button hidden as AppKit has
+it, `Cmd+T` opening a window, a saved window of two tabs coming back as two windows with one
+keeping its id, and the bar and buttons back when `tabs` is turned on again; and `rtty cli list`
+and `window new` read as JSON from inside a pane and with no `RTTY_SOCKET`. Not checked: any of
+it under a window manager, the look of a window with no bar, and a tutti session's window
+without tabs against a real daemon (its one-tab cut is unit tested).
 
 ### tutti panes
 

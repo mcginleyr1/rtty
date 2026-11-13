@@ -1,8 +1,11 @@
 //! A program's progress as it reports it, ConEmu's OSC 9;4 or OSC 7501's program status, for its
 //! tab's pill and the Dock's badge: what each report means, and many panes' progress as one.
 
+use serde::{Deserialize, Serialize};
+
 /// How the work goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum State {
     Normal,
     Error,
@@ -12,7 +15,7 @@ pub enum State {
     Paused,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Progress {
     pub state: State,
     pub percent: Option<u8>,

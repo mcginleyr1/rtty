@@ -20,6 +20,10 @@ use crate::layout::{PaneId, Tabs};
 /// A window as it was.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Window {
+    /// Its id of its own, which it has again when it comes back; empty in a layout saved before
+    /// windows had one.
+    #[serde(default)]
+    pub uid: String,
     /// Its frame on its display, in points from the display's top left.
     pub frame: Bounds<Pixels>,
     /// The UUID of the display it was on.
@@ -132,7 +136,8 @@ mod tests {
         let frame = Bounds::new(point(px(40.), px(60.)), size(px(900.), px(600.)));
         let cwds = BTreeMap::from([(1, PathBuf::from("/tmp"))]);
         let display = Some("a-display".into());
-        Window { frame, display, tabs, cwds, tutti: BTreeMap::new(), session: None }
+        let uid = "18f2a-0".into();
+        Window { uid, frame, display, tabs, cwds, tutti: BTreeMap::new(), session: None }
     }
 
     #[test]
