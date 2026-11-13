@@ -84,6 +84,9 @@ other and is answered.
 ## Not yet
 
 - `style`.
-- A look on screen: the lines are checked by unit tests of their pixels and by the `border` lines
-  of `--script`'s dump ([status.md](status.md#cell-borders)), not yet by eye, and the protocol
-  author's test gallery (`scripts/cell-borders.py` on the same branch) has not been run in rtty.
+- A look on screen at all of it. Seen so far, under tutti's TUI: inside strokes on whole edges,
+  in palette colors, with rounded corners and their outside filled. Centred strokes and their
+  merge, half edges, centre arms, forks and a radius of a program's own are checked by unit tests
+  of their pixels and by the `border` lines of `--script`'s dump
+  ([status.md](status.md#cell-borders)) only, and the protocol author's test gallery
+  (`scripts/cell-borders.py` on the same branch) has not been run in rtty.

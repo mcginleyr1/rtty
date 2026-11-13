@@ -105,8 +105,9 @@ palette color under the text and its left side in the default foreground over it
 with its arc and its outside filled, the colors following a flip to light, a written cell losing
 its borders and its neighbours keeping theirs, and the query answered ahead of DA1. The lines'
 pixels (inside and centred strokes, the merge on a shared edge, corners, centre arms, arcs and
-forks) are unit tested. Nothing of it has been seen on screen yet, and the protocol author's
-gallery has not been run in rtty.
+forks) are unit tested. Seen on screen under tutti's TUI: its pane frames, inside strokes on whole
+edges with rounded corners. The rest has not been seen yet, and the protocol author's gallery has
+not been run in rtty.
 
 ### tutti panes
 
@@ -223,8 +224,8 @@ panes natively, a pane or a whole session in a window. What is left:
    - a real press of the global hotkey;
    - a clipboard read's sheet;
    - kitty images and their placeholders;
-   - cell borders, with the protocol author's gallery (`scripts/cell-borders.py` on his Ghostty
-     branch) and under tutti's TUI;
+   - cell borders past what tutti's TUI draws (centred strokes, half edges, centre arms, forks),
+     with the protocol author's gallery (`scripts/cell-borders.py` on his Ghostty branch);
    - the config reload's banner;
    - a restored window landing on its own display.
 2. **tutti sessions on other machines** ([tutti panes](tutti.md#tutti-panes)), through `tutti
