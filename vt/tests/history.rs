@@ -6,23 +6,33 @@ mod common;
 
 use common::{Profile, build, stream};
 use proptest::prelude::*;
-use rtty_vt::{Attrs, Color, Hyperlink, Row, Terminal};
+use rtty_vt::{Attrs, Borders, Color, Hyperlink, Row, Terminal};
 
 /// One cell as a reader sees it: its text, colours, rendition, width,
-/// underline colour and link.
-type Seen = (String, Color, Color, Attrs, u8, Color, Option<Hyperlink>);
+/// underline colour, link and borders.
+type Seen = (String, Color, Color, Attrs, u8, Color, Option<Hyperlink>, Option<Borders>);
 
 fn seen(row: &Row, col: usize) -> Seen {
     let cell = &row.cells()[col];
     let mut text = String::new();
     row.push_grapheme(col, &mut text);
     let link = row.hyperlink(col).map(|link| (**link).clone());
-    (text, cell.fg(), cell.bg(), cell.attrs(), cell.width(), row.underline_color(col), link)
+    let borders = common::carried_borders(row, col);
+    (
+        text,
+        cell.fg(),
+        cell.bg(),
+        cell.attrs(),
+        cell.width(),
+        row.underline_color(col),
+        link,
+        borders,
+    )
 }
 
 /// `text` in a one-column cell of the plain rendition.
 fn plain(text: &str) -> Seen {
-    (text.into(), Color::Default, Color::Default, Attrs::default(), 1, Color::Default, None)
+    (text.into(), Color::Default, Color::Default, Attrs::default(), 1, Color::Default, None, None)
 }
 
 /// The logical lines of rows `from..to`: soft-wrapped rows joined, spacers
@@ -54,6 +64,7 @@ fn logical(term: &Terminal, from: u64, to: u64) -> Vec<Vec<Seen>> {
 /// line's end — the host's doing, as with the program's own output.
 fn replayed(history: &[u8], cols: u16) -> (Vec<Vec<Seen>>, Terminal) {
     let mut host = Terminal::new((history.len() + 1).min(4096) as u16, cols, 0);
+    host.set_cell_borders(true);
     host.advance(history);
     let (row, col) = host.cursor_position();
     assert_eq!((host.screen_top(), col), (0, 0), "no scroll, and the last line ended");

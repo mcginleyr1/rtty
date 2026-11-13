@@ -88,6 +88,41 @@ let bytes = input::encode_key(&key, term.modes(), term.kitty_keyboard()); // a k
 - Unicode: `unicode-width` per character, grapheme clusters by
   `unicode-segmentation` for combining marks and emoji sequences; see the
   crate documentation for the width rules and VS16.
+- `set_cell_borders(true)`: the cell-border protocol (draft, version 1:
+  `DCS 1 + b cell-border ; … ST`), off by default, for a host that draws
+  them. Off, the commands are dropped unanswered, as a terminal without the
+  protocol drops them, so a program falls back to box-drawing characters
+  (tutti's daemon, which redraws panes from its own cells, keeps it off).
+  - The query `q` is answered `ok;1;pen,rect,half,center,palette,round,
+    priority,outside,radius`, in stream order, so ahead of a DA1 asked after
+    it. The `style` key (double, dashed and dotted lines) is not kept.
+  - A cell's borders are `Row::borders(col)`: a `Borders` of twelve
+    segments (each a `Stroke`: width, colour, centred or inside, over or
+    under the text, priority), the rounded joints, the outside colour and
+    the radius. `border_pen()` is the pen's. `Color::Default` is the default
+    foreground in a stroke and the default background as an outside colour:
+    a host resolves them, and palette colours, as it draws.
+  - The pen (`pen`, `pen-clear`, `pen-round`, `pen-square`) goes to every
+    cell written or erased, an empty pen included; SGR 0 empties it, DECSC
+    and DECRC and modes 1048 and 1049 save and restore it, DECSTR and RIS
+    clear it. A wide character's two cells take it without the edge between
+    them, and the half left when the other is overwritten takes the pen.
+  - The rectangles (`set`, `clear`, `round`, `square`) change the cells
+    from the cursor, clipped to the screen, and leave the pen.
+  - A malformed command does nothing: an unknown operation, a field out of
+    range, a payload past 256 bytes, a field after `q`, `pen-clear` or
+    `clear`'s own, a key or value not spelled as the protocol spells them.
+    Keys not known are passed over, and of a key given twice the last one
+    that reads counts.
+  - Borders move with their cells: ICH, DCH, scrolling, the scrollback, a
+    reflow (a blank cell with borders is text, and is not trimmed), the
+    alternate screen's own cells. `snapshot`, `redraw` and `history` carry
+    them and the pen; they print a wide character with one pen, so borders
+    a rectangle gave one of its two cells on what they share, or on the
+    edge between them, are not carried.
+  - A host draws: of the centred strokes two cells put on a shared edge,
+    the higher priority, then the wider, then the lower or right-hand
+    cell's (rtty's `src/borders.rs`).
 - `set_graphics(true)`: kitty's graphics protocol, off by default (APC
   strings are then dropped as they always were, so tutti's daemon is
   unchanged). `vte` drops APC strings, so the engine splits them off the
@@ -138,7 +173,7 @@ alacritty_terminal over a randomized grammar and the recorded programs in
 `snapshot()` and `redraw()` reproduce the visible state, over random streams
 and at every fixture checkpoint; property tests that resizes keep
 lines and numbering, and that no input panics, graphics commands with graphics
-on included; and an answer to every query
+on and border commands with borders on included; and an answer to every query
 the recorded programs sent. The long campaigns run with
 `cargo test --release -- --ignored`; throughput against alacritty_terminal and
 vt100 with `cargo bench`; the heap bytes a terminal holds after a session with

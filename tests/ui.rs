@@ -1192,6 +1192,65 @@ fn a_programs_title_and_progress_show_on_the_bar() {
     assert!(ended.contains("\ndock badge None, "));
 }
 
+/// The cell-border protocol in the real window, by the dump's `border` lines: a frame's top in a
+/// palette color under the text and its left side in the default foreground over it, a rounded
+/// corner with its outside filled, the colors following the scheme, a written cell losing its
+/// borders, and the query answered ahead of DA1.
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
+fn cell_borders_are_drawn_follow_the_scheme_and_go_when_their_cell_is_written() {
+    let (status, dumps) = run(
+        "borders",
+        "",
+        r"wait ready>
+         resize 24 100
+         appearance dark
+         type b() { printf '\eP1+bcell-border;%s\e\\' $@ }
+         keys enter
+         type clear; printf '\e[2;3H'; b 'set;3;32;p4;0;0;1;4' 'set;192;32;fg;0;1;2;1' 'round;1;1;1;outside=default'; printf '\e[5;1H'; echo do''ne
+         keys enter
+         wait done
+         dump
+         appearance light
+         sleep 300
+         dump
+         type printf '\e[2;3Hx\e[6;1H'; echo wr''itten
+         keys enter
+         wait written
+         dump
+         type stty raw -echo; b q; printf '\e[c'; exec cat -v
+         keys enter
+         wait 22c
+         dump
+         quit",
+    );
+    let [dark, light, written, asked] = &dumps[..] else { panic!("{} dumps", dumps.len()) };
+    assert!(status.success());
+    let lines = |dump: &str, start: &str, color: &str| {
+        let ours = |line: &&str| line.starts_with(start) && line.ends_with(color);
+        dump.lines().filter(ours).count()
+    };
+    // Four cells' top edges, less the half the corner's arc takes, and the arc; two cells' left
+    // edges over the text.
+    assert_eq!(lines(dark, "border below rect ", " #61afef"), 7);
+    assert_eq!(lines(dark, "border below stroke ", " #61afef"), 1);
+    assert_eq!(lines(dark, "border above rect ", " #abb2bf"), 4);
+    assert_eq!(lines(dark, "border ", ""), 13);
+    assert!(dark.lines().any(|line| {
+        line.starts_with("border outside fill ") && line.contains(" #282c34 within ")
+    }));
+    assert_eq!(lines(light, "border below ", " #268bd2"), 8);
+    assert_eq!(lines(light, "border above rect ", " #657b83"), 4);
+    assert!(light.contains(" #fdf6e3 within "));
+    // The corner cell written: its borders and its rounding go, its neighbours' stay.
+    assert_eq!(lines(written, "border below rect ", " #268bd2"), 6);
+    assert_eq!(lines(written, "border above rect ", " #657b83"), 2);
+    assert_eq!(lines(written, "border ", ""), 8);
+    // As `cat -v` shows them, the dump quoting the row: the reply's ST, then DA1's answer.
+    let features = "pen,rect,half,center,palette,round,priority,outside,radius";
+    assert!(asked.contains(&format!("\"^[P1+bcell-border;ok;1;{features}^[\\\\^[[?62;22c\"")));
+}
+
 #[test]
 #[ignore = "needs a display: run with `just ui`"]
 fn a_dropped_file_is_typed_escaped_and_a_click_is_reported_to_a_program_that_asked() {

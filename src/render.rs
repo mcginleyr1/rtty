@@ -7,6 +7,7 @@ use std::{iter, mem};
 use rtty_vt::{Attrs, BACKGROUND, CURSOR, Cell, Color, CursorShape as Shape, FOREGROUND, Rgb, Row};
 use rtty_vt::{PLACEHOLDER, Terminal, Underline};
 
+use crate::borders;
 use crate::glyphs;
 use crate::scheme::{self, SLOTS, Scheme};
 use crate::search::Match;
@@ -50,13 +51,15 @@ impl Palette {
     }
 }
 
-/// One row as drawn: backgrounds where they differ from the default, the text, and the
-/// characters rtty draws itself (`glyphs::drawn`).
+/// One row as drawn: backgrounds where they differ from the default, the text, the characters
+/// rtty draws itself (`glyphs::drawn`), and the borders programs put on its cells, by column
+/// (`borders::layers` draws them, with the rows above and below).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     pub backgrounds: Vec<Background>,
     pub runs: Vec<Run>,
     pub drawn: Vec<Drawn>,
+    pub borders: Vec<(u16, borders::Set)>,
 }
 
 /// A box drawing, block or powerline character on its cell.
@@ -273,6 +276,26 @@ impl<'a> Scene<'a> {
                 _ => {}
             }
 
+            // Borders keep their own colors: `fg` and the outside's `default` are the pane's, not
+            // the cell's, and a selection leaves them be.
+            let lined = |borders: &&rtty_vt::Borders| borders.segments.iter().any(Option::is_some);
+            if let Some(borders) = row.borders(usize::from(col)).filter(lined) {
+                let stroke = |stroke: rtty_vt::Stroke| borders::Stroke {
+                    width: stroke.width,
+                    color: self.resolve(stroke.color, self.fg),
+                    centered: stroke.centered,
+                    above: stroke.above,
+                    priority: stroke.priority,
+                };
+                let set = borders::Set {
+                    segments: borders.segments.map(|segment| segment.map(stroke)),
+                    joints: borders.joints,
+                    outside: borders.outside.map(|outside| self.resolve(outside, self.bg)),
+                    radius: borders.radius.unwrap_or(borders::RADIUS),
+                };
+                line.borders.push((col, set));
+            }
+
             // A Unicode placeholder shows its image (`Terminal::placements`), no glyph.
             if cell.is_spacer() || cell.ch() == PLACEHOLDER {
                 continue;
@@ -476,6 +499,47 @@ mod tests {
         let (lines, _) = draw(&term);
         assert_eq!(lines[0].runs[0].style.fg, rgb(0xff0000));
         assert_eq!(lines[0].runs[0].style.bg, rgb(0));
+    }
+
+    /// A cell's borders keep their own colors, resolved as the frame is drawn: `fg` and a palette
+    /// color follow the scheme and what the program set since, whatever the cell's colors, and
+    /// the outside's `default` is the pane's background. Joints alone draw nothing.
+    #[test]
+    fn cell_borders_resolve_their_colors_as_the_frame_is_drawn() {
+        let border = |command: &str| format!("\x1bP1+bcell-border;{command}\x1b\\");
+        let mut term = Terminal::new(3, 12, 100);
+        term.set_cell_borders(true);
+        let frame = border("set;3;20;fg;0;0;1;1")
+            + &border("set;192;36;p1;1;1;1;2;priority=4")
+            + &border("round;1;1;1;outside=default")
+            + "\x1b[1;4H"
+            + &border("round;15;1;1;radius=64");
+        term.advance(format!("\x1b[?25l\x1b[32;44mab\x1b[1;1H{frame}").as_bytes());
+        let (lines, _) = draw(&term);
+        let top = |color| borders::Stroke {
+            width: 20,
+            color,
+            centered: false,
+            above: false,
+            priority: 0,
+        };
+        let left =
+            |color| borders::Stroke { width: 36, color, centered: true, above: true, priority: 4 };
+        let sets = |fg: u32, red: u32, bg: u32| {
+            let (top, left) = (Some(top(rgb(fg))), Some(left(rgb(red))));
+            let mut corner = [None; 12];
+            (corner[0], corner[1], corner[6], corner[7]) = (top, top, left, left);
+            let mut side = [None; 12];
+            (side[6], side[7]) = (left, left);
+            let rounded =
+                borders::Set { segments: corner, joints: 1, outside: Some(rgb(bg)), radius: 128 };
+            let square = borders::Set { segments: side, joints: 0, outside: None, radius: 128 };
+            vec![(0, rounded), (1, square)]
+        };
+        assert_eq!(lines[0].borders, sets(FG, RED, BG));
+        assert_eq!(texts(&lines[0]), [(0, "ab")]);
+        term.advance(b"\x1b]4;1;rgb:00/ff/00\x07\x1b]10;#ffffff\x07\x1b]11;#000000\x07");
+        assert_eq!(draw(&term).0[0].borders, sets(0xffffff, 0x00ff00, 0));
     }
 
     #[test]

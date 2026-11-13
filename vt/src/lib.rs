@@ -58,7 +58,20 @@
 //! engine draws nothing itself. Off, the default,
 //! APC strings are dropped as they always were. With graphics on, `t=f` and
 //! `t=t` transmissions read the files they name: the one IO the engine does.
+//!
+//! # Cell borders
+//!
+//! With `set_cell_borders(true)` the engine takes the cell-border protocol
+//! (draft, version 1: `DCS 1 + b cell-border ; … ST`): lines on the edges and
+//! centrelines of cells, which take no cells of their own. It answers the
+//! capability query and keeps each cell's `Borders` (`Row::borders`) and the
+//! pen's (`border_pen`), which every cell written or erased takes; borders
+//! scroll, reflow and switch screens with their cells, and `snapshot` and
+//! `redraw` carry them. A host draws them, merging the centred strokes two
+//! cells put on a shared edge. The line styles (`style`) are not kept. Off,
+//! the default, the commands are dropped unanswered.
 
+mod border;
 mod cell;
 mod dispatch;
 mod event;
@@ -71,6 +84,7 @@ mod row;
 mod snapshot;
 mod term;
 
+pub use border::{Borders, Stroke};
 pub use cell::{Attrs, Cell, Color, Underline};
 pub use dispatch::XTERM_VERSION;
 pub use event::{Event, Mark, MarkKind, ModeChange};

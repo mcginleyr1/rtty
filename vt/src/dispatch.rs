@@ -45,6 +45,8 @@ pub(crate) enum DcsKind {
     Termcap,
     /// DECRQSS, `DCS $ q`.
     Setting,
+    /// The cell-border protocol, `DCS 1 + b`.
+    Borders,
 }
 
 const DCS_MAX: usize = 1024;
@@ -69,12 +71,15 @@ impl Perform for Performer<'_> {
         }
     }
 
-    fn hook(&mut self, _: &Params, intermediates: &[u8], ignore: bool, action: char) {
+    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
         self.interrupt();
+        // The cell-border protocol's one parameter is its version.
+        let borders = self.0.cell_borders && params.iter().eq([&[1][..]]);
         self.0.dcs = match (intermediates, action) {
             _ if ignore => None,
             (b"+", 'q') => Some((DcsKind::Termcap, Vec::new())),
             (b"$", 'q') => Some((DcsKind::Setting, Vec::new())),
+            (b"+", 'b') if borders => Some((DcsKind::Borders, Vec::new())),
             _ => None,
         };
     }
@@ -91,6 +96,7 @@ impl Perform for Performer<'_> {
         match self.0.dcs.take() {
             Some((DcsKind::Termcap, names)) => termcap(self.0, &names),
             Some((DcsKind::Setting, setting)) => request_setting(self.0, &setting),
+            Some((DcsKind::Borders, command)) => self.0.border_command(&command),
             None => {}
         }
     }

@@ -30,6 +30,7 @@ use rtty_vt::{
     BACKGROUND, Event, FOREGROUND, Mark, MarkKind, MouseEncoding, MouseMode, Rgb, Underline,
 };
 
+use crate::borders;
 use crate::config::{Action as Bound, Bell, ClipboardRead, OptionAsAlt, Overrides, Theme};
 use crate::copy::{self, Effect};
 use crate::editor;
@@ -345,6 +346,8 @@ struct CacheKey {
 struct Frame {
     bounds: Bounds<Pixels>,
     cell: Size<Pixels>,
+    /// Rows and columns drawn.
+    size: (u16, u16),
     /// From a cell's top: where underlines and strikethroughs go.
     underline: Pixels,
     strike: Pixels,
@@ -1264,8 +1267,10 @@ impl PaneView {
         if let Some(text) = &self.marked_text {
             let _ = writeln!(out, "composing {text:?}");
         }
+        let mut bordered = vec![Vec::new(); usize::from(rows)];
         for (index, row) in term.rows(top, top + u64::from(rows)) {
-            let line = scene.line(row, index);
+            let mut line = scene.line(row, index);
+            bordered[(index - top) as usize] = mem::take(&mut line.borders);
             if line.backgrounds.is_empty() && line.runs.is_empty() && line.drawn.is_empty() {
                 continue;
             }
@@ -1337,6 +1342,21 @@ impl PaneView {
                     drawn.c,
                     hex(drawn.fg)
                 );
+            }
+        }
+        // The cell borders the next frame paints, in paint order, in device pixels from the grid's
+        // corner: what rounded joints cut off, the strokes under the text, those over it.
+        let cells: Vec<&[(u16, borders::Set)]> = bordered.iter().map(Vec::as_slice).collect();
+        let cell_pixels = (f32::from(cell.width) * scale, f32::from(cell.height) * scale);
+        let grid = borders::Grid { origin: (0., 0.), cell: cell_pixels, rows, cols };
+        let borders::Layers { fills, below, above } = borders::layers(&cells, &grid);
+        for (shape, color, [x, y, w, h]) in &fills {
+            let cut = describe(shape);
+            let _ = writeln!(out, "border outside {cut} {} within {x},{y} {w}x{h}", hex(*color));
+        }
+        for (layer, strokes) in [("below", &below), ("above", &above)] {
+            for (shape, color) in strokes {
+                let _ = writeln!(out, "border {layer} {} {}", describe(shape), hex(*color));
             }
         }
         // The images the next frame draws, lowest first, from the cell each counts from; and how
@@ -1819,6 +1839,7 @@ impl PaneView {
         let frame = Frame {
             bounds,
             cell,
+            size: (rows, cols),
             underline,
             strike,
             thickness,
@@ -1886,8 +1907,21 @@ impl PaneView {
                 ));
             }
         }
-        pictures(window, |z| (i32::MIN / 2..0).contains(&z));
+        // Cell borders: what their rounded joints cut off, then the strokes that go under the
+        // text; those that go over it follow it.
         let scale = window.scale_factor();
+        let device = |(x, y): (f32, f32)| point(px(x / scale), px(y / scale));
+        let borders = border_layers(&frame, frame.bounds.origin, scale);
+        for (shape, color, [x, y, w, h]) in borders.fills {
+            let cell = Bounds::new(device((x, y)), size(px(w / scale), px(h / scale)));
+            window.with_content_mask(Some(ContentMask { bounds: cell }), |window| {
+                paint_shape(shape, &device, scale, hsla(color), window)
+            });
+        }
+        for (shape, color) in borders.below {
+            paint_shape(shape, &device, scale, hsla(color), window);
+        }
+        pictures(window, |z| (i32::MIN / 2..0).contains(&z));
         let light = (f32::from(frame.thickness) * scale).round().max(1.);
         for (row, shaped) in &frame.rows {
             for (run, shaped) in shaped.line.runs.iter().zip(&shaped.shaped) {
@@ -1908,6 +1942,9 @@ impl PaneView {
             for drawn in &shaped.line.drawn {
                 paint_drawn(drawn, at(*row, drawn.col), cell, scale, light, window);
             }
+        }
+        for (shape, color) in borders.above {
+            paint_shape(shape, &device, scale, hsla(color), window);
         }
         pictures(window, |z| z >= 0);
         if let Some(cursor) = frame.cursor {
@@ -1995,31 +2032,78 @@ fn paint_drawn(
     let (width, height) =
         (device(origin.x + cell.width) - left, device(origin.y + cell.height) - top);
     let at = |(x, y): (f32, f32)| point(px((left + x) / scale), px((top + y) / scale));
-    let color = hsla(drawn.fg);
     for shape in glyphs::shapes(drawn.c, width, height, light) {
-        let (mut path, segs, closed) = match shape {
-            Shape::Rect { x, y, w, h, alpha } => {
-                let bounds = Bounds::new(at((x, y)), size(px(w / scale), px(h / scale)));
-                window.paint_quad(fill(bounds, color.opacity(alpha)));
-                continue;
-            }
-            Shape::Fill(segs) => (PathBuilder::fill(), segs, true),
-            Shape::Stroke(thick, segs) => (PathBuilder::stroke(px(thick / scale)), segs, false),
-        };
-        for seg in segs {
-            match seg {
-                Seg::Move(x, y) => path.move_to(at((x, y))),
-                Seg::Line(x, y) => path.line_to(at((x, y))),
-                Seg::Curve { to, c1, c2 } => path.cubic_bezier_to(at(to), at(c1), at(c2)),
-            }
+        paint_shape(shape, &at, scale, hsla(drawn.fg), window);
+    }
+}
+
+/// A shape in device pixels, `at` giving where a point of it is in the window.
+fn paint_shape(
+    shape: Shape,
+    at: &dyn Fn((f32, f32)) -> Point<Pixels>,
+    scale: f32,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let (mut path, segs, closed) = match shape {
+        Shape::Rect { x, y, w, h, alpha } => {
+            let bounds = Bounds::new(at((x, y)), size(px(w / scale), px(h / scale)));
+            return window.paint_quad(fill(bounds, color.opacity(alpha)));
         }
-        if closed {
-            path.close();
-        }
-        if let Ok(path) = path.build() {
-            window.paint_path(path, color);
+        Shape::Fill(segs) => (PathBuilder::fill(), segs, true),
+        Shape::Stroke(thick, segs) => (PathBuilder::stroke(px(thick / scale)), segs, false),
+    };
+    for seg in segs {
+        match seg {
+            Seg::Move(x, y) => path.move_to(at((x, y))),
+            Seg::Line(x, y) => path.line_to(at((x, y))),
+            Seg::Curve { to, c1, c2 } => path.cubic_bezier_to(at(to), at(c1), at(c2)),
         }
     }
+    if closed {
+        path.close();
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// A shape as `dump` writes it: a rectangle's corner and size, a path's moves, lines and curves
+/// (the end point, the control points left out).
+fn describe(shape: &Shape) -> String {
+    let path = |segs: &[Seg]| {
+        let points = segs.iter().map(|seg| match *seg {
+            Seg::Move(x, y) => format!("M{x},{y}"),
+            Seg::Line(x, y) => format!("L{x},{y}"),
+            Seg::Curve { to: (x, y), .. } => format!("C{x},{y}"),
+        });
+        points.collect::<Vec<_>>().join(" ")
+    };
+    match shape {
+        Shape::Rect { x, y, w, h, .. } => format!("rect {x},{y} {w}x{h}"),
+        Shape::Fill(segs) => format!("fill {}", path(segs)),
+        Shape::Stroke(thick, segs) => format!("stroke {thick} {}", path(segs)),
+    }
+}
+
+/// The frame's cell borders as shapes in device pixels, the grid's corner at `origin`.
+fn border_layers(frame: &Frame, origin: Point<Pixels>, scale: f32) -> borders::Layers {
+    let (rows, cols) = frame.size;
+    if frame.rows.iter().all(|(_, shaped)| shaped.line.borders.is_empty()) {
+        return borders::Layers::default();
+    }
+    let mut cells: Vec<&[(u16, borders::Set)]> = vec![&[]; usize::from(rows)];
+    for (row, shaped) in &frame.rows {
+        cells[usize::from(*row)] = &shaped.line.borders;
+    }
+    let device = |at: Pixels| f32::from(at) * scale;
+    let grid = borders::Grid {
+        origin: (device(origin.x), device(origin.y)),
+        cell: (device(frame.cell.width), device(frame.cell.height)),
+        rows,
+        cols,
+    };
+    borders::layers(&cells, &grid)
 }
 
 /// How many cells `y` is past the pane's top (negative) or bottom (positive); 0 within it.

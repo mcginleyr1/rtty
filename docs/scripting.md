@@ -52,6 +52,10 @@ A scripted window differs from a normal one in these ways:
 - the window's tabs, bar and layout;
 - what the next frame draws in each shown pane: runs, their glyphs, colors, underlines, the cursor,
   the font with its features, the cell, and the rows each drawn character fills;
+- its [cell borders](borders.md) in paint order, in device pixels from the grid's corner: `border
+  outside` (what a rounded joint cuts off, and the cell it shows within), `border below` and
+  `border above` (the strokes under and over the text), each a `rect` with its corner and size or
+  a path's points, then its color;
 - the modes the frame is drawn from;
 - the shell's marks, a running command, and what was copied last (`copied`).
 

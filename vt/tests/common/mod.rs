@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use proptest::prelude::*;
-use rtty_vt::Terminal;
+use rtty_vt::{Borders, Row, Terminal};
 
 /// One step of a stream.
 #[derive(Clone, Debug)]
@@ -29,6 +29,8 @@ pub enum Token {
     Link(Option<String>),
     /// Anything else the engine answers or records without drawing.
     Quiet(&'static str),
+    /// A cell-border command: what follows `cell-border;`.
+    Border(String),
     Resize(u16, u16),
 }
 
@@ -132,6 +134,39 @@ fn quiet(profile: Profile) -> impl Strategy<Value = Token> {
     prop::sample::select(quiet).prop_map(Token::Quiet)
 }
 
+/// The pen's commands and the rectangles', with the keys a stroke and a joint take.
+fn border() -> impl Strategy<Value = Token> {
+    let stroke = (
+        prop_oneof![1u16..4096, prop::sample::select(vec![3u16, 12, 48, 192, 255, 768, 3072])],
+        prop::sample::select(vec![1u8, 16, 64]),
+        prop::sample::select(vec!["fg", "p3", "80C5b7"]),
+        (0u8..2, 0u8..2),
+        prop::sample::select(vec!["", ";priority=5", ";style=double"]),
+    )
+        .prop_map(|(mask, width, color, (placement, layer), key)| {
+            (format!("{mask}"), format!(";{width};{color};{placement};{layer}"), key)
+        });
+    let joints = (
+        1u16..256,
+        prop::sample::select(vec!["", ";outside=default", ";outside=p2;radius=64", ";radius=256"]),
+    );
+    let rect = (1u16..5, 1u16..12).prop_map(|(rows, cols)| format!(";{rows};{cols}"));
+    prop_oneof![
+        3 => stroke.clone().prop_map(|(mask, stroke, key)| format!("pen;{mask}{stroke}{key}")),
+        1 => (1u16..4096).prop_map(|mask| format!("pen-clear;{mask}")),
+        3 => (stroke, rect.clone())
+            .prop_map(|((mask, stroke, key), rect)| format!("set;{mask}{stroke}{rect}{key}")),
+        1 => (1u16..4096, rect.clone()).prop_map(|(mask, rect)| format!("clear;{mask}{rect}")),
+        1 => (joints.clone(), any::<bool>()).prop_map(|((joints, keys), round)| {
+            format!("pen-{};{joints}{keys}", if round { "round" } else { "square" })
+        }),
+        1 => (joints, any::<bool>(), rect).prop_map(|((joints, keys), round, rect)| {
+            format!("{};{joints}{rect}{keys}", if round { "round" } else { "square" })
+        }),
+    ]
+    .prop_map(Token::Border)
+}
+
 pub fn token(profile: Profile, rows: u16, cols: u16) -> BoxedStrategy<Token> {
     let moves = prop::sample::select(vec!['A', 'B', 'C', 'D', 'E', 'F', 'G', '`', 'd', 'I', 'Z']);
     let edits = prop::sample::select(vec!['J', 'K', 'X', '@', 'P', 'L', 'M', 'S', 'T', 'b']);
@@ -157,6 +192,7 @@ pub fn token(profile: Profile, rows: u16, cols: u16) -> BoxedStrategy<Token> {
         Profile::Full => prop_oneof![
             80 => tokens,
             1 => (1..rows + 4, 1..cols + 8).prop_map(|(r, c)| Token::Resize(r, c)),
+            5 => border(),
         ]
         .boxed(),
     }
@@ -197,6 +233,7 @@ impl Token {
             Token::Link(Some(uri)) => format!("\x1b]8;;{uri}\x1b\\"),
             Token::Link(None) => "\x1b]8;;\x1b\\".into(),
             Token::Quiet(bytes) => (*bytes).into(),
+            Token::Border(command) => format!("\x1bP1+bcell-border;{command}\x1b\\"),
             Token::Resize(..) => String::new(),
         };
         text.into_bytes()
@@ -239,6 +276,28 @@ fn blank_screen(term: &Terminal) -> bool {
 
 fn zero_width(c: char) -> bool {
     matches!(c, '\u{300}'..='\u{36f}' | '\u{FE00}'..='\u{FE0F}' | '\u{200D}')
+}
+
+/// The borders of the cell at `col` as a snapshot or a history carries them.
+/// They print a wide character with one pen, so its two cells come out as
+/// printing leaves them: what the two share (all but the first's left-hand
+/// and the second's right-hand edge and corners) is the first cell's, and
+/// neither has a line on the edge between them.
+pub fn carried_borders(row: &Row, col: usize) -> Option<Borders> {
+    let cell = row.cells().get(col).copied().unwrap_or_default();
+    let first = match (cell.is_wide(), cell.is_spacer()) {
+        (true, _) => col,
+        (_, true) if col > 0 => col - 1,
+        _ => return row.borders(col).cloned(),
+    };
+    let at = |col: usize| row.borders(col).cloned().unwrap_or_default();
+    let (mut pen, right) = (at(first), at(first + 1));
+    pen.segments[2..4].copy_from_slice(&right.segments[2..4]);
+    pen.joints = pen.joints & !6 | right.joints & 6;
+    let (inner, corners) = if col == first { (2..4, 6) } else { (6..8, 9) };
+    pen.segments[inner].fill(None);
+    pen.joints &= !corners;
+    (pen != Borders::default()).then_some(pen)
 }
 
 impl Model {
@@ -454,6 +513,7 @@ pub fn build_with(
     oracle: &mut impl Oracle,
 ) -> (Vec<u8>, Terminal) {
     let mut term = Terminal::new(rows, cols, 100);
+    term.set_cell_borders(true);
     let mut model = Model::new();
     let mut stream = Vec::new();
     for token in tokens {

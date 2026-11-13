@@ -3,13 +3,14 @@ use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
+use crate::border::{self, Borders};
 use crate::cell::{Attrs, Cell, Color};
 use crate::dispatch::Performer;
 use crate::event::{Event, Mark, MarkKind, ModeChange};
 use crate::graphics::{APC_MAX, Graphics};
 use crate::grid::Grid;
 use crate::modes::{CursorStyle, Modes, MouseEncoding, MouseMode};
-use crate::row::{CLUSTER_MAX, Extra, Hyperlink, Row};
+use crate::row::{Blank, CLUSTER_MAX, Extra, Hyperlink, Row};
 
 /// An RGB colour from or for the palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,6 +39,15 @@ pub(crate) struct Pen {
     pub(crate) attrs: Attrs,
     pub(crate) underline: Color,
     pub(crate) link: Option<Arc<Hyperlink>>,
+    /// The cell-border protocol's pen.
+    pub(crate) borders: Option<Arc<Borders>>,
+}
+
+impl Pen {
+    /// What a cell erased with this pen holds.
+    pub(crate) fn blank(&self) -> Blank {
+        Blank { bg: self.bg, borders: self.borders.clone() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -188,6 +198,8 @@ pub struct Terminal {
     command_end_reset: bool,
     /// The last shell mark was a command's end.
     command_ended: bool,
+    /// The host draws cell borders (`set_cell_borders`).
+    pub(crate) cell_borders: bool,
 }
 
 impl Terminal {
@@ -226,6 +238,7 @@ impl Terminal {
             kitty_notification: None,
             command_end_reset: false,
             command_ended: false,
+            cell_borders: false,
         }
     }
 
@@ -432,7 +445,7 @@ impl Terminal {
         self.grid.clear_history();
         if !self.grid.alt_active {
             for row in 0..self.grid.rows {
-                self.reset_line(row, Color::Default);
+                self.reset_line(row, &Blank::default());
             }
         }
     }
@@ -554,11 +567,13 @@ impl Terminal {
             return 0;
         }
         let cols = usize::from(self.grid.cols);
+        // A wide character's two cells share the pen's borders between them, which `write` does.
+        let bordered = self.cursor.pen.borders.is_some();
         let width = |c: char| match c {
             ' '..='~' => 1,
             _ if c.is_ascii() || regional_indicator(c) || emoji_modifier(c) => 0,
             _ if cols < 2 => 0,
-            _ => c.width().unwrap_or(0),
+            _ => c.width().filter(|&width| !(bordered && width == 2)).unwrap_or(0),
         };
         let first = run.first().map_or(0, |&c| width(c));
         if first == 0 {
@@ -591,9 +606,9 @@ impl Terminal {
             && !(col == 0 && first == 2)
             && line.cells[col..end.min(2)].iter().any(|cell| cell.width() != 1);
         if split {
-            line.split_wide(col..end);
+            line.split_wide(col..end, &pen.borders);
         }
-        let extra = line.pen_extra(pen.underline, &pen.link);
+        let extra = line.pen_extra(pen.underline, &pen.link, &pen.borders);
         let mut at = col;
         for &c in &run[..n] {
             let mut cell = Cell::new(c, pen.fg, pen.bg, pen.attrs, extra);
@@ -732,18 +747,17 @@ impl Terminal {
     fn widen(&mut self, col: usize, cell: Cell, extra: Option<Extra>) {
         let cols = usize::from(self.grid.cols);
         let line = self.grid.line_mut(self.cursor.row);
-        line.split_wide(col..col + 2);
-        let (underline, link) = extra
-            .as_ref()
-            .map_or((Color::Default, None), |extra| (extra.underline, extra.link.clone()));
+        line.split_wide(col..col + 2, &self.cursor.pen.borders);
+        let Extra { underline, link, borders, .. } = extra.clone().unwrap_or_default();
+        let [left, right] = border::halves(&borders);
         let mut wide = cell;
-        wide.extra = extra.map_or(0, |extra| line.intern(extra));
+        wide.extra = extra.map_or(0, |extra| line.intern(Extra { borders: left, ..extra }));
         wide.set_wide();
         // In the row before the spacer's entry is interned: interning can
         // compact the entries, renumbering only the cells the row holds.
         line.cells[col] = wide;
-        let mut spacer =
-            Cell::new(' ', cell.fg, cell.bg, cell.attrs(), line.pen_extra(underline, &link));
+        let spacer = line.pen_extra(underline, &link, &right);
+        let mut spacer = Cell::new(' ', cell.fg, cell.bg, cell.attrs(), spacer);
         spacer.set_spacer();
         line.cells[col + 1] = spacer;
         line.touch(col + 2);
@@ -771,8 +785,8 @@ impl Terminal {
             let pen = self.cursor.pen.clone();
             let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
             let line = self.grid.line_mut(row);
-            line.split_wide(col..col + 1);
-            let extra = line.pen_extra(pen.underline, &pen.link);
+            line.split_wide(col..col + 1, &pen.borders);
+            let extra = line.pen_extra(pen.underline, &pen.link, &pen.borders);
             line.cells[col] = Cell::new(' ', pen.fg, pen.bg, pen.attrs, extra);
             line.cells[col].set_pad();
             line.touch(col + 1);
@@ -783,7 +797,7 @@ impl Terminal {
         let pen = &self.cursor.pen;
         let line = self.grid.line_mut(row);
         if self.modes.insert {
-            line.insert_blanks(col, usize::from(width), pen.bg);
+            line.insert_blanks(col, usize::from(width), &pen.blank());
         }
         // Writing over part of a wide character, rarely: it loses its other
         // half, and the pad above that made room for it is going unless
@@ -793,10 +807,10 @@ impl Terminal {
             let unpads = col <= 1
                 && !(col == 0 && width == 2)
                 && line.cells[col..end.min(2)].iter().any(|cell| cell.width() != 1);
-            line.split_wide(col..end);
+            line.split_wide(col..end, &pen.borders);
             unpads
         };
-        let extra = line.pen_extra(pen.underline, &pen.link);
+        let extra = line.pen_extra(pen.underline, &pen.link, &pen.borders);
         let mut cell = Cell::new(c, pen.fg, pen.bg, pen.attrs, extra);
         if width == 2 {
             cell.set_wide();
@@ -805,6 +819,11 @@ impl Terminal {
             line.cells[col + 1] = spacer;
         }
         line.cells[col] = cell;
+        if width == 2 && pen.borders.is_some() {
+            let [left, right] = border::halves(&pen.borders);
+            line.set_borders(col, &left);
+            line.set_borders(col + 1, &right);
+        }
         line.touch(end);
         // A soft wrap lives in the last cell: rewritten, the row ends there
         // until the next character wraps it again.
@@ -834,7 +853,7 @@ impl Terminal {
     /// Down a row, scrolling the region when at its bottom.
     pub(crate) fn index(&mut self) {
         if self.cursor.row == self.bottom {
-            self.grid.scroll_up(self.top, self.bottom, 1, self.cursor.pen.bg);
+            self.grid.scroll_up(self.top, self.bottom, 1, &self.cursor.pen.blank());
         } else if self.cursor.row + 1 < self.grid.rows {
             self.cursor.row += 1;
         }
@@ -843,7 +862,7 @@ impl Terminal {
 
     pub(crate) fn reverse_index(&mut self) {
         if self.cursor.row == self.top {
-            self.grid.scroll_down(self.top, self.bottom, 1, self.cursor.pen.bg);
+            self.grid.scroll_down(self.top, self.bottom, 1, &self.cursor.pen.blank());
         } else {
             self.cursor.row = self.cursor.row.saturating_sub(1);
         }
@@ -944,32 +963,32 @@ impl Terminal {
     /// into its scrollback first, its images gone), 3 the scrollback (from
     /// the primary screen only: the alternate one has none).
     pub(crate) fn erase_display(&mut self, mode: u16) {
-        let bg = self.cursor.pen.bg;
+        let blank = &self.cursor.pen.blank();
         let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
         let cols = usize::from(self.grid.cols);
         match mode {
             0 => {
-                self.grid.line_mut(row).erase(col..cols, bg);
+                self.grid.line_mut(row).erase(col..cols, blank);
                 for below in row + 1..self.grid.rows {
-                    self.blank_line(below, bg);
+                    self.blank_line(below, blank);
                 }
             }
             1 => {
                 for above in 0..row {
-                    self.blank_line(above, bg);
+                    self.blank_line(above, blank);
                 }
-                self.grid.line_mut(row).erase(0..col + 1, bg);
+                self.grid.line_mut(row).erase(0..col + 1, blank);
             }
             2 => {
                 self.erase_images();
                 if !self.grid.alt_active {
                     let used = (0..self.grid.rows).rev().find(|&r| !self.grid.line(r).is_empty());
                     if let Some(used) = used {
-                        self.grid.scroll_up(0, self.grid.rows - 1, used + 1, bg);
+                        self.grid.scroll_up(0, self.grid.rows - 1, used + 1, blank);
                     }
                 }
                 for r in 0..self.grid.rows {
-                    self.reset_line(r, bg);
+                    self.reset_line(r, blank);
                 }
             }
             3 if !self.grid.alt_active => self.grid.clear_history(),
@@ -977,25 +996,25 @@ impl Terminal {
         }
     }
 
-    fn reset_line(&mut self, row: u16, bg: Color) {
+    fn reset_line(&mut self, row: u16, blank: &Blank) {
         let cols = self.grid.cols;
         let line = self.grid.line_mut(row);
-        line.reset(cols, bg);
+        line.reset(cols, blank);
     }
 
     /// A row ED 0 or 1 erases whole: its images stay, as under every erase but ED 2.
-    fn blank_line(&mut self, row: u16, bg: Color) {
+    fn blank_line(&mut self, row: u16, blank: &Blank) {
         let cols = self.grid.cols;
         let line = self.grid.line_mut(row);
         let images = std::mem::take(&mut line.images);
-        line.reset(cols, bg);
+        line.reset(cols, blank);
         line.images = images;
     }
 
     /// EL: 0 right, 1 left, 2 all. With a wrap pending, the last column's
     /// character is kept from a right erase.
     pub(crate) fn erase_line(&mut self, mode: u16) {
-        let bg = self.cursor.pen.bg;
+        let blank = &self.cursor.pen.blank();
         let (row, col) = (self.cursor.row, usize::from(self.cursor.col));
         let cols = usize::from(self.grid.cols);
         let range = match mode {
@@ -1005,34 +1024,34 @@ impl Terminal {
             2 => 0..cols,
             _ => return,
         };
-        self.grid.line_mut(row).erase(range, bg);
+        self.grid.line_mut(row).erase(range, blank);
     }
 
     /// ECH.
     pub(crate) fn erase_chars(&mut self, n: u16) {
         let col = usize::from(self.cursor.col);
-        let bg = self.cursor.pen.bg;
-        self.grid.line_mut(self.cursor.row).erase(col..col + usize::from(n), bg);
+        let blank = &self.cursor.pen.blank();
+        self.grid.line_mut(self.cursor.row).erase(col..col + usize::from(n), blank);
     }
 
     /// ICH.
     pub(crate) fn insert_chars(&mut self, n: u16) {
         let col = usize::from(self.cursor.col);
-        let bg = self.cursor.pen.bg;
-        self.grid.line_mut(self.cursor.row).insert_blanks(col, usize::from(n), bg);
+        let blank = &self.cursor.pen.blank();
+        self.grid.line_mut(self.cursor.row).insert_blanks(col, usize::from(n), blank);
     }
 
     /// DCH.
     pub(crate) fn delete_chars(&mut self, n: u16) {
         let col = usize::from(self.cursor.col);
-        let bg = self.cursor.pen.bg;
-        self.grid.line_mut(self.cursor.row).delete_cells(col, usize::from(n), bg);
+        let blank = &self.cursor.pen.blank();
+        self.grid.line_mut(self.cursor.row).delete_cells(col, usize::from(n), blank);
     }
 
     /// IL: from the cursor's row down, inside the region only.
     pub(crate) fn insert_lines(&mut self, n: u16) {
         if (self.top..=self.bottom).contains(&self.cursor.row) {
-            self.grid.scroll_down(self.cursor.row, self.bottom, n, self.cursor.pen.bg);
+            self.grid.scroll_down(self.cursor.row, self.bottom, n, &self.cursor.pen.blank());
             self.cursor.col = 0;
             self.cursor.pending_wrap = false;
         }
@@ -1042,7 +1061,7 @@ impl Terminal {
     pub(crate) fn delete_lines(&mut self, n: u16) {
         if (self.top..=self.bottom).contains(&self.cursor.row) {
             // From the top row, the deleted rows go into the scrollback.
-            self.grid.scroll_up(self.cursor.row, self.bottom, n, self.cursor.pen.bg);
+            self.grid.scroll_up(self.cursor.row, self.bottom, n, &self.cursor.pen.blank());
             self.cursor.col = 0;
             self.cursor.pending_wrap = false;
         }
@@ -1050,12 +1069,12 @@ impl Terminal {
 
     /// SU.
     pub(crate) fn scroll_up(&mut self, n: u16) {
-        self.grid.scroll_up(self.top, self.bottom, n, self.cursor.pen.bg);
+        self.grid.scroll_up(self.top, self.bottom, n, &self.cursor.pen.blank());
     }
 
     /// SD.
     pub(crate) fn scroll_down(&mut self, n: u16) {
-        self.grid.scroll_down(self.top, self.bottom, n, self.cursor.pen.bg);
+        self.grid.scroll_down(self.top, self.bottom, n, &self.cursor.pen.blank());
     }
 
     /// DECSTBM, 1-based inclusive; homes the cursor.
@@ -1072,9 +1091,10 @@ impl Terminal {
 
     /// DECALN: the screen filled with `E`, margins reset, cursor home.
     pub(crate) fn screen_alignment(&mut self) {
+        let blank = Blank { bg: Color::Default, ..self.cursor.pen.blank() };
         for row in 0..self.grid.rows {
             let line = self.grid.line_mut(row);
-            line.reset(line.cells.len() as u16, Color::Default);
+            line.reset(line.cells.len() as u16, &blank);
             line.cells.iter_mut().for_each(|cell| cell.ch = 'E');
             line.touch(line.cells.len());
         }
@@ -1132,9 +1152,9 @@ impl Terminal {
     }
 
     fn clear_alt(&mut self) {
-        let (cols, bg) = (self.grid.cols, self.cursor.pen.bg);
+        let (cols, blank) = (self.grid.cols, self.cursor.pen.blank());
         for row in self.grid.alt.iter_mut() {
-            row.reset(cols, bg);
+            row.reset(cols, &blank);
         }
     }
 
@@ -1147,7 +1167,7 @@ impl Terminal {
         }
         self.grid.clear_history();
         for row in self.grid.primary.iter_mut() {
-            row.reset(self.grid.cols, Color::Default);
+            row.reset(self.grid.cols, &Blank::default());
         }
         self.grid.alt = Default::default();
         self.grid.damage_all();
@@ -1311,7 +1331,7 @@ impl Terminal {
 impl Row {
     /// ICH: `n` blanks at `col`, the cells from there shifting right and off
     /// the end.
-    pub(crate) fn insert_blanks(&mut self, col: usize, n: usize, bg: Color) {
+    pub(crate) fn insert_blanks(&mut self, col: usize, n: usize, blank: &Blank) {
         let len = self.cells.len();
         if col >= len {
             return;
@@ -1324,10 +1344,11 @@ impl Row {
         if n < len - col && self.cells[len - n - 1].is_wide() {
             self.orphan(len - n - 1);
         }
+        let cell = self.blank(blank);
         self.cells[col..].rotate_right(n);
-        self.cells[col..col + n].fill(Cell::blank(bg));
+        self.cells[col..col + n].fill(cell);
         self.occupied = (self.occupied + n).min(len);
-        if bg != Color::Default {
+        if !cell.is_default() {
             self.touch(col + n);
         }
         self.wrapped &= n == 0;
@@ -1335,18 +1356,19 @@ impl Row {
 
     /// DCH: `n` cells at `col` removed, the rest shifting left, blanks
     /// coming in at the end.
-    pub(crate) fn delete_cells(&mut self, col: usize, n: usize, bg: Color) {
+    pub(crate) fn delete_cells(&mut self, col: usize, n: usize, blank: &Blank) {
         let len = self.cells.len();
         if col >= len {
             return;
         }
         let n = n.min(len - col);
-        self.split_wide(col..col + n);
+        self.split_wide(col..col + n, &blank.borders);
         // A pad means nothing away from the end of its row.
         self.cells[len - 1].clear_pad();
+        let cell = self.blank(blank);
         self.cells[col..].rotate_left(n);
-        self.cells[len - n..].fill(Cell::blank(bg));
-        if bg != Color::Default {
+        self.cells[len - n..].fill(cell);
+        if !cell.is_default() {
             self.touch(len);
         }
         self.wrapped &= n == 0;

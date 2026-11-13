@@ -71,6 +71,52 @@ fn placeholders() -> impl Strategy<Value = Vec<u8>> {
     })
 }
 
+/// A cell-border command of fields picked to reach every operation, well
+/// formed or not.
+fn border_command() -> impl Strategy<Value = Vec<u8>> {
+    let fields = [
+        "q",
+        "pen",
+        "pen-clear",
+        "set",
+        "clear",
+        "pen-round",
+        "pen-square",
+        "round",
+        "square",
+        "0",
+        "1",
+        "3",
+        "16",
+        "64",
+        "255",
+        "4095",
+        "65535",
+        "65536",
+        "fg",
+        "p7",
+        "p256",
+        "80c5b7",
+        "priority=15",
+        "outside=default",
+        "outside=p1",
+        "radius=256",
+        "style=dotted",
+        "x=",
+        "",
+    ];
+    prop::collection::vec(prop::sample::select(fields.to_vec()), 0..10)
+        .prop_map(|fields| format!("\x1bP1+bcell-border;{}\x1b\\", fields.join(";")).into_bytes())
+}
+
+fn border_step() -> impl Strategy<Value = Step> {
+    prop_oneof![
+        4 => border_command().prop_map(Step::Feed),
+        4 => prop::collection::vec(byte(), 0..100).prop_map(Step::Feed),
+        1 => (0u16..30, 0u16..90).prop_map(|(rows, cols)| Step::Resize(rows, cols)),
+    ]
+}
+
 fn graphics_step() -> impl Strategy<Value = Step> {
     prop_oneof![
         4 => graphics_command().prop_map(Step::Feed),
@@ -107,6 +153,31 @@ proptest! {
         let (rows, cols) = term.size();
         let mut copy = Terminal::new(rows, cols, 0);
         copy.advance(&term.snapshot());
+    }
+
+    /// The same with cell borders on, their commands among the bytes.
+    #[test]
+    fn border_commands_never_panic(
+        (rows, cols) in (0u16..12, 0u16..40),
+        scrollback in 0usize..50,
+        steps in prop::collection::vec(border_step(), 0..40),
+    ) {
+        let mut term = Terminal::new(rows, cols, scrollback);
+        term.set_cell_borders(true);
+        for step in steps {
+            match step {
+                Step::Feed(bytes) => term.advance(&bytes),
+                Step::Resize(rows, cols) => term.resize(rows, cols),
+            }
+            term.take_events();
+            let damage = term.take_damage();
+            let _ = term.redraw(&damage);
+        }
+        let (rows, cols) = term.size();
+        let mut copy = Terminal::new(rows, cols, 0);
+        copy.set_cell_borders(true);
+        copy.advance(&term.snapshot());
+        copy.advance(&term.history(term.oldest_row(), term.screen_top()));
     }
 
     /// The same with graphics on, its commands among the bytes.

@@ -1,4 +1,5 @@
 mod app;
+mod borders;
 mod cli;
 mod config;
 mod control;
