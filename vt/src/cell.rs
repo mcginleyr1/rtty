@@ -63,10 +63,6 @@ impl Attrs {
         self.0 &= !other.0;
     }
 
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
     pub fn underline(self) -> Underline {
         Underline::ALL[usize::from((self.0 & Self::UNDERLINE) >> Self::UNDERLINE_SHIFT)]
     }
