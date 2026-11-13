@@ -17,6 +17,7 @@
 # minimum_contrast = 1                   # 4.5 keeps text legible
 # confirm_close = true
 # undo_timeout = 5
+# tabs = true                            # false: no tabs and no bar, for a window manager's own
 # shell_integration = "auto"             # or "none"
 # notify_after = 10
 # click_to_move = true

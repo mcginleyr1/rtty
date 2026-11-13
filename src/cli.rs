@@ -5,11 +5,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use gpui::{Bounds, point, px, size};
+
 use crate::control::{self, Request, Response};
 use crate::layout::{Amount, Direction, PaneId};
 use crate::tutti;
 
-pub const USAGE: &str = "usage: rtty cli list
+pub const USAGE: &str = "usage: rtty cli [--socket <path>] <command>
+       rtty cli list
+       rtty cli window new [--cwd <dir>] [--frame <x>,<y>,<width>,<height> [--display <uuid>]]
        rtty cli pane focus <pane>
        rtty cli pane focus --direction <left|right|up|down> [--from <pane>] [--wrap]
        rtty cli pane resize --direction <left|right|up|down> [--amount <ratio> | --cells <n>]
@@ -21,13 +25,23 @@ pub const USAGE: &str = "usage: rtty cli list
        rtty cli tutti open [-s <session>]
 --from defaults to $RTTY_PANE, else the focused pane; --amount to 0.05 of the split; -s to
 $TUTTI_SESSION, else tutti; tutti attach opens a new tab unless told to split; tutti open opens
-a window that is the whole session.";
+a window that is the whole session. --socket names the rtty to ask from outside a pane
+($TMPDIR/rtty-<uid>/<pid>.sock); without it, $RTTY_SOCKET, else the one rtty running. window new
+prints the window as list does; --frame is in points from the display's top left.";
 
 /// tutti's step for Alt+h/j/k/l and `pane resize`.
 pub const RESIZE_STEP: Amount = Amount::Fraction(0.05);
 
-pub fn run(args: Vec<String>) -> ExitCode {
+pub fn run(mut args: Vec<String>) -> ExitCode {
     let (here, session) = (std::env::var("RTTY_PANE").ok(), std::env::var("TUTTI_SESSION").ok());
+    // Which rtty: the one `--socket` names, else the pane's own, else the only one running.
+    let own = std::env::var_os("RTTY_SOCKET").map(PathBuf::from);
+    let socket = match args.first().map(String::as_str) {
+        Some("--socket") if args.len() > 1 => args.drain(..2).next_back().map(PathBuf::from),
+        _ => own.clone(),
+    };
+    // `$RTTY_PANE` is a pane of the rtty this one runs in, and means nothing to another.
+    let here = here.filter(|_| socket == own);
     let request = match parse(&args, here, session) {
         Ok(request) => request,
         Err(message) => {
@@ -35,8 +49,8 @@ pub fn run(args: Vec<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let Some(socket) = std::env::var_os("RTTY_SOCKET").map(PathBuf::from) else {
-        eprintln!("error: RTTY_SOCKET is not set: not in an rtty pane");
+    let Some(socket) = socket.or_else(control::lone_socket) else {
+        eprintln!("error: not in an rtty pane, and not one rtty running: name one with --socket");
         return ExitCode::FAILURE;
     };
     match control::ask(&socket, &request) {
@@ -84,15 +98,35 @@ fn parse(
         ["pane", command, rest @ ..] => (*command, rest),
         ["tutti", "attach", rest @ ..] => ("tutti attach", rest),
         ["tutti", "open", rest @ ..] => ("tutti open", rest),
-        _ => return Err("expected `list`, `pane <command>`, `tutti attach` or `tutti open`".into()),
+        ["window", "new", rest @ ..] => ("window new", rest),
+        _ => {
+            let commands = "`list`, `window new`, `pane <command>`, `tutti attach` or `tutti open`";
+            return Err(format!("expected {commands}"));
+        }
     };
     let mut positional = Vec::new();
     let (mut direction, mut from, mut amount, mut wrap) = (None, None, None, false);
     let (mut session, mut split, mut tab) = (None, None, false);
+    let (mut cwd, mut frame, mut display) = (None, None, None);
     let mut rest = rest.iter();
     while let Some(&word) = rest.next() {
         let mut value = || rest.next().copied().ok_or(format!("{word} needs a value"));
         match word {
+            // As the asker means it: the rtty asked has a working directory of its own.
+            "--cwd" => {
+                let dir = value()?;
+                let whole = std::path::absolute(dir).map_err(|err| format!("--cwd {dir}: {err}"));
+                cwd = Some(whole?);
+            }
+            "--display" => display = Some(value()?.to_owned()),
+            "--frame" => {
+                let text = value()?;
+                let numbers: Result<Vec<f32>, _> = text.split(',').map(str::parse).collect();
+                let Ok([x, y, width, height]) = numbers.as_deref() else {
+                    return Err(format!("--frame {text}: not x,y,width,height"));
+                };
+                frame = Some(Bounds::new(point(px(*x), px(*y)), size(px(*width), px(*height))));
+            }
             "--direction" => direction = Some(direction_named(value()?)?),
             "--from" => from = Some(pane_numbered(value()?)?),
             "-s" | "--session" => session = Some(value()?.to_owned()),
@@ -159,6 +193,7 @@ fn parse(
             only(1, Request::TuttiAttach { socket: socket(), pane, from, split })
         }
         ("tutti open", _) => only(0, Request::TuttiOpen { socket: socket() }),
+        ("window new", _) => only(0, Request::NewWindow { cwd, frame, display }),
         _ => Err(format!("unknown command pane {command}")),
     }
 }
@@ -273,6 +308,22 @@ mod tests {
         assert!(error("tutti attach 3 4").contains("unexpected 4"));
         assert!(error("tutti attach 3 --tab --split left").contains("one or the other"));
         assert!(error("tutti attach 3 -s").contains("-s needs a value"));
+    }
+
+    /// A window manager asks for a window from outside any pane: in a directory, at a frame.
+    #[test]
+    fn window_new_takes_a_directory_and_a_frame() {
+        let bare = Request::NewWindow { cwd: None, frame: None, display: None };
+        assert_eq!(parsed("window new", Some("7")), Ok(bare));
+        let frame = Bounds::new(point(px(10.), px(38.5)), size(px(800.), px(600.)));
+        let placed =
+            Request::NewWindow { cwd: Some("/tmp".into()), frame: Some(frame), display: None };
+        assert_eq!(parsed("window new --cwd /tmp --frame 10,38.5,800,600", None), Ok(placed));
+        let error = |line| parsed(line, None).unwrap_err();
+        assert!(error("window new --frame 10,20,800").contains("not x,y,width,height"));
+        assert!(error("window new --frame a,b,c,d").contains("not x,y,width,height"));
+        assert!(error("window new 3").contains("unexpected 3"));
+        assert!(error("window").contains("expected `list`, `window new`"));
     }
 
     #[test]

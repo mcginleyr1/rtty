@@ -45,9 +45,8 @@ started from: Neovim, for one, skips its undercurl probe inside tmux.
 
 `rtty cli` is the same binary in another role: it asks the rtty a pane runs in, through a Unix
 socket (`RTTY_SOCKET`, in `$TMPDIR/rtty-<uid>/`, a directory rtty creates `0700` and refuses to use
-when it is anyone else's or open to anyone else), and never opens a window. The commands, their
-output and their exit codes follow `tutti pane …`, so an editor plugin speaks to either the same
-way:
+when it is anyone else's or open to anyone else). The commands, their output and their exit codes
+follow `tutti pane …`, so an editor plugin speaks to either the same way:
 
 | Command | Does |
 | --- | --- |
@@ -56,12 +55,17 @@ way:
 | `rtty cli pane focus <pane>` | shows the pane's tab and gives it the keyboard |
 | `rtty cli pane split <pane> <right\|down\|left\|up>` | opens a pane there in its working directory and prints its id |
 | `rtty cli pane zoom [<pane>]` | zooms the pane, or back |
-| `rtty cli list` | every window, tab and pane as one line of JSON: ids, focus, zoom, titles, working directories, sizes, which panes claim the keys, and the tutti session and pane a tutti pane shows (`"tutti":["work",3]`) |
+| `rtty cli list` | every window, tab and pane as one line of JSON: ids, focus, zoom, titles, working directories, sizes, which panes claim the keys, and the tutti session and pane a tutti pane shows (`"tutti":["work",3]`). For a window manager, each window also has `uid`, an id of rtty's own that the saved layout keeps, so the window has it again after a restart, and `window_number`, macOS's number for it; each pane has `progress` when its program reports one (`{"state":"normal","percent":40}`; the states are `normal`, `error`, `indeterminate` and `paused`) and `vars`, the user vars its program set and has not emptied (tutti's TUI names its session there: `{"TUTTI_TUI":"work"}`) |
+| `rtty cli window new [--cwd <dir>] [--frame <x>,<y>,<width>,<height> [--display <uuid>]]` | opens a window with a login shell in `<dir>`, else the focused pane's directory, and prints it as `list` does. `--frame` is in points from the top left of the display named by `--display` (its UUID, as the saved layout has it), else of the main one; a frame on a display not here is centered on the main one |
 | `rtty cli tutti attach <pane> [-s <session>] [--split <right\|down\|left\|up> \| --tab] [--from <pane>]` | shows pane `<pane>` of a tutti session as an rtty pane ([tutti panes](tutti.md#tutti-panes)), in a new tab unless `--split` says which way from `--from`, and prints the new rtty pane's id at once: the pane shows once the session answers, or says why it cannot. The session is `-s`, else `$TUTTI_SESSION`, else `tutti`, as tutti's own commands take it, and its socket is found in the asking shell's environment (`$XDG_RUNTIME_DIR`), as tutti finds it. Not in a window that is a tutti session |
 | `rtty cli tutti open [-s <session>]` | opens a window that is the whole tutti session ([tutti panes](tutti.md#tutti-panes)); the session as `tutti attach` finds it. It returns at once; the window fills in when the session answers |
 
 `--from` is `$RTTY_PANE` by default, else the focused pane of the active window. An error says
 `error: …` and exits 1; a malformed command prints the usage and exits 2.
+
+Outside a pane there is no `RTTY_SOCKET`: `rtty cli --socket <path> …` names the rtty to ask
+(each listens on `<pid>.sock` in that directory), and without it `rtty cli` asks the one rtty
+running, or says so when there are several or none.
 
 The editor plugins call these commands past the editor's last window; what a program in a pane
 does to get rtty's pane keys is in [Keys a pane can claim](keys.md#keys-a-pane-can-claim), and the

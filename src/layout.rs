@@ -762,6 +762,14 @@ impl Tabs {
         Some((Tabs::of(layouts, index), tabs, named))
     }
 
+    /// What `mirror` gave, cut down to the tab that shows: a window without tabs is one of the
+    /// session's tabs, the one it showed while tutti has it, else tutti's current one.
+    pub fn shown_only(self, ids: TabIds, mut panes: Named) -> (Tabs, TabIds, Named) {
+        let shown = self.active().clone();
+        panes.retain(|_, id| shown.contains(*id));
+        (Tabs::of(vec![shown], 0), vec![ids[self.active]], panes)
+    }
+
     /// `tabs`, tab `active` showing (the last, past them); at least one tab.
     pub fn of(tabs: Vec<Layout>, active: usize) -> Tabs {
         assert!(!tabs.is_empty(), "a window has a tab");
@@ -1348,6 +1356,12 @@ mod tests {
         );
         assert!(!again.all()[0].zoomed() && again.all()[1].zoomed(), "zoom stays with tab 10");
         assert_eq!(panes.len(), 5);
+        // A window without tabs keeps the tab that shows, through the session's next telling too.
+        let (one, one_ids, one_panes) = again.clone().shown_only(ids.clone(), panes.clone());
+        assert_eq!((one.all().len(), one.active().panes()), (1, vec![103, 104]));
+        assert_eq!((one_ids.as_slice(), one_panes.len()), ([(5, 20)].as_slice(), 2));
+        let told = one.mirror(&one_ids, &reordered, &one_panes, || next.next().unwrap()).unwrap();
+        assert_eq!(told.0.shown_only(told.1, told.2).1, [(5, 20)]);
         let none = [workspace(vec![tab(30, None, true)])];
         assert!(again.mirror(&ids, &none, &panes, || 0).is_none());
     }

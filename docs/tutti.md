@@ -129,6 +129,10 @@ the window detaches from the session. A pane of rtty's own has no place there: a
 Cmd+click would open beside a pane, `open-config`, and `rtty cli tutti attach` say so; swap is not
 tutti's. The session's daemon going closes the window, as a last pane closing does.
 
+With `tabs = false` ([Without tabs](windows.md#without-tabs)) the window shows one of the
+session's tabs, the one it showed while tutti has it, else tutti's current one. A new tab asked
+for there is made by tutti and not shown by this window.
+
 ## Not yet
 
 Not yet: sessions on other machines (`tutti --host`), which are on the

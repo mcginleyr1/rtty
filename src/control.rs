@@ -2,6 +2,7 @@
 //! directory only its user can enter, and each pane's program finds the socket in `RTTY_SOCKET`
 //! and its own pane in `RTTY_PANE`. The window answers on the main thread (`window::answer`).
 
+use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
@@ -12,9 +13,11 @@ use std::thread;
 use std::time::Duration;
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use gpui::{Bounds, Pixels};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{Amount, Direction, PaneId};
+use crate::progress::Progress;
 
 /// How long either side waits on the other.
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -61,6 +64,14 @@ pub enum Request {
     TuttiOpen {
         socket: PathBuf,
     },
+    /// Opens a window with a login shell in `cwd` (else the focused pane's directory), at `frame`
+    /// when given, on the display with that UUID (as the saved layout has frames) or the main
+    /// one, else where a new window goes. Answered with the window, as `List` tells of it.
+    NewWindow {
+        cwd: Option<PathBuf>,
+        frame: Option<Bounds<Pixels>>,
+        display: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,6 +91,13 @@ pub enum Response {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowInfo {
     pub id: u64,
+    /// An id of rtty's own that the saved layout keeps: the window has it again after a restart.
+    #[serde(default)]
+    pub uid: String,
+    /// macOS's number for the window (`NSWindow.windowNumber`), which the Accessibility and
+    /// window-list APIs know it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_number: Option<isize>,
     pub active: bool,
     pub tabs: Vec<TabInfo>,
 }
@@ -106,6 +124,13 @@ pub struct PaneInfo {
     /// The tutti pane it shows: its session, and its id there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tutti: Option<(String, u64)>,
+    /// What its program reports of its progress, as its tab's pill shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
+    /// The user vars its program set (OSC 1337 SetUserVar) and has not emptied: tutti's TUI names
+    /// its session in `TUTTI_TUI`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vars: BTreeMap<String, String>,
 }
 
 /// A request and where its answer goes.
@@ -127,6 +152,17 @@ pub fn socket_path() -> Result<PathBuf, String> {
         return Err(format!("{}: not a private directory of this user's", dir.display()));
     }
     Ok(dir.join(format!("{}.sock", std::process::id())))
+}
+
+/// The socket of the one rtty running, for an asker outside any pane (a window manager); none
+/// when no rtty answers there or several do, and the asker must name one.
+pub fn lone_socket() -> Option<PathBuf> {
+    let dir = socket_path().ok()?.parent()?.to_owned();
+    let sockets = fs::read_dir(dir).ok()?.flatten().map(|entry| entry.path());
+    let named = |path: &PathBuf| path.extension().is_some_and(|extension| extension == "sock");
+    let mut live = sockets.filter(|path| named(path) && UnixStream::connect(path).is_ok());
+    let first = live.next()?;
+    live.next().is_none().then_some(first)
 }
 
 /// Removes the sockets rtty processes left in `dir` when they died without quitting: sockets

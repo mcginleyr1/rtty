@@ -73,6 +73,29 @@ in full screen, where macOS hides the titlebar, a lone tab has no bar and a row 
 the window's edge. Its colors are the scheme's ([Color schemes](color-schemes.md#the-format)), so
 it follows the light/dark flip.
 
+## Without tabs
+
+`tabs = false` is for a window manager that has tabs of its own to hold windows in, such as a
+tiling one with a tab strip on each frame: an rtty window is then one split tree with no bar.
+
+- The bar is not drawn and the panes take its room; the close, minimize and zoom buttons are
+  hidden with it. The window keeps its title and stays an ordinary titled window to macOS, so a
+  window manager can read, move and close it; rtty itself offers nothing to drag it by.
+- What would open a tab opens a window: `new-tab` (a login shell in the focused pane's
+  directory), `open-config`, and `rtty cli tutti attach` without `--split`.
+- A saved layout's window of several tabs comes back as a window for each, all at the saved
+  frame; the tab that showed keeps the window's id.
+- A window that is a [tutti session](tutti.md#a-window-that-is-a-session) shows one of the
+  session's tabs: the one it showed while tutti has it, else tutti's current one. `new-tab` there
+  still asks tutti for a tab, which this window does not show.
+- Splits, panes, closing and undoing a close are as with tabs.
+
+A change of `tabs` takes effect at once. Turned off while a window has several tabs, the tabs
+stay and are reached by their keys (`Cmd+1`–`9`), with no bar to show them.
+
+What the pills showed, a window manager reads from `rtty cli list` ([cli.md](cli.md#rtty-cli)):
+each pane's title, progress and user vars, and each window's ids.
+
 ## Progress
 
 A program that reports its progress, with ConEmu's OSC 9;4 (`ESC ] 9 ; 4 ; state ; percent ST`, as

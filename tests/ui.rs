@@ -1192,6 +1192,98 @@ fn a_programs_title_and_progress_show_on_the_bar() {
     assert!(ended.contains("\ndock badge None, "));
 }
 
+/// What a window manager reads and asks through `rtty cli`: each window's id of its own and its
+/// macOS window number, each pane's progress and the user vars its program set (tutti's TUI names
+/// its session so), a new window in a directory, and the one rtty running found with no
+/// `RTTY_SOCKET`.
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
+fn the_cli_tells_a_window_manager_of_windows_and_opens_one() {
+    let dir = scratch("manager");
+    let rtty = env!("CARGO_BIN_EXE_rtty");
+    let script = format!(
+        r"wait ready>
+          type printf '\e]9;4;1;40\e\\\e]1337;SetUserVar=TUTTI_TUI=d29yaw==\a'; {rtty} cli list > one.json; echo li''sted
+          keys enter
+          wait listed
+          type {rtty} cli window new --cwd /private/tmp > new.json; env -u RTTY_SOCKET {rtty} cli list > two.json; echo op''ened
+          keys enter
+          wait opened
+          sleep 500
+          quit"
+    );
+    let (status, _) = launch(&dir, &[], &script);
+    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let (one, new, two) = (read("one.json"), read("new.json"), read("two.json"));
+    remove(&dir);
+    assert!(status.success());
+    let windows = |json: &str| -> Vec<serde_json::Value> {
+        let parsed: serde_json::Value = serde_json::from_str(json).expect(json);
+        parsed["windows"].as_array().expect("windows").clone()
+    };
+    let [first] = &windows(&one)[..] else { panic!("{one}") };
+    let pane = &first["tabs"][0]["panes"][0];
+    assert_eq!(pane["progress"], serde_json::json!({ "state": "normal", "percent": 40 }));
+    assert_eq!(pane["vars"], serde_json::json!({ "TUTTI_TUI": "work" }));
+    assert!(first["window_number"].as_i64().is_some_and(|number| number > 0), "{one}");
+    let uid = first["uid"].as_str().filter(|uid| !uid.is_empty()).expect("a uid");
+    // The new window is told as `list` tells it, with ids of its own, its shell in the directory.
+    let [opened] = &windows(&new)[..] else { panic!("{new}") };
+    assert_ne!(opened["uid"], first["uid"]);
+    assert_ne!(opened["window_number"], first["window_number"]);
+    let both = windows(&two);
+    let uids: Vec<_> = both.iter().map(|window| window["uid"].as_str().unwrap()).collect();
+    assert_eq!(uids, [uid, opened["uid"].as_str().unwrap()]);
+    assert_eq!(both[1]["tabs"][0]["panes"][0]["cwd"], "/private/tmp");
+    // At its next prompt the first pane's progress and vars were gone.
+    assert_eq!(both[0]["tabs"][0]["panes"][0].get("vars"), None);
+}
+
+/// `tabs = false`, for a window manager with tabs of its own: no bar and no window buttons, a
+/// new tab is a window, a saved window of two tabs comes back as two windows (the one that
+/// showed keeping its id), and turning tabs back on brings the bar and the buttons back.
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
+fn without_tabs_a_window_has_no_bar_and_a_tab_is_a_window() {
+    let dir = scratch("bare");
+    let (first, _) = launch(&dir, &["--restore"], "wait ready>\nkeys cmd-t\nwait ready>\nquit");
+    let saved = fs::read_to_string(dir.join("rtty/layout.json")).unwrap_or_default();
+    fs::write(dir.join("rtty/config.toml"), "tabs = false\n").unwrap();
+    let (second, dumps) = launch(
+        &dir,
+        &["--restore"],
+        r"wait ready>
+          sleep 500
+          dump
+          keys cmd-t
+          sleep 1000
+          dump
+          type printf 'tabs = true\n' > ~/rtty/config.toml; echo wr''itten
+          keys enter
+          wait written
+          sleep 2500
+          dump
+          quit",
+    );
+    let kept = fs::read_to_string(dir.join("rtty/layout.json")).unwrap_or_default();
+    remove(&dir);
+    assert!(first.success() && second.success());
+    let windows =
+        |json: &str| -> Vec<serde_json::Value> { serde_json::from_str(json).expect(json) };
+    let [tabbed] = &windows(&saved)[..] else { panic!("{saved}") };
+    let [bare, opened, again] = &dumps[..] else { panic!("{} dumps", dumps.len()) };
+    assert!(bare.contains("\nwindows 2 tabs [\"1: ~\"] ") && bare.contains("\nbar 0px "));
+    assert!(bare.contains("\nwindow buttons Some(\"hidden\") "));
+    assert!(opened.contains("\nwindows 3 tabs [\"1: ~\"] "));
+    assert!(again.contains("\nbar 36px ") && again.contains("\nwindow buttons Some(\"shown\") "));
+    // Three windows of one tab each were saved: the two the tabs came back as, at the saved
+    // frame, one of them with the saved window's id, and the one `new-tab` opened.
+    let kept = windows(&kept);
+    assert_eq!(kept.len(), 3);
+    assert_eq!(kept.iter().filter(|window| window["uid"] == tabbed["uid"]).count(), 1);
+    assert_eq!(kept.iter().filter(|window| window["frame"] == tabbed["frame"]).count(), 2);
+}
+
 /// The cell-border protocol in the real window, by the dump's `border` lines: a frame's top in a
 /// palette color under the text and its left side in the default foreground over it, a rounded
 /// corner with its outside filled, the colors following the scheme, a written cell losing its

@@ -38,6 +38,7 @@ option_as_alt = "both"            # the default; "left", "right" or "none": the 
 minimum_contrast = 1              # the default, off; 4.5 keeps text legible
 confirm_close = true              # the default: ask before closing what runs a program
 undo_timeout = 5                  # the default: seconds a close waits for Cmd+Z; 0: none
+tabs = true                       # the default; false: no tabs and no bar, a new tab is a window
 shell_integration = "auto"        # the default: zsh, bash and fish load rtty's; or "none"
 notify_after = 10                 # the default: notify a command of 10 s or more that ends out of view; 0: never
 click_to_move = true              # the default: a click on the command line moves the shell's cursor there
@@ -68,6 +69,7 @@ Where each key is explained:
 | `bell` | [Bell and notifications](windows.md#bell-and-notifications) |
 | `confirm_close` | [Closing what runs](windows.md#closing-what-runs) |
 | `undo_timeout` | [Undoing a close](windows.md#undoing-a-close) |
+| `tabs` | [Without tabs](windows.md#without-tabs) |
 | `restore_layout` | [Restoring windows](windows.md#restoring-windows) |
 | `shell_integration`, `notify_after`, `click_to_move` | [Shell integration](shell-integration.md) |
 | `editor` | [Paths](selection.md#paths) |
@@ -136,6 +138,7 @@ changes, and when:
 | `editor` | for the next file a `Cmd+click` or quick open edits; an editor already open keeps going |
 | `quick_select_patterns` | from the next quick select |
 | `undo_timeout` | from the next close; one already waiting keeps its time |
+| `tabs` | at once: the bar and the window buttons go or come back; tabs already open stay, reached by their keys |
 | `notify_after` | for every command that ends from then on, running ones included |
 | `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
 | `restore_layout` | saving the layout stops or starts at once; restoring it is at launch |

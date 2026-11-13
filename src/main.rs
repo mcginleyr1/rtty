@@ -379,6 +379,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         minimum_contrast: config.minimum_contrast.unwrap_or(1.),
         confirm_close: config.confirm_close.unwrap_or(true),
         undo_timeout: Duration::from_secs(config.undo_timeout.unwrap_or(5)),
+        tabs: config.tabs.unwrap_or(true),
         shell_integration,
         click_to_move: config.click_to_move.unwrap_or(true),
         editor: config.editor,
@@ -509,7 +510,7 @@ fn run(options: Options) -> Result<(), String> {
         }
         (Some((session, None)), None) => {
             let socket = tutti::socket_path(&session);
-            Box::new(move |cx| window::open_session(socket, None, cx))
+            Box::new(move |cx| window::open_session(socket, cx))
         }
         (None, command) => {
             let program = Program::Command(self::command(command));
