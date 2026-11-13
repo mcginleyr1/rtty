@@ -35,7 +35,7 @@ pub fn drawn(c: char) -> bool {
 }
 
 /// How far a quarter circle's control points sit along its tangents, as a share of its radius.
-const KAPPA: f32 = 0.552_284_8;
+pub const KAPPA: f32 = 0.552_284_8;
 
 /// Line weights in the four directions; light is 1.
 const NONE: u8 = 0;

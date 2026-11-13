@@ -1190,14 +1190,15 @@ mod tests {
     }
 
     /// The engine's replies to the stream's raw reads go back to the pane as input, in order with
-    /// what is typed; a snapshot's go nowhere.
+    /// what is typed; a snapshot's go nowhere. A cell-border query is left unanswered, as the
+    /// daemon's own engine leaves it: the daemon's snapshots would carry no borders.
     #[test]
     fn replies_to_raw_reads_go_back_and_a_snapshots_do_not() {
         let (pane, _notices, mut daemon) = attached();
         daemon.rows(3);
         let asking = b"\x1b[H\x1b[2J\x1b[6n$ ".to_vec();
         daemon.snapshot(3, 4, 40, asking);
-        daemon.raw(3, b"\x1b[c");
+        daemon.raw(3, b"\x1bP1+bcell-border;q\x1b\\\x1b[c");
         let Some(Frame::Input { pane: PaneId(3), bytes }) = daemon.heard() else {
             panic!("no reply")
         };

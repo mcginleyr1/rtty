@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use crate::border;
 use crate::cell::{Attrs, Cell, Color, Underline};
 use crate::modes::{MouseEncoding, MouseMode};
 use crate::row::Row;
@@ -69,12 +70,24 @@ struct Encoder {
 }
 
 impl Encoder {
+    /// Select the pen's rendition from scratch, and the borders SGR 0 took with it. Between two
+    /// clusters it keeps them apart, as any sequence does, and leaves a pending wrap be.
+    fn rendition(&mut self) {
+        let _ = write!(self.out, "\x1b[{}m", sgr(&self.pen));
+        if let Some(borders) = &self.pen.borders {
+            border::pen(&mut self.out, borders);
+        }
+    }
+
     fn pen(&mut self, pen: &Pen) {
         let rendition = |pen: &Pen| (pen.fg, pen.bg, pen.attrs, pen.underline);
-        if rendition(pen) != rendition(&self.pen) {
-            let _ = write!(self.out, "\x1b[{}m", sgr(pen));
+        let changed = rendition(pen) != rendition(&self.pen) || pen.borders != self.pen.borders;
+        let link = pen.link != self.pen.link;
+        self.pen = pen.clone();
+        if changed {
+            self.rendition();
         }
-        if pen.link != self.pen.link {
+        if link {
             match &pen.link {
                 Some(link) => {
                     let id = link.id.as_deref().map(|id| format!("id={id}")).unwrap_or_default();
@@ -83,7 +96,6 @@ impl Encoder {
                 None => self.out.push_str("\x1b]8;;\x1b\\"),
             }
         }
-        self.pen = pen.clone();
     }
 
     fn goto(&mut self, row: u16, col: u16) {
@@ -115,7 +127,7 @@ impl Encoder {
                     // two columns land the wrap (and mend a stand-in's).
                     for col in (0..len.min(2)).filter(|&col| !row.cells[col].is_spacer()) {
                         if joins(&last, row.cells[col].ch) {
-                            let _ = write!(self.out, "\x1b[{}m", sgr(&self.pen));
+                            self.rendition();
                         }
                         self.cell(row, col);
                         last.clear();
@@ -162,9 +174,7 @@ impl Encoder {
                 let cell = row.cells.get(col).copied().unwrap_or_default();
                 if !cell.is_spacer() {
                     if joins(&last, cell.ch) {
-                        // Any sequence in between keeps them apart; an SGR
-                        // leaves a pending wrap be.
-                        let _ = write!(self.out, "\x1b[{}m", sgr(&self.pen));
+                        self.rendition();
                     }
                     self.cell(row, col);
                     last.clear();
@@ -230,7 +240,7 @@ impl Encoder {
             let mut first = String::new();
             row.push_grapheme(0, &mut first);
             if joins(&first, row.cells[1].ch) {
-                let _ = write!(self.out, "\x1b[{}m", sgr(&self.pen));
+                self.rendition();
             }
             self.cell(row, 1);
         }
@@ -260,14 +270,22 @@ impl Encoder {
     }
 }
 
+/// The pen that prints the cell at `col` as it is. A wide character's two cells come out as one
+/// pen leaves them: borders a rectangle gave only one of them, on what the two share, are the
+/// first cell's.
 fn pen_of(row: &Row, col: usize) -> Pen {
     let cell = row.cells.get(col).copied().unwrap_or_default();
+    let borders = |col: usize| row.cells.get(col).and_then(|cell| row.extra(cell)?.borders.clone());
     Pen {
         fg: cell.fg,
         bg: cell.bg,
         attrs: cell.attrs(),
         underline: row.underline_color(col),
         link: row.hyperlink(col).cloned(),
+        borders: match cell.is_wide() {
+            true => border::whole(&borders(col), &borders(col + 1)),
+            false => borders(col),
+        },
     }
 }
 
@@ -320,6 +338,12 @@ impl Terminal {
     /// the modes a program depends on (cursor keys, keypad, mouse, focus,
     /// bracketed paste, kitty flags…), colours the program set and the
     /// title. The scrollback is not carried.
+    ///
+    /// Cell borders and their pen are carried, for a terminal that takes
+    /// them (`set_cell_borders`). A wide character's two cells come out as
+    /// one pen prints them: borders a rectangle gave one of them where the
+    /// two share them (all but the first's left-hand and the second's
+    /// right-hand edge and corners), or on the edge between them, are not.
     pub fn snapshot(&self) -> Vec<u8> {
         let (rows, cols) = self.size();
         let mut e = Encoder { out: String::from(CLEAR), pen: Pen::default() };
@@ -450,7 +474,7 @@ impl Terminal {
             let mut last = String::new();
             for &(row, col) in &line[..end] {
                 if joins(&last, row.cells[col].ch) {
-                    let _ = write!(e.out, "\x1b[{}m", sgr(&e.pen));
+                    e.rendition();
                 }
                 e.cell(row, col);
                 last.clear();

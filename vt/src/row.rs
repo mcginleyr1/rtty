@@ -1,6 +1,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::border::Borders;
 use crate::cell::{Cell, Color};
 use crate::event::MarkKind;
 use crate::graphics::Anchor;
@@ -24,12 +25,21 @@ pub(crate) struct Extra {
     pub(crate) cluster: Option<Box<str>>,
     pub(crate) underline: Color,
     pub(crate) link: Option<Arc<Hyperlink>>,
+    pub(crate) borders: Option<Arc<Borders>>,
+}
+
+/// What an erased or new cell holds of the pen: its background and borders.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Blank {
+    pub(crate) bg: Color,
+    pub(crate) borders: Option<Arc<Borders>>,
 }
 
 impl Extra {
     fn same(&self, other: &Extra) -> bool {
         self.cluster == other.cluster
             && self.underline == other.underline
+            && self.borders == other.borders
             && match (&self.link, &other.link) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
                 (a, b) => a.is_none() && b.is_none(),
@@ -69,19 +79,20 @@ impl Row {
 
     /// Blank the row at `cols` cells. A row recycled from the far end of the
     /// scrollback is cold in the cache: only what was written is cleared.
-    pub(crate) fn reset(&mut self, cols: u16, bg: Color) {
+    pub(crate) fn reset(&mut self, cols: u16, blank: &Blank) {
         let cols = usize::from(cols);
-        if bg == Color::Default {
+        self.extras.clear();
+        let cell = self.blank(blank);
+        if cell.is_default() {
             let occupied = self.occupied.min(self.cells.len());
-            self.cells[..occupied].fill(Cell::default());
-            self.cells.resize(cols, Cell::default());
+            self.cells[..occupied].fill(cell);
+            self.cells.resize(cols, cell);
             self.occupied = 0;
         } else {
             self.cells.clear();
-            self.cells.resize(cols, Cell::blank(bg));
+            self.cells.resize(cols, cell);
             self.occupied = cols;
         }
-        self.extras.clear();
         self.marks.clear();
         self.images.clear();
         self.wrapped = false;
@@ -141,6 +152,12 @@ impl Row {
 
     pub fn hyperlink(&self, col: usize) -> Option<&Arc<Hyperlink>> {
         self.extra(self.cells.get(col)?)?.link.as_ref()
+    }
+
+    /// The borders of the cell at `col`, if a program gave it any (the
+    /// cell-border protocol, `Terminal::set_cell_borders`).
+    pub fn borders(&self, col: usize) -> Option<&Borders> {
+        self.extra(self.cells.get(col)?)?.borders.as_deref()
     }
 
     /// Append the text of the cell at `col`: its cluster, or nothing for a
@@ -213,12 +230,40 @@ impl Row {
         self.extras = kept;
     }
 
-    /// The side entry index for a cell written with `underline` and `link`.
-    pub(crate) fn pen_extra(&mut self, underline: Color, link: &Option<Arc<Hyperlink>>) -> u16 {
-        if underline == Color::Default && link.is_none() {
+    /// The side entry index for a cell written with `underline`, `link` and
+    /// `borders`.
+    pub(crate) fn pen_extra(
+        &mut self,
+        underline: Color,
+        link: &Option<Arc<Hyperlink>>,
+        borders: &Option<Arc<Borders>>,
+    ) -> u16 {
+        if underline == Color::Default && link.is_none() && borders.is_none() {
             return 0;
         }
-        self.intern(Extra { cluster: None, underline, link: link.clone() })
+        self.intern(Extra {
+            cluster: None,
+            underline,
+            link: link.clone(),
+            borders: borders.clone(),
+        })
+    }
+
+    /// An erased cell.
+    pub(crate) fn blank(&mut self, blank: &Blank) -> Cell {
+        let mut cell = Cell::blank(blank.bg);
+        cell.extra = self.pen_extra(Color::Default, &None, &blank.borders);
+        cell
+    }
+
+    /// Give the cell at `col` these borders, the rest of it as it was.
+    pub(crate) fn set_borders(&mut self, col: usize, borders: &Option<Arc<Borders>>) {
+        let mut extra = self.extra(&self.cells[col]).cloned().unwrap_or_default();
+        if extra.borders != *borders {
+            extra.borders = borders.clone();
+            self.cells[col].extra = self.intern(extra);
+            self.touch(col + 1);
+        }
     }
 
     /// Append `c` to the cluster of the cell at `col`, keeping its underline
@@ -251,37 +296,40 @@ impl Row {
     }
 
     /// Before cells `range` are overwritten or erased: the wide characters
-    /// they cut in half lose their other halves too.
-    pub(crate) fn split_wide(&mut self, range: Range<usize>) {
+    /// they cut in half lose their other halves too, which take the pen's
+    /// `borders`.
+    pub(crate) fn split_wide(&mut self, range: Range<usize>, borders: &Option<Arc<Borders>>) {
         let len = self.cells.len();
         if range.start < len && range.start > 0 && self.cells[range.start].is_spacer() {
             self.orphan(range.start - 1);
+            self.set_borders(range.start - 1, borders);
         }
         if range.end > 0 && range.end < len && self.cells[range.end - 1].is_wide() {
             self.orphan(range.end);
+            self.set_borders(range.end, borders);
         }
     }
 
-    /// Blank cells `range` in `bg`. Erasing the last cell ends a soft wrap:
-    /// the row no longer runs to its edge.
-    pub(crate) fn erase(&mut self, range: Range<usize>, bg: Color) {
+    /// Blank cells `range`. Erasing the last cell ends a soft wrap: the row
+    /// no longer runs to its edge.
+    pub(crate) fn erase(&mut self, range: Range<usize>, blank: &Blank) {
         let range = range.start.min(self.cells.len())..range.end.min(self.cells.len());
-        self.split_wide(range.clone());
+        self.split_wide(range.clone(), &blank.borders);
         if range.end == self.cells.len() && !range.is_empty() {
             self.wrapped = false;
         }
-        if bg != Color::Default {
+        let cell = self.blank(blank);
+        if !cell.is_default() {
             self.touch(range.end);
         }
-        self.cells[range].fill(Cell::blank(bg));
+        self.cells[range].fill(cell);
     }
 
     /// Nothing on the row a reader would see, and it does not continue.
     pub(crate) fn is_empty(&self) -> bool {
+        let shows = |extra: &Extra| extra.cluster.is_some() || extra.borders.is_some();
         !self.wrapped
-            && self.cells.iter().all(|cell| {
-                cell.is_empty() && self.extra(cell).is_none_or(|extra| extra.cluster.is_none())
-            })
+            && self.cells.iter().all(|cell| cell.is_empty() && !self.extra(cell).is_some_and(shows))
     }
 
     /// Copy `cells` from `from` (another row, blank past the cells it holds)
@@ -304,9 +352,9 @@ mod tests {
     fn a_pen_run_shares_one_side_entry() {
         let link = Some(Arc::new(Hyperlink { id: None, uri: "https://example.com".into() }));
         let mut row = Row::new(80, Color::Default);
-        let first = row.pen_extra(Color::Indexed(1), &link);
+        let first = row.pen_extra(Color::Indexed(1), &link, &None);
         for _ in 0..1000 {
-            assert_eq!(row.pen_extra(Color::Indexed(1), &link), first);
+            assert_eq!(row.pen_extra(Color::Indexed(1), &link, &None), first);
         }
         assert_eq!(row.extras.len(), 1);
     }
@@ -316,7 +364,7 @@ mod tests {
         let mut row = Row::new(10, Color::Default);
         for i in 0..10_000u32 {
             let col = (i % 10) as usize;
-            row.cells[col].extra = row.pen_extra(Color::Indexed((i % 251) as u8), &None);
+            row.cells[col].extra = row.pen_extra(Color::Indexed((i % 251) as u8), &None, &None);
         }
         assert!(row.extras.len() <= 36, "{} entries", row.extras.len());
         for (i, cell) in row.cells.iter().enumerate() {

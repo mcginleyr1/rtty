@@ -15,6 +15,8 @@ pane is one terminal running your login shell or a program. It also has:
   between prompts, a copy of the last command's output, a notification when a long command ends
   out of view;
 - ligatures, kitty's keyboard protocol and kitty's graphics protocol for images;
+- cell borders: lines on the edges of cells that take no cells of their own, for programs that
+  ask for them;
 - color schemes in WezTerm's format that follow the macOS light and dark appearance;
 - windows, tabs and splits that come back at the next launch.
 
@@ -134,13 +136,14 @@ this README only summarizes.
 | [docs/color-schemes.md](docs/color-schemes.md) | the scheme format, where schemes are found, following the OS, minimum contrast, DEC mode 2031 |
 | [docs/shell-integration.md](docs/shell-integration.md) | the OSC 133 marks, how the scripts load in zsh, bash and fish, what the marks give |
 | [docs/images.md](docs/images.md) | kitty's graphics protocol as rtty draws it, the cell size it reports |
+| [docs/borders.md](docs/borders.md) | the cell-border protocol: what rtty answers, how it draws the lines, what it leaves out |
 | [docs/tutti.md](docs/tutti.md) | the two front ends for a tutti session, tutti's TUI in an rtty pane, tutti panes, a window that is a session |
 | [docs/scripting.md](docs/scripting.md) | `--script` and its `dump`, `--trace`, `--stats`, `--smoke`, `--bench`, the log |
 | [docs/testing.md](docs/testing.md) | the merge gate, CI, the UI test suite |
 | [docs/internals.md](docs/internals.md) | what each file in `src/` does, the GPUI pin, patched dependencies, licensing |
 | [docs/measurements.md](docs/measurements.md) | throughput, memory and drawing costs |
 | [docs/status.md](docs/status.md) | what works, how it was checked, what is not yet checked on screen, the roadmap |
-| [vt/README.md](vt/README.md) | rtty-vt, the terminal engine: its API, the kitty graphics subset, its tests |
+| [vt/README.md](vt/README.md) | rtty-vt, the terminal engine: its API, the kitty graphics subset, cell borders, its tests |
 | [vt/DIVERGENCES.md](vt/DIVERGENCES.md) | where rtty-vt parts from alacritty_terminal |
 | [vt/fixtures/README.md](vt/fixtures/README.md) | the recorded terminal byte streams rtty-vt is tested with |
 | [editors/README.md](editors/README.md) | the Neovim plugin and the Emacs package, and the contract they speak |

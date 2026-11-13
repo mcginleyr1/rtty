@@ -35,6 +35,8 @@ are in [scripting.md](scripting.md#--script).
 - Shell integration that loads itself (prompt jumps, the last command's output, notifications of
   long commands, click to move the cursor).
 - Images (kitty's graphics protocol, Unicode placeholders included).
+- [Cell borders](borders.md): lines on cells' edges that take no cells, by the cell-border
+  protocol (all of version 1 but the line styles).
 - [tutti panes](tutti.md#tutti-panes): one pane of a tutti session, or a whole session in a
   window.
 
@@ -95,6 +97,16 @@ by eye.
 Checked with a program sending RGB, RGBA, PNG, chunked, compressed and temporary-file images,
 placements under and over text, a delete and placeholders, through a reflow and `clear`, by the
 dump's `image` lines, not yet by eye.
+
+### Cell borders
+
+Checked with a shell printing the commands, by the dump's `border` lines: a frame's top in a
+palette color under the text and its left side in the default foreground over it, a rounded corner
+with its arc and its outside filled, the colors following a flip to light, a written cell losing
+its borders and its neighbours keeping theirs, and the query answered ahead of DA1. The lines'
+pixels (inside and centred strokes, the merge on a shared edge, corners, centre arms, arcs and
+forks) are unit tested. Nothing of it has been seen on screen yet, and the protocol author's
+gallery has not been run in rtty.
 
 ### tutti panes
 
@@ -211,6 +223,8 @@ panes natively, a pane or a whole session in a window. What is left:
    - a real press of the global hotkey;
    - a clipboard read's sheet;
    - kitty images and their placeholders;
+   - cell borders, with the protocol author's gallery (`scripts/cell-borders.py` on his Ghostty
+     branch) and under tutti's TUI;
    - the config reload's banner;
    - a restored window landing on its own display.
 2. **tutti sessions on other machines** ([tutti panes](tutti.md#tutti-panes)), through `tutti

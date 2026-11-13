@@ -19,6 +19,7 @@ struct Seen {
     layout: (u8, bool),
     underline: rtty_vt::Color,
     link: Option<rtty_vt::Hyperlink>,
+    borders: Option<rtty_vt::Borders>,
 }
 
 fn seen(cell: &Cell, text: String) -> Seen {
@@ -30,7 +31,15 @@ fn seen(cell: &Cell, text: String) -> Seen {
         layout: (cell.width(), cell.is_pad()),
         underline: rtty_vt::Color::Default,
         link: None,
+        borders: None,
     }
+}
+
+/// A fresh terminal that keeps borders, as the originals do.
+fn fresh(rows: u16, cols: u16) -> Terminal {
+    let mut copy = Terminal::new(rows, cols, 0);
+    copy.set_cell_borders(true);
+    copy
 }
 
 #[derive(Debug, PartialEq)]
@@ -64,7 +73,9 @@ fn unreachable_cursor(term: &Terminal) -> bool {
 
 /// A row's `cols` cells (a scrollback row's blank past those it holds) and
 /// soft wrap, but for what a snapshot leaves out: the wrap and pad of a
-/// bottom row on a `tiny` screen, and of a row with a pending wrap.
+/// bottom row on a `tiny` screen, and of a row with a pending wrap, and the
+/// borders a wide character's two cells cannot both be printed with
+/// (`carried_borders`).
 fn seen_row(row: &Row, cols: u16, bottom: bool, pending_here: bool) -> (Vec<Seen>, bool) {
     let last = usize::from(cols) - 1;
     let cells = (0..usize::from(cols))
@@ -74,6 +85,7 @@ fn seen_row(row: &Row, cols: u16, bottom: bool, pending_here: bool) -> (Vec<Seen
             let mut seen = Seen {
                 underline: row.underline_color(col),
                 link: row.hyperlink(col).map(|link| (**link).clone()),
+                borders: common::carried_borders(row, col),
                 ..seen(&row.cells().get(col).copied().unwrap_or_default(), text)
             };
             seen.layout.1 &= !bottom && !(pending_here && col == last);
@@ -119,14 +131,32 @@ const PROBES: &[&str] = &[
     "\x1b[2J\x1b[Hq\x1b[3;1Hq\x1b[99;1Hq",
 ];
 
+/// Whether a wide character on either screen has borders no one pen prints
+/// (`carried_borders`): cut in half after the snapshot, it would show them.
+fn unprintable_borders(rows: u16, cols: u16, tokens: &[Token]) -> bool {
+    let (_, mut term) = build(rows, cols, tokens, false);
+    let unprintable = |term: &Terminal| {
+        let (rows, cols) = term.size();
+        (0..rows).map(|r| term.screen_row(r)).any(|row| {
+            (0..usize::from(cols))
+                .any(|col| row.borders(col).cloned() != common::carried_borders(row, col))
+        })
+    };
+    let here = unprintable(&term);
+    // The primary screen, when the alternate one is up.
+    term.advance(b"\x1b[?47l");
+    here || unprintable(&term)
+}
+
 fn check(rows: u16, cols: u16, tokens: &[Token]) -> Result<(), TestCaseError> {
+    let unprintable = unprintable_borders(rows, cols, tokens);
     for probe in PROBES {
         let (_, mut original) = build(rows, cols, tokens, false);
         // A pending wrap is made by reprinting the cursor's cell, which ends
         // a soft wrap of its row.
         let pending_on_wrap =
             original.wrap_pending() && original.screen_row(original.cursor_position().0).wrapped();
-        if (tiny(&original) || pending_on_wrap) && !probe.is_empty()
+        if (tiny(&original) || pending_on_wrap || unprintable) && !probe.is_empty()
             || unreachable_cursor(&original)
         {
             // A probe would bring what is not reproduced into view.
@@ -134,7 +164,7 @@ fn check(rows: u16, cols: u16, tokens: &[Token]) -> Result<(), TestCaseError> {
         }
         let (rows, cols) = original.size();
         let snapshot = original.snapshot();
-        let mut copy = Terminal::new(rows, cols, 0);
+        let mut copy = fresh(rows, cols);
         copy.advance(&snapshot);
         original.advance(probe.as_bytes());
         copy.advance(probe.as_bytes());
@@ -192,7 +222,7 @@ fn check_redraw(
         return Ok(());
     }
     let (rows, cols) = original.size();
-    let mut copy = Terminal::new(rows, cols, 0);
+    let mut copy = fresh(rows, cols);
     copy.advance(&original.snapshot());
     original.take_damage();
     let screen = original.modes().alt_screen;
@@ -232,7 +262,7 @@ fn scrolled_difference(term: &Terminal, offset: u64) -> Option<String> {
     let (rows, cols) = term.size();
     let first = term.screen_top().saturating_sub(offset).max(term.oldest_row());
     let snapshot = term.scrolled_snapshot(offset);
-    let mut copy = Terminal::new(rows, cols, 0);
+    let mut copy = fresh(rows, cols);
     copy.advance(&snapshot);
     if copy.modes().cursor_visible {
         return Some("the cursor shows".into());

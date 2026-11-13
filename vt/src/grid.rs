@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::cell::Color;
-use crate::row::Row;
+use crate::row::{Blank, Row};
 
 /// The primary screen with its scrollback, and the alternate screen.
 ///
@@ -88,10 +88,10 @@ impl Grid {
         self.primary.get(usize::try_from(index.checked_sub(self.oldest)?).ok()?)
     }
 
-    /// Scroll rows `top..=bottom` up by `n`, blank rows of `bg` coming in at
-    /// the bottom. On the primary screen a region starting at its top row
+    /// Scroll rows `top..=bottom` up by `n`, `blank` rows coming in at the
+    /// bottom. On the primary screen a region starting at its top row
     /// pushes what leaves it into the scrollback, shrunk (`Row::shrink`).
-    pub(crate) fn scroll_up(&mut self, top: u16, bottom: u16, n: u16, bg: Color) {
+    pub(crate) fn scroll_up(&mut self, top: u16, bottom: u16, n: u16, blank: &Blank) {
         let n = n.min(bottom - top + 1);
         self.damage_rows(top, bottom);
         if self.alt_active || top > 0 {
@@ -100,7 +100,7 @@ impl Grid {
             let (top, bottom) = (base + usize::from(top), base + usize::from(bottom));
             rotate_left(rows, top, bottom + 1, usize::from(n));
             for row in rows.range_mut(bottom + 1 - usize::from(n)..=bottom) {
-                row.reset(cols, bg);
+                row.reset(cols, blank);
             }
             return;
         }
@@ -112,12 +112,12 @@ impl Grid {
                 self.oldest += 1;
                 self.primary.pop_front().expect("the screen is never empty")
             } else {
-                Row::new(0, bg)
+                Row::new(0, Color::Default)
             };
             if let Some(cells) = cells {
                 (row.cells, row.occupied) = (cells, 0);
             }
-            row.reset(self.cols, bg);
+            row.reset(self.cols, blank);
             if bottom + 1 == self.rows {
                 self.primary.push_back(row);
             } else {
@@ -127,9 +127,9 @@ impl Grid {
         }
     }
 
-    /// Scroll rows `top..=bottom` down by `n`, blank rows of `bg` coming in
-    /// at the top.
-    pub(crate) fn scroll_down(&mut self, top: u16, bottom: u16, n: u16, bg: Color) {
+    /// Scroll rows `top..=bottom` down by `n`, `blank` rows coming in at the
+    /// top.
+    pub(crate) fn scroll_down(&mut self, top: u16, bottom: u16, n: u16, blank: &Blank) {
         let n = usize::from(n.min(bottom - top + 1));
         self.damage_rows(top, bottom);
         let cols = self.cols;
@@ -137,7 +137,7 @@ impl Grid {
         let (top, bottom) = (base + usize::from(top), base + usize::from(bottom));
         rotate_left(rows, top, bottom + 1, bottom + 1 - top - n);
         for row in rows.range_mut(top..top + n) {
-            row.reset(cols, bg);
+            row.reset(cols, blank);
         }
     }
 
@@ -207,10 +207,10 @@ mod tests {
     fn a_full_scroll_pushes_into_a_bounded_history() {
         let mut grid = Grid::new(3, 4, 2);
         labelled(&mut grid);
-        grid.scroll_up(0, 2, 1, Color::Default);
+        grid.scroll_up(0, 2, 1, &Blank::default());
         assert_eq!(screen(&grid), "bc ");
         assert_eq!((grid.oldest, grid.screen_top()), (0, 1));
-        grid.scroll_up(0, 2, 3, Color::Default);
+        grid.scroll_up(0, 2, 3, &Blank::default());
         assert_eq!(screen(&grid), "   ");
         assert_eq!((grid.oldest, grid.screen_top(), grid.history_len()), (2, 4, 2));
         assert_eq!(grid.row(2).unwrap().cells[0].ch, 'c');
@@ -221,7 +221,7 @@ mod tests {
     fn a_region_at_the_top_pushes_and_keeps_the_rows_below() {
         let mut grid = Grid::new(4, 4, 10);
         labelled(&mut grid);
-        grid.scroll_up(0, 1, 1, Color::Default);
+        grid.scroll_up(0, 1, 1, &Blank::default());
         assert_eq!(screen(&grid), "b cd");
         assert_eq!(grid.row(0).unwrap().cells[0].ch, 'a');
     }
@@ -230,9 +230,9 @@ mod tests {
     fn an_inner_region_rotates_without_history() {
         let mut grid = Grid::new(5, 4, 10);
         labelled(&mut grid);
-        grid.scroll_up(1, 3, 2, Color::Default);
+        grid.scroll_up(1, 3, 2, &Blank::default());
         assert_eq!(screen(&grid), "ad  e");
-        grid.scroll_down(1, 3, 1, Color::Default);
+        grid.scroll_down(1, 3, 1, &Blank::default());
         assert_eq!(screen(&grid), "a d e");
         assert_eq!(grid.history_len(), 0);
     }

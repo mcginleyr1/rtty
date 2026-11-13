@@ -151,7 +151,12 @@ impl Pane {
         let output = pty.master.try_clone_reader().map_err(io::Error::other)?;
         let mut writer = pty.master.take_writer().map_err(io::Error::other)?;
 
-        let term = Arc::new(Mutex::new(terminal(rows, cols, scheme, graphics)));
+        let mut term = terminal(rows, cols, scheme, graphics);
+        // The view draws the borders a program puts on cells (`borders.rs`). Only for a program on
+        // rtty's own pty: a tutti pane's cells are its daemon's, whose snapshots carry no borders,
+        // so there the query stays unanswered, as the daemon leaves it.
+        term.set_cell_borders(true);
+        let term = Arc::new(Mutex::new(term));
         let (notices, receiver) = unbounded();
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let output_pending = Arc::new(AtomicBool::new(false));
@@ -772,6 +777,16 @@ mod tests {
             Pane::spawn(shell_command(script), 24, 80, None, None, None, false).unwrap();
         let (screen, _) = finish(pane);
         assert!(screen.contains("033   [   1   ;   1   R"), "{screen}");
+    }
+
+    /// A program on rtty's pty is given the cell borders it asks for, from its first write.
+    #[test]
+    fn a_programs_cell_borders_are_kept_from_the_first_byte() {
+        let frame = "printf '\\033P1+bcell-border;pen;3;16;fg;0;0\\033\\\\do\\033[mne'";
+        let (pane, _) = Pane::spawn(shell_command(frame), 24, 80, None, None, None, false).unwrap();
+        wait_for(&pane, "done");
+        let bordered = |col| pane.lock().screen_row(0).borders(col).is_some();
+        assert_eq!([bordered(0), bordered(1), bordered(2)], [true, true, false]);
     }
 
     /// With graphics, an image in the program's first write is held; without, it is dropped.

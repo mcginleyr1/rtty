@@ -36,9 +36,14 @@ terminal engine in `vt/`, holds the terminal state, and
 - `render.rs` — what a frame draws, independent of GPUI and unit tested: per row, background spans
   and text runs with their resolved colors and decorations, the characters rtty draws itself, and
   the cursor. A program's colors (OSC 4/10/11/12) win over the scheme's; DECSCNM swaps the
-  defaults. A Unicode placeholder's cell draws no glyph: its image does.
+  defaults. A Unicode placeholder's cell draws no glyph: its image does. A row also carries its
+  cells' borders, their colors resolved.
 - `glyphs.rs` — box drawing, block elements and the powerline separators as rectangles and paths
   on a cell's device pixels, from the Unicode charts; unit tested.
+- `borders.rs` — [cell borders](borders.md) as rectangles and paths on the grid's device pixels,
+  from the rows in view: which of two strokes on a shared edge is drawn, how lines meet at corners
+  and the cell's centre, rounded joints and what they cut off; no GPUI in it, unit tested. The
+  view paints them each frame, so a row's cached line never depends on its neighbours.
 - `selection.rs` — selections by absolute `(row, col)`, by cells, words, lines or a block,
   copied with `Terminal::text` (a block row by row); unit tested.
 - `search.rs` and `links.rs` — matches of a query over a pane's rows, as cells by absolute row
