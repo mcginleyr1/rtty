@@ -50,6 +50,7 @@ use crate::cli::RESIZE_STEP;
 use crate::config::{self, ClipboardRead};
 use crate::control::{PaneInfo, Request, Response, TabInfo, WindowInfo};
 use crate::editor;
+use crate::ionmac;
 use crate::layout::{
     Amount, Closed, Direction, Layout, Named, Orientation, PaneId, Place, Rect, TabIds, Tabs,
 };
@@ -758,15 +759,18 @@ pub fn answer(request: Request, cx: &mut App) -> Response {
     if let Request::TuttiOpen { socket } = request {
         return open_session(socket, cx).map_or_else(Response::Error, |_| Response::Done);
     }
-    if let Request::NewWindow { cwd, frame, display } = request {
+    if let Request::NewWindow { cwd, frame, display, tutti } = request {
         let key = crate::app::key(cx).and_then(|key| key.read(cx).ok());
-        let cwd = cwd.or_else(|| key?.focused_cwd(cx));
+        let program = match tutti {
+            Some((socket, pane)) => Program::Tutti { socket, pane },
+            None => Program::Command(shell(cwd.or_else(|| key?.focused_cwd(cx)))),
+        };
         // A frame with no display named is on the main one.
         let frame = frame.map(|frame| match &display {
             Some(_) => placed(frame, display.as_ref(), cx),
             None => (frame, cx.primary_display().map(|display| display.id())),
         });
-        let opened = open_at(next_pane_id(), Program::Command(shell(cwd)), frame, cx);
+        let opened = open_at(next_pane_id(), program, frame, cx);
         let info = opened.and_then(|handle| {
             let info = handle.update(cx, |this, window, cx| this.info(window, cx));
             info.map_err(|err| err.to_string())
@@ -1061,8 +1065,10 @@ impl TerminalWindow {
                 }
             }
             Told::FocusEdge(pane, direction) => {
-                if let Some(id) = shown(self, pane, cx) {
-                    self.focus_toward(id, direction, false, window, cx);
+                let moved = shown(self, pane, cx)
+                    .map(|id| self.focus_toward(id, direction, false, window, cx));
+                if moved == Some(None) {
+                    ionmac::go(direction);
                 }
             }
             Told::ResizeEdge(pane, direction) => {
@@ -1841,6 +1847,8 @@ impl TerminalWindow {
                 let from = from.unwrap_or(focused);
                 match self.focus_toward(from, direction, wrap, window, cx) {
                     Some(pane) => Response::Pane(pane),
+                    // Past the window's edge the move is the window manager's, when it takes it.
+                    None if !wrap && ionmac::go(direction) => Response::Done,
                     None => Response::Edge { from, direction },
                 }
             }
@@ -2499,7 +2507,10 @@ impl Render for TerminalWindow {
                 cx.defer(move |cx| undo_close(from, cx));
             }))
             .on_action(cx.listener(|this, action: &MoveFocus, window, cx| {
-                this.focus_toward(this.tabs.active().focus(), action.direction, false, window, cx);
+                let from = this.tabs.active().focus();
+                if this.focus_toward(from, action.direction, false, window, cx).is_none() {
+                    ionmac::go(action.direction);
+                }
             }))
             .on_action(cx.listener(|this, action: &ResizePane, window, cx| {
                 this.resize(this.tabs.active().focus(), action.direction, RESIZE_STEP, window, cx)

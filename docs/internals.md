@@ -107,6 +107,8 @@ terminal engine in `vt/`, holds the terminal state, and
   its own layout.
 - `control.rs` and `cli.rs` — the socket (one JSON line each way, served on a thread of its own
   and answered on GPUI's main thread) and `rtty cli`'s commands, both unit tested.
+- `ionmac.rs` — the one line rtty asks ionmac, the window manager, when a focus move finds no
+  pane at a window's edge, and the 100 ms it waits for the answer; unit tested against a stand-in.
 - `scheme.rs` and `config.rs` — color schemes and the config file, whose key bindings come to
   one action per chord (the defaults, `keys`, then `[bind]`) that `main.rs` binds in GPUI.
   `main.rs` turns them into the `Settings` global every window and pane reads as it draws and

@@ -64,13 +64,16 @@ pub enum Request {
     TuttiOpen {
         socket: PathBuf,
     },
-    /// Opens a window with a login shell in `cwd` (else the focused pane's directory), at `frame`
-    /// when given, on the display with that UUID (as the saved layout has frames) or the main
-    /// one, else where a new window goes. Answered with the window, as `List` tells of it.
+    /// Opens a window with a login shell in `cwd` (else the focused pane's directory), or showing
+    /// pane `tutti.1` of the tutti daemon listening on `tutti.0`, at `frame` when given, on the
+    /// display with that UUID (as the saved layout has frames) or the main one, else where a new
+    /// window goes. Answered with the window, as `List` tells of it.
     NewWindow {
         cwd: Option<PathBuf>,
         frame: Option<Bounds<Pixels>>,
         display: Option<String>,
+        #[serde(default)]
+        tutti: Option<(PathBuf, u64)>,
     },
 }
 

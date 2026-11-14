@@ -1239,6 +1239,85 @@ fn the_cli_tells_a_window_manager_of_windows_and_opens_one() {
     assert_eq!(both[0]["tabs"][0]["panes"][0].get("vars"), None);
 }
 
+/// At the edge of a window a focus move goes on to ionmac, here a stand-in on ionmac's socket that
+/// moves left and says the screen ends everywhere else: `rtty cli pane focus` exits 0 for the
+/// move ionmac took and 1 with the edge said for the one it did not, and the focus key asks too.
+/// And `window new --tutti` opens a window at the frame asked that waits for the session.
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
+fn a_focus_move_past_the_window_goes_to_ionmac_and_a_tutti_pane_gets_a_window() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    let dir = scratch("ionmac");
+    let ionmac = dir.join(format!("ionmac-{}", fs::metadata(&dir).unwrap().uid()));
+    fs::create_dir(&ionmac).unwrap();
+    let listener = UnixListener::bind(ionmac.join("ionmac.sock")).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    thread::spawn({
+        let asked = asked.clone();
+        move || {
+            for stream in listener.incoming().flatten() {
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let answer = match line.trim() {
+                    r#"{"run":"go left"}"# => r#"{"ok":true}"#,
+                    _ => r#"{"error":"the edge of the screen"}"#,
+                };
+                asked.lock().unwrap().push(line.trim().to_owned());
+                writeln!(&stream, "{answer}").unwrap();
+            }
+        }
+    });
+    let rtty = env!("CARGO_BIN_EXE_rtty");
+    let script = format!(
+        r"wait ready>
+          type {rtty} cli pane focus --direction left > left.out; echo $? > left; {rtty} cli pane focus --direction right 2> right.err; echo $? > right; echo mo''ved
+          keys enter
+          wait moved
+          keys cmd-alt-up
+          type {rtty} cli window new --tutti 3 -s rtty-ui-absent --frame 120,90,640,400 > new.json; echo op''ened
+          keys enter
+          wait opened
+          sleep 500
+          quit"
+    );
+    let (status, _) = launch(&dir, &["--restore"], &script);
+    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let (left, out, right, err, new) =
+        (read("left"), read("left.out"), read("right"), read("right.err"), read("new.json"));
+    let saved = read("rtty/layout.json");
+    remove(&dir);
+    assert!(status.success());
+    assert_eq!((left.trim(), out.trim()), ("0", ""), "ionmac took the move left");
+    assert_eq!((right.trim(), err.trim()), ("1", "no pane right of 1"));
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked, [r#"{"run":"go left"}"#, r#"{"run":"go right"}"#, r#"{"run":"go up"}"#]);
+    let new: serde_json::Value = serde_json::from_str(&new).expect(&new);
+    let [opened] = &new["windows"].as_array().expect("windows")[..] else { panic!("{new}") };
+    assert!(opened["window_number"].as_i64().is_some_and(|number| number > 0), "{new}");
+    // The window was saved at the frame asked, to show that tutti pane again.
+    let saved: Vec<serde_json::Value> = serde_json::from_str(&saved).expect(&saved);
+    let [_, window] = &saved[..] else { panic!("{saved:?}") };
+    assert_eq!(window["uid"], opened["uid"]);
+    let frame = serde_json::json!({
+        "origin": { "x": 120.0, "y": 90.0 },
+        "size": { "width": 640.0, "height": 400.0 },
+    });
+    assert_eq!(window["frame"], frame);
+    let [(_, shown)] = &window["tutti"].as_object().expect("tutti").iter().collect::<Vec<_>>()[..]
+    else {
+        panic!("{window}")
+    };
+    assert!(
+        shown[0].as_str().is_some_and(|socket| socket.ends_with("rtty-ui-absent.sock")),
+        "{shown}"
+    );
+    assert_eq!(shown[1], 3);
+}
+
 /// `tabs = false`, for a window manager with tabs of its own: no bar and no window buttons, a
 /// new tab is a window, a saved window of two tabs comes back as two windows (the one that
 /// showed keeping its id), and turning tabs back on brings the bar and the buttons back.

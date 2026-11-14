@@ -6,6 +6,7 @@ mod control;
 mod copy;
 mod editor;
 mod glyphs;
+mod ionmac;
 mod keys;
 mod layout;
 mod links;

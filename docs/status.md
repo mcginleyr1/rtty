@@ -121,6 +121,15 @@ and `window new` read as JSON from inside a pane and with no `RTTY_SOCKET`. Not 
 it under a window manager, the look of a window with no bar, and a tutti session's window
 without tabs against a real daemon (its one-tab cut is unit tested).
 
+### Past the window's edge
+
+Checked against a stand-in on ionmac's socket, not ionmac itself: `rtty cli pane focus` at the
+edge exits 0 for a move the stand-in takes and 1 for one it refuses, the focus key asks too, and
+no socket, a refusal and silence all leave the move at the edge. `window new --tutti` is checked
+to open a window at the frame asked that is saved with its tutti pane, with no daemon to show.
+Not checked: a move handed to a running ionmac, a move tutti hands back, and `window new --tutti`
+against a real daemon.
+
 ### tutti panes
 
 [tutti panes](tutti.md#tutti-panes) are checked against a real tutti daemon in a scratch session.

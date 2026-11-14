@@ -35,7 +35,8 @@ of an agent: done and idle draw no line. No further agent UI is planned in rtty
 tutti's TUI in an rtty pane claims rtty's keys
 ([Keys a pane can claim](keys.md#keys-a-pane-can-claim)) and hands a move or resize past its own
 edge on to [`rtty cli`](cli.md#rtty-cli), so the same keys walk through Neovim's windows, tutti's
-panes and rtty's (tutti's documentation, "tutti in rtty").
+panes and rtty's (tutti's documentation, "tutti in rtty"), and on to the frame beside the window
+when ionmac runs ([Past the window's edge](windows.md#past-the-windows-edge)).
 
 ## tutti panes
 

@@ -96,6 +96,26 @@ stay and are reached by their keys (`Cmd+1`–`9`), with no bar to show them.
 What the pills showed, a window manager reads from `rtty cli list` ([cli.md](cli.md#rtty-cli)):
 each pane's title, progress and user vars, and each window's ids.
 
+## Past the window's edge
+
+ionmac, a tiling window manager, takes a focus move on where rtty's panes end, so the key that
+walks an editor's windows and rtty's panes goes on to the frame beside the window. It needs no
+setting, and works with tabs on or off.
+
+- A focus move that finds no pane that way is handed on: the focus keys, `rtty cli pane focus
+  --direction` without `--wrap`, and a move tutti hands back from one of its panes.
+- rtty asks on ionmac's socket, `$TMPDIR/ionmac-<uid>/ionmac.sock`, with one line,
+  `{"run":"go left"}` (or `right`, `up`, `down`), and reads one line back.
+- `{"ok":true}` means ionmac moved the focus: `rtty cli pane focus` prints nothing and exits 0.
+- Anything else leaves the move at the window's edge, as with no ionmac: no socket, an error (ionmac
+  says `the edge of the screen` when nothing lies that way), or no answer within 100 ms. `rtty
+  cli` then says `no pane <direction> of <pane>` and exits 1, so tutti's TUI still steps a tab
+  there.
+- rtty waits for the answer on its main thread, so an ionmac that hangs holds every window up for
+  those 100 ms at each such move.
+
+A resize that no split of rtty's takes is not handed on.
+
 ## Progress
 
 A program that reports its progress, with ConEmu's OSC 9;4 (`ESC ] 9 ; 4 ; state ; percent ST`, as
