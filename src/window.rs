@@ -1204,36 +1204,40 @@ impl TerminalWindow {
         }
     }
 
-    /// The cells the panes share, the size of a cell, and the height of the bar above them.
-    fn area(&self, window: &Window, cx: &App) -> (Rect, Size<Pixels>, Pixels) {
+    /// The cells the panes share, the size of a cell, and where the first cell is: under the
+    /// bar, and `padding` in from it and from the window's edges.
+    fn area(&self, window: &Window, cx: &App) -> (Rect, Size<Pixels>, Point<Pixels>) {
         let settings = cx.global::<Settings>();
         let cell = metrics(window.text_system(), settings).cell;
-        let bar = px(self.bar(window).height);
+        let padding = settings.padding;
+        let origin = point(padding, px(self.bar(window).height) + padding);
         let viewport = window.viewport_size();
         // Half a pixel short of a cell still counts: window sizes round.
-        let fit = |pixels: Pixels, cell: Pixels| ((pixels + px(0.5)) / cell).max(1.) as u16;
+        let fit =
+            |pixels: Pixels, cell: Pixels| ((pixels - padding + px(0.5)) / cell).max(1.) as u16;
         let area = Rect {
             col: 0,
             row: 0,
-            cols: fit(viewport.width, cell.width),
-            rows: fit(viewport.height - bar, cell.height),
+            cols: fit(viewport.width - origin.x, cell.width),
+            rows: fit(viewport.height - origin.y, cell.height),
         };
-        (area, cell, bar)
+        (area, cell, origin)
     }
 
     /// The window size that fits `rows`×`cols` cells of panes.
     pub fn size_for(&self, rows: u16, cols: u16, window: &Window, cx: &App) -> Size<Pixels> {
-        let (_, cell, bar) = self.area(window, cx);
-        let cells = |count: u16, cell: Pixels| cell * (f32::from(count) + 0.5);
-        size(cells(cols, cell.width), bar + cells(rows, cell.height))
+        let (_, cell, origin) = self.area(window, cx);
+        let padding = cx.global::<Settings>().padding;
+        let cells = |count: u16, cell: Pixels| cell * (f32::from(count) + 0.5) + padding;
+        size(origin.x + cells(cols, cell.width), origin.y + cells(rows, cell.height))
     }
 
     /// The middle of the window's cell (`row`, `col`), counted from the top left of the panes;
     /// negative ones are above or left of them.
     pub fn cell_center(&self, row: i32, col: i32, window: &Window, cx: &App) -> Point<Pixels> {
-        let (_, cell, bar) = self.area(window, cx);
+        let (_, cell, origin) = self.area(window, cx);
         let at = |index: i32, cell: Pixels| cell * (index as f32 + 0.5);
-        point(at(col, cell.width), bar + at(row, cell.height))
+        origin + point(at(col, cell.width), at(row, cell.height))
     }
 
     /// The shown pane under `position`, as the mouse finds it.
@@ -1243,8 +1247,9 @@ impl TerminalWindow {
         window: &Window,
         cx: &App,
     ) -> Option<Entity<PaneView>> {
-        let (area, cell, bar) = self.area(window, cx);
-        let (x, y) = (position.x / cell.width, (position.y - bar) / cell.height);
+        let (area, cell, origin) = self.area(window, cx);
+        let position = position - origin;
+        let (x, y) = (position.x / cell.width, position.y / cell.height);
         if x < 0. || y < 0. {
             return None;
         }
@@ -2095,10 +2100,10 @@ impl TerminalWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (area, cell, bar) = self.area(window, cx);
-        let position = event.event.position;
+        let (area, cell, origin) = self.area(window, cx);
+        let position = event.event.position - origin;
         let col = (position.x / cell.width).max(0.) as u16;
-        let row = ((position.y - bar) / cell.height).max(0.) as u16;
+        let row = (position.y / cell.height).max(0.) as u16;
         let path = event.drag(cx).0.clone();
         let before = self.tabs.active().divided(&path);
         self.tabs.active_mut().drag(&path, area, (col, row));
@@ -2383,7 +2388,7 @@ impl TerminalWindow {
 
 impl Render for TerminalWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (area, cell, bar) = self.area(window, cx);
+        let (area, cell, origin) = self.area(window, cx);
         let scale = window.scale_factor();
         for tab in self.tabs.all() {
             for (id, rect) in tab.grids(area) {
@@ -2393,10 +2398,8 @@ impl Render for TerminalWindow {
             }
         }
         let place = |rect: Rect| {
-            let origin =
-                point(cell.width * f32::from(rect.col), bar + cell.height * f32::from(rect.row));
             Bounds::new(
-                origin,
+                origin + point(cell.width * f32::from(rect.col), cell.height * f32::from(rect.row)),
                 size(cell.width * f32::from(rect.cols), cell.height * f32::from(rect.rows)),
             )
         };

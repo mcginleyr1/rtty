@@ -29,6 +29,7 @@ size = 12
 ligatures = true
 font_features = ["ss01", "zero"]  # OpenType features, over `ligatures`'
 line_height = 1.2                 # the cell's height as a share of the font's; 1 by default
+padding = 4                       # points between the window's edges and the panes; 0 by default
 scheme_dark = "OneDark Pro"       # the default
 scheme_light = "Solarized Light"  # the default
 # scheme = "Solarized Dark"       # one scheme whatever the OS appearance; not with the two above
@@ -70,6 +71,7 @@ Where each key is explained:
 | `confirm_close` | [Closing what runs](windows.md#closing-what-runs) |
 | `undo_timeout` | [Undoing a close](windows.md#undoing-a-close) |
 | `tabs` | [Without tabs](windows.md#without-tabs) |
+| `padding` | [Padding](windows.md#padding) |
 | `restore_layout` | [Restoring windows](windows.md#restoring-windows) |
 | `shell_integration`, `notify_after`, `click_to_move` | [Shell integration](shell-integration.md) |
 | `editor` | [Paths](selection.md#paths) |
@@ -139,6 +141,7 @@ changes, and when:
 | `quick_select_patterns` | from the next quick select |
 | `undo_timeout` | from the next close; one already waiting keeps its time |
 | `tabs` | at once: the bar and the window buttons go or come back; tabs already open stay, reached by their keys |
+| `padding` | at once: the panes move in or out and refit their cells |
 | `notify_after` | for every command that ends from then on, running ones included |
 | `shell_integration` | new panes only: a shell that is running has loaded rtty's scripts, or not, as it started |
 | `restore_layout` | saving the layout stops or starts at once; restoring it is at launch |

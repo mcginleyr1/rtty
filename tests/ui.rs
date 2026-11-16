@@ -879,6 +879,38 @@ scheme = "Solarized Dark"
     assert!(mistaken.contains(" size 12 ") && mistaken.contains("\nscheme \"One Light\" "));
 }
 
+/// `padding` moves the panes in from the window's edges: a click still lands on its cell, and
+/// the cells the padding took come back when it goes.
+#[test]
+#[ignore = "needs a display: run with `just ui`"]
+fn padding_keeps_the_panes_off_the_windows_edges() {
+    let (status, dumps) = run(
+        "padding",
+        "padding = 8\n",
+        r"wait ready>
+         resize 24 80
+         sleep 300
+         type printf '%s\n' 'alpha beta gamma' en''d
+         keys enter
+         wait end
+         drag 1 5 1 9
+         dump
+         type printf 'padding = 0\n' > ~/rtty/config.toml; echo wr''itten
+         keys enter
+         wait written
+         sleep 2500
+         dump
+         quit",
+    );
+    let [padded, flush] = &dumps[..] else { panic!("{} dumps", dumps.len()) };
+    assert!(status.success());
+    assert!(padded.starts_with("window 24x80 ") && padded.contains("\nsize 24x80 "));
+    assert!(padded.contains("\nselected Cells (1, 6)..=(1, 9) \"beta\"\n"));
+    // 16 points each way are two more columns and a row of Menlo 14.
+    assert!(flush.contains("\nsaid \"config reloaded\" "));
+    assert!(flush.starts_with("window 25x82 ") && flush.contains("\nsize 25x82 "));
+}
+
 #[test]
 #[ignore = "needs a display: run with `just ui`"]
 fn the_readmes_neovim_like_bindings_split_focus_resize_swap_zoom_and_close() {

@@ -27,6 +27,8 @@ pub struct Config {
     font_features: Option<Vec<String>>,
     /// The cell's height as a share of the font's: 1 is the font's ascent plus descent.
     pub line_height: Option<f32>,
+    /// Points between the window's edges (and its bar) and the panes.
+    pub padding: Option<u8>,
     keys: Option<Keys>,
     pub bell: Option<Bell>,
     pub option_as_alt: Option<OptionAsAlt>,
@@ -671,6 +673,16 @@ mod tests {
         for wrong in ["0.4", "3.5", "nan"] {
             let err = height(&format!("line_height = {wrong}")).unwrap_err();
             assert!(err.ends_with("a share of the font's height, 0.5 to 3"), "{err}");
+        }
+    }
+
+    #[test]
+    fn padding_is_whole_points_up_to_255() {
+        let padding = |source: &str| Config::parse(source).map(|config| config.padding);
+        assert_eq!(padding("padding = 4").unwrap(), Some(4));
+        assert_eq!(padding("").unwrap(), None);
+        for wrong in ["-1", "256", "1.5"] {
+            assert!(padding(&format!("padding = {wrong}")).is_err(), "{wrong}");
         }
     }
 

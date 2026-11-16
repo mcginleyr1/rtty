@@ -100,6 +100,8 @@ pub struct Settings {
     pub size: Pixels,
     /// The cell's height as a share of the font's (`line_height`).
     pub line_height: f32,
+    /// `padding`: what a window leaves between its edges, and its bar, and its panes.
+    pub padding: Pixels,
     pub theme: Theme,
     /// Every chord rtty acts on and its action (`Config::bindings`).
     pub bindings: BTreeMap<String, Bound>,

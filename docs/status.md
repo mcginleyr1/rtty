@@ -34,6 +34,7 @@ are in [scripting.md](scripting.md#--script).
 - `tabs = false` for a window manager with tabs of its own ([Without tabs](windows.md#without-tabs)),
   and what one reads and asks through `rtty cli`: windows' ids, panes' progress and user vars, a
   new window.
+- `padding`, points between the window's edges and the panes ([Padding](windows.md#padding)).
 - The log.
 - Shell integration that loads itself (prompt jumps, the last command's output, notifications of
   long commands, click to move the cursor).
@@ -120,6 +121,13 @@ keeping its id, and the bar and buttons back when `tabs` is turned on again; and
 and `window new` read as JSON from inside a pane and with no `RTTY_SOCKET`. Not checked: any of
 it under a window manager, the look of a window with no bar, and a tutti session's window
 without tabs against a real daemon (its one-tab cut is unit tested).
+
+### Padding
+
+Checked in a window ionmac had tiled to 1800 by 1108 points: with `padding = 8` the panes were
+62 rows by 211 columns of Menlo 14 and a drag selected the cells under it, and with the config
+changed to `padding = 0` the same window was 63 by 213 at once. Not checked: the kept test's own
+sizes (24 by 80, then 25 by 82), which need a window nothing else resizes, and the look on screen.
 
 ### Past the window's edge
 

@@ -33,7 +33,7 @@ quitting what runs a program, splits (layout, focus, resize, zoom, swap, the men
 through GPUI and through AppKit (`nskey`), Option as Alt or not, mouse selection (cells, words,
 lines, blocks) and `Cmd+C`, copy mode, the wheel, prompt jumps, `Cmd+K`, search, window resize,
 font size, the appearance flip, focus in and out, a second window and where it opens, the config
-with `[bind]` and its live reload, shell integration (marks, exit status, `copy-last-output`,
+with `[bind]` and its live reload, `padding`, shell integration (marks, exit status, `copy-last-output`,
 click to move the cursor), `--restore`, links, quick select, a program's title and progress, cell
 borders, `tabs = false`, `rtty cli list` and `window new`, a focus move handed to a stand-in for
 ionmac, mouse reports, dropped files, a

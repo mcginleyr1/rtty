@@ -8,6 +8,7 @@
 # ligatures = true
 # font_features = []                     # OpenType features over those: "ss01", "-calt", "cv01=2"
 # line_height = 1                        # the cell's height, as a share of the font's
+# padding = 0                            # points between the window's edges and the panes
 # scheme_dark = "OneDark Pro"
 # scheme_light = "Solarized Light"
 # scheme = "Solarized Dark"              # one scheme whatever the appearance, for the two above

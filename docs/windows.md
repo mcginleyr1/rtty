@@ -96,6 +96,13 @@ stay and are reached by their keys (`Cmd+1`–`9`), with no bar to show them.
 What the pills showed, a window manager reads from `rtty cli list` ([cli.md](cli.md#rtty-cli)):
 each pane's title, progress and user vars, and each window's ids.
 
+## Padding
+
+`padding = 4` leaves that many points, 0 to 255 and 0 by default, between the panes and the
+window's four edges, under the bar where there is one. The room is the scheme's background, and
+the panes have that many fewer points for cells. Without it the first column starts at the
+window's very edge, where a window manager's border drawn over the window covers part of it.
+
 ## Past the window's edge
 
 ionmac, a tiling window manager, takes a focus move on where rtty's panes end, so the key that

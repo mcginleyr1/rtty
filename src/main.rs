@@ -372,6 +372,7 @@ fn settings(loaded: Loaded, launch: Launch, cx: &App) -> Result<Settings, String
         font_size: px(size),
         size: px(size),
         line_height: config.line_height.unwrap_or(1.),
+        padding: px(f32::from(config.padding.unwrap_or(0))),
         theme,
         notify_after,
         bindings: config.bindings,
